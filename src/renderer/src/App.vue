@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, provide } from 'vue'
 import type { Session } from './types'
-import SessionRow from './components/SessionRow.vue'
+import SessionList from './components/SessionList.vue'
+import StatsPanel from './components/StatsPanel.vue'
+import SettingsPanel from './components/SettingsPanel.vue'
+import { sortSessions, type SortMode } from './sort'
+import { matchesQuery, matchesFilter, type StatusFilter } from './filter'
+
+type View = 'list' | 'stats' | 'settings'
 
 const sessions = ref<Session[]>([])
 const loaded = ref(false)
@@ -14,9 +20,14 @@ const version = ((): string => {
     return ''
   }
 })()
+const view = ref<View>('list')
 const watchedOpen = ref(true)
 const othersOpen = ref(true)
+const controlsOpen = ref(localStorage.getItem('controlsOpen') !== '0')
 const search = ref('')
+const statusFilter = ref<StatusFilter>('all')
+const sortMode = ref<SortMode>((localStorage.getItem('sortMode') as SortMode) || 'status')
+const groupBy = ref(localStorage.getItem('groupBy') === '1')
 const colorblind = ref(localStorage.getItem('colorblind') === '1')
 provide('colorblind', colorblind)
 
@@ -28,17 +39,30 @@ onMounted(() => {
   })
 })
 
-const watchedList = computed(() => sessions.value.filter((s) => s.watched || s.isLive))
-const otherList = computed(() => {
-  const rest = sessions.value.filter((s) => !(s.watched || s.isLive))
-  const q = search.value.trim().toUpperCase()
-  if (!q) return rest
-  return rest.filter((s) => (s.ticket ?? '').toUpperCase().includes(q))
-})
+const filtered = computed(() =>
+  sessions.value.filter(
+    (s) => matchesQuery(s, search.value) && matchesFilter(s, statusFilter.value)
+  )
+)
+const watchedList = computed(() => filtered.value.filter((s) => s.watched || s.isLive))
+const otherList = computed(() => filtered.value.filter((s) => !(s.watched || s.isLive)))
+const watchedSorted = computed(() => sortSessions(watchedList.value, sortMode.value))
+const otherSorted = computed(() => sortSessions(otherList.value, sortMode.value))
 
-function toggleColorblind(): void {
-  colorblind.value = !colorblind.value
-  localStorage.setItem('colorblind', colorblind.value ? '1' : '0')
+function setSort(m: SortMode): void {
+  sortMode.value = m
+  localStorage.setItem('sortMode', m)
+}
+function toggleGroup(): void {
+  groupBy.value = !groupBy.value
+  localStorage.setItem('groupBy', groupBy.value ? '1' : '0')
+}
+function show(v: View): void {
+  view.value = view.value === v ? 'list' : v
+}
+function toggleControls(): void {
+  controlsOpen.value = !controlsOpen.value
+  localStorage.setItem('controlsOpen', controlsOpen.value ? '1' : '0')
 }
 </script>
 
@@ -46,35 +70,96 @@ function toggleColorblind(): void {
   <div class="wrap">
     <header>
       <span class="title">Claude Sessions <span v-if="version" class="ver">v{{ version }}</span></span>
-      <button class="cb" :class="{ on: colorblind }" title="Colorblind palette" @click="toggleColorblind">
-        ◑
-      </button>
+      <div class="hbtns">
+        <button
+          v-if="view === 'list'"
+          class="hb"
+          :class="{ on: controlsOpen }"
+          title="Search & filters"
+          @click="toggleControls"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="7" />
+            <path d="M21 21l-4.3-4.3" />
+          </svg>
+        </button>
+        <button class="hb" :class="{ on: view === 'stats' }" title="Statistics" @click="show('stats')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="6" y1="20" x2="6" y2="13" />
+            <line x1="12" y1="20" x2="12" y2="4" />
+            <line x1="18" y1="20" x2="18" y2="9" />
+          </svg>
+        </button>
+        <button
+          class="hb"
+          :class="{ on: view === 'settings' }"
+          title="Settings"
+          @click="show('settings')"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+      </div>
     </header>
     <div v-if="!ready" class="loading">
       <div class="spinner" />
     </div>
-    <div v-else class="scroll">
-      <div class="shead" @click="watchedOpen = !watchedOpen">
-        <span class="chev">{{ watchedOpen ? '▾' : '▸' }}</span>
-        Watched <span class="count">{{ watchedList.length }}</span>
-      </div>
-      <ul v-show="watchedOpen">
-        <SessionRow v-for="s in watchedList" :key="s.id" :session="s" />
-        <li v-if="!watchedList.length" class="empty">Nothing watched or live</li>
-      </ul>
-
-      <div class="shead" @click="othersOpen = !othersOpen">
-        <span class="chev">{{ othersOpen ? '▾' : '▸' }}</span>
-        Other <span class="count">{{ otherList.length }}</span>
-      </div>
-      <div v-show="othersOpen" class="searchbar">
-        <input v-model="search" class="search" placeholder="Filter by ticket…" @click.stop />
-      </div>
-      <ul v-show="othersOpen">
-        <SessionRow v-for="s in otherList" :key="s.id" :session="s" />
-        <li v-if="!otherList.length" class="empty">No matching sessions</li>
-      </ul>
+    <div v-else-if="view === 'stats'" class="scroll">
+      <StatsPanel :sessions="sessions" />
     </div>
+    <div v-else-if="view === 'settings'" class="scroll">
+      <SettingsPanel />
+    </div>
+    <template v-else>
+      <div v-show="controlsOpen" class="filterbar">
+        <input v-model="search" class="search" placeholder="Search project, ticket, prompt…" />
+        <div class="chips">
+          <button :class="{ on: statusFilter === 'all' }" @click="statusFilter = 'all'">All</button>
+          <button :class="{ on: statusFilter === 'needs' }" @click="statusFilter = 'needs'">
+            Needs you
+          </button>
+          <button :class="{ on: statusFilter === 'working' }" @click="statusFilter = 'working'">
+            Working
+          </button>
+          <button :class="{ on: statusFilter === 'live' }" @click="statusFilter = 'live'">Live</button>
+        </div>
+      </div>
+      <div v-show="controlsOpen" class="toolbar">
+        <div class="sortbtns">
+          <button :class="{ on: sortMode === 'status' }" @click="setSort('status')">Status</button>
+          <button :class="{ on: sortMode === 'recency' }" @click="setSort('recency')">Recent</button>
+          <button :class="{ on: sortMode === 'project' }" @click="setSort('project')">Project</button>
+        </div>
+        <button class="grp" :class="{ on: groupBy }" title="Group by project" @click="toggleGroup">
+          ⊞ group
+        </button>
+      </div>
+      <div class="scroll">
+        <div class="shead" @click="watchedOpen = !watchedOpen">
+          <span class="chev">{{ watchedOpen ? '▾' : '▸' }}</span>
+          Watched <span class="count">{{ watchedList.length }}</span>
+        </div>
+        <SessionList
+          v-show="watchedOpen"
+          :sessions="watchedSorted"
+          :group-by="groupBy"
+          empty-text="Nothing watched or live"
+        />
+
+        <div class="shead" @click="othersOpen = !othersOpen">
+          <span class="chev">{{ othersOpen ? '▾' : '▸' }}</span>
+          Other <span class="count">{{ otherList.length }}</span>
+        </div>
+        <SessionList
+          v-show="othersOpen"
+          :sessions="otherSorted"
+          :group-by="groupBy"
+          empty-text="No matching sessions"
+        />
+      </div>
+    </template>
   </div>
 </template>
 
@@ -129,22 +214,32 @@ header {
     transform: rotate(360deg);
   }
 }
-.cb {
+.hbtns {
   flex: none;
+  display: flex;
+  gap: 4px;
   -webkit-app-region: no-drag;
+}
+.hb {
   background: none;
   border: 1px solid #30363d;
   color: #8b949e;
   border-radius: 5px;
   cursor: pointer;
-  font-size: 12px;
   line-height: 1;
-  padding: 2px 7px;
+  padding: 4px 7px;
+  display: inline-flex;
+  align-items: center;
 }
-.cb:hover {
+.hb svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+.hb:hover {
   color: #e6edf3;
 }
-.cb.on {
+.hb.on {
   color: #58a6ff;
   border-color: #58a6ff;
 }
@@ -188,8 +283,34 @@ header {
   color: #6e7681;
   font-weight: 400;
 }
-.searchbar {
-  padding: 4px 10px 6px;
+.filterbar {
+  padding: 6px 8px;
+  border-bottom: 1px solid #21262d;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.chips button {
+  background: none;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  border-radius: 12px;
+  cursor: pointer;
+  font: 10px system-ui;
+  padding: 3px 9px;
+}
+.chips button:hover {
+  color: #e6edf3;
+}
+.chips button.on {
+  color: #fff;
+  background: #1f6feb;
+  border-color: #1f6feb;
 }
 .search {
   width: 100%;
@@ -203,6 +324,37 @@ header {
   outline: none;
 }
 .search:focus {
+  border-color: #58a6ff;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid #21262d;
+}
+.sortbtns {
+  display: flex;
+  gap: 2px;
+}
+.sortbtns button,
+.grp {
+  background: none;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  border-radius: 5px;
+  cursor: pointer;
+  font: 10px system-ui;
+  padding: 3px 7px;
+}
+.sortbtns button:hover,
+.grp:hover {
+  color: #e6edf3;
+}
+.sortbtns button.on,
+.grp.on {
+  color: #58a6ff;
   border-color: #58a6ff;
 }
 ul {

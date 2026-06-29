@@ -13,6 +13,8 @@ export interface RawSession {
   active: boolean
   done: boolean
   pendingToolUse: boolean
+  model: string | null
+  contextTokens: number | null
 }
 
 function projectName(cwd: string | null): string {
@@ -87,7 +89,10 @@ export function buildSessions(
         workingWindowMs
       }),
       watched: false,
-      name: null
+      name: null,
+      model: r.model,
+      contextTokens: r.contextTokens,
+      dirty: false
     }
   })
 

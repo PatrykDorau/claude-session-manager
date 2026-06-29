@@ -13,6 +13,16 @@ export function extractResumeIds(commandLines: string[]): string[] {
   return [...ids]
 }
 
+export async function gitDirty(folder: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let out = ''
+    const p = spawn('git', ['-C', folder, 'status', '--porcelain'], { windowsHide: true })
+    p.stdout.on('data', (d) => (out += d.toString()))
+    p.on('error', () => resolve(false))
+    p.on('close', () => resolve(out.trim().length > 0))
+  })
+}
+
 export async function runningResumeIds(): Promise<Set<string>> {
   const ps =
     "Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | ForEach-Object { $_.CommandLine }"

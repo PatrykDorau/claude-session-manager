@@ -25,7 +25,24 @@ const api = {
   removeSession: (id: string, label: string): void => {
     ipcRenderer.send('remove-session', id, label)
   },
-  getVersion: (): string => ipcRenderer.sendSync('get-version')
+  getVersion: (): string => ipcRenderer.sendSync('get-version'),
+  getSettings: (): {
+    jiraBase: string
+    alwaysOnTop: boolean
+    clickAction: string
+    launchOnStartup: boolean
+  } => ipcRenderer.sendSync('get-settings'),
+  setSettings: (patch: {
+    jiraBase?: string
+    alwaysOnTop?: boolean
+    clickAction?: string
+    launchOnStartup?: boolean
+  }): void => {
+    ipcRenderer.send('set-settings', patch)
+  },
+  sessionMenu: (s: Session): void => {
+    ipcRenderer.send('session-menu', s)
+  }
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

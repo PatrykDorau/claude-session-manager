@@ -13,6 +13,19 @@ declare global {
       setName: (id: string, name: string | null) => void
       removeSession: (id: string, label: string) => void
       getVersion: () => string
+      getSettings: () => {
+        jiraBase: string
+        alwaysOnTop: boolean
+        clickAction: string
+        launchOnStartup: boolean
+      }
+      setSettings: (patch: {
+        jiraBase?: string
+        alwaysOnTop?: boolean
+        clickAction?: string
+        launchOnStartup?: boolean
+      }) => void
+      sessionMenu: (s: Session) => void
     }
   }
 }

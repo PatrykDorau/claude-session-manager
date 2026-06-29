@@ -2,6 +2,7 @@
 import { ref, inject } from 'vue'
 import type { Ref } from 'vue'
 import type { Session } from '../types'
+import { colorForProject } from '../filter'
 
 const props = defineProps<{ session: Session }>()
 const colorblind = inject<Ref<boolean>>('colorblind', ref(false))
@@ -17,6 +18,7 @@ const openTicket = (): void => {
   if (props.session.ticket) window.api.openTicket(props.session.ticket)
 }
 const toggleWatch = (): void => window.api.setWatched(props.session.id, !props.session.watched)
+const menu = (): void => window.api.sessionMenu({ ...props.session })
 const remove = (): void => {
   const s = props.session
   const label = s.ticket ? `${s.projectName} · ${s.ticket}` : s.projectName
@@ -61,13 +63,13 @@ function statusColor(): string {
   const cb = colorblind.value
   switch (props.session.status) {
     case 'waiting':
-      return cb ? '#58a6ff' : '#f0883e'
+      return cb ? '#d55e00' : '#f0883e'
     case 'working':
-      return cb ? '#f0883e' : '#3fb950'
+      return cb ? '#009e73' : '#3fb950'
     case 'checkout':
-      return cb ? '#bc8cff' : '#58a6ff'
+      return cb ? '#56b4e9' : '#58a6ff'
     case 'idle':
-      return cb ? '#e3b341' : '#d29922'
+      return cb ? '#f0e442' : '#d29922'
     default:
       return '#8b949e'
   }
@@ -85,6 +87,23 @@ function statusLabel(): string {
     default:
       return 'not active'
   }
+}
+function modelShort(): string {
+  const m = props.session.model ?? ''
+  const x = m.match(/opus|sonnet|haiku|fable/i)
+  return x ? x[0].toLowerCase() : ''
+}
+function contextShort(): string {
+  const t = props.session.contextTokens
+  if (!t) return ''
+  return t >= 1000 ? Math.round(t / 1000) + 'k' : String(t)
+}
+function meta(): string {
+  return [modelShort(), contextShort()].filter(Boolean).join(' · ')
+}
+function branchShort(): string {
+  const b = props.session.gitBranch ?? ''
+  return b.length > 22 ? b.slice(0, 22) + '…' : b
 }
 function hexToRgba(hex: string, a: number): string {
   const r = parseInt(hex.slice(1, 3), 16)
@@ -112,9 +131,14 @@ function ago(ms: number): string {
   <li
     class="row"
     :class="{ waiting: session.status === 'waiting' }"
-    :style="{ background: rowBg(), '--blink-bg': hexToRgba(statusColor(), 0.28) }"
+    :style="{
+      background: rowBg(),
+      '--blink-bg': hexToRgba(statusColor(), 0.28),
+      borderLeft: '3px solid ' + colorForProject(session.projectName)
+    }"
     :title="session.firstPrompt ?? ''"
     @click="open"
+    @contextmenu.prevent.stop="menu"
   >
     <span class="dot" :style="{ background: statusColor(), boxShadow: '0 0 6px ' + statusColor() }" />
     <div class="body">
@@ -123,8 +147,20 @@ function ago(ms: number): string {
         <span class="status" :style="{ color: statusColor() }">{{ statusLabel() }}</span>
         <span class="time">{{ ago(session.lastActive) }}</span>
       </div>
-      <div class="line sub">
+      <div v-if="session.ticket || session.gitBranch || meta()" class="line meta">
         <span v-if="session.ticket" class="ticket" @click.stop="openTicket">{{ session.ticket }}</span>
+        <span v-if="session.gitBranch" class="branch" :title="session.gitBranch">
+          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="6" y1="3" x2="6" y2="15" />
+            <circle cx="18" cy="6" r="3" />
+            <circle cx="6" cy="18" r="3" />
+            <path d="M18 9a9 9 0 0 1-9 9" />
+          </svg>
+          {{ branchShort() }}<span v-if="session.dirty" class="dirty" title="Uncommitted changes">●</span>
+        </span>
+        <span v-if="meta()" class="metinfo">{{ meta() }}</span>
+      </div>
+      <div class="line sub">
         <input
           v-if="editing"
           v-focus
@@ -136,8 +172,7 @@ function ago(ms: number): string {
           @blur="commit"
         />
         <span v-else class="ttl">{{ title() }}</span>
-      </div>
-      <div class="line actions">
+        <span class="actions">
         <button class="ic" :title="copied ? 'Copied' : 'Copy session id'" @click.stop="copyId">
           <svg v-if="copied" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="20 6 9 17 4 12" />
@@ -163,6 +198,7 @@ function ago(ms: number): string {
             <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
           </svg>
         </button>
+        </span>
       </div>
     </div>
   </li>
@@ -208,13 +244,20 @@ function ago(ms: number): string {
   align-items: baseline;
   gap: 7px;
 }
+.line.meta {
+  margin-top: 2px;
+  gap: 6px;
+}
 .line.sub {
   margin-top: 2px;
-}
-.line.actions {
-  margin-top: 1px;
-  gap: 2px;
   align-items: center;
+}
+.actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
 }
 .name {
   flex: 1;
@@ -231,6 +274,13 @@ function ago(ms: number): string {
   font-size: 10px;
   font-weight: 600;
 }
+.metinfo {
+  flex: none;
+  margin-left: auto;
+  color: #6e7681;
+  font-size: 10px;
+  white-space: nowrap;
+}
 .time {
   flex: none;
   color: #6e7681;
@@ -245,6 +295,28 @@ function ago(ms: number): string {
 }
 .ticket:hover {
   text-decoration: underline;
+}
+.branch {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #6e7681;
+  font-size: 10px;
+}
+.bicon {
+  width: 10px;
+  height: 10px;
+  flex: none;
+}
+.dirty {
+  color: #f0883e;
+  margin-left: 2px;
 }
 .ttl {
   flex: 1;

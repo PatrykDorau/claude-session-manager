@@ -48,4 +48,34 @@ describe('parseTail', () => {
     expect(parseTail([]).pendingToolUse).toBe(false)
     expect(parseTail(['not json', '{bad']).pendingToolUse).toBe(false)
   })
+
+  it('extracts model and summed context tokens from the latest assistant usage', () => {
+    const asst = JSON.stringify({
+      type: 'assistant',
+      message: {
+        stop_reason: 'end_turn',
+        model: 'claude-opus-4-8',
+        usage: { input_tokens: 2, cache_read_input_tokens: 55961, cache_creation_input_tokens: 416 }
+      }
+    })
+    const r = parseTail([asst])
+    expect(r.model).toBe('claude-opus-4-8')
+    expect(r.contextTokens).toBe(56379)
+  })
+
+  it('reads model/context from the most recent assistant even if the last entry is a user', () => {
+    const asst = JSON.stringify({
+      type: 'assistant',
+      message: {
+        stop_reason: 'tool_use',
+        model: 'claude-sonnet-4-6',
+        usage: { input_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0 }
+      }
+    })
+    const user = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result' }] } })
+    const r = parseTail([asst, user])
+    expect(r.pendingToolUse).toBe(false)
+    expect(r.model).toBe('claude-sonnet-4-6')
+    expect(r.contextTokens).toBe(1010)
+  })
 })

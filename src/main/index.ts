@@ -4,6 +4,7 @@ import {
   shell,
   dialog,
   nativeImage,
+  Notification,
   BrowserWindow,
   ipcMain,
   Tray,
@@ -21,24 +22,38 @@ import { rmSync, readdirSync, existsSync } from 'node:fs'
 import { join as joinPath } from 'node:path'
 import { scanRaw } from './scanner'
 import { buildSessions, computeOpen } from './aggregate'
-import { runningResumeIds } from './processes'
+import { normalizePath } from './lock'
+import { runningResumeIds, gitDirty } from './processes'
 import { ideDir, projectsDir, doneDir, activeDir, needsInputDir } from './paths'
-import { focusOrOpen } from './launcher'
+import { focusOrOpen, focusWindow, openProject, reopenAndResume } from './launcher'
 import { loadState, saveState, applyWatched, applyName, type State } from './store'
 
 let mainWindow: BrowserWindow
 let tray: Tray
-let appState: State = { watched: [], names: {} }
+let appState: State = {
+  watched: [],
+  names: {},
+  settings: {
+    jiraBase: 'https://jira.redge.com/browse/',
+    alwaysOnTop: true,
+    clickAction: 'default',
+    launchOnStartup: false
+  }
+}
 let statePath = ''
 let openMap: Record<string, string> = {}
 let cachedRunningIds: string[] = []
 let attentionIcon: NativeImage | null = null
+let dirtyMap: Record<string, boolean> = {}
+const knownFolders = new Map<string, string>()
+const notifiedWaiting = new Set<string>()
 
 function decorate(sessions: Session[]): Session[] {
   return sessions.map((s) => ({
     ...s,
     watched: appState.watched.includes(s.id),
-    name: appState.names[s.id] ?? null
+    name: appState.names[s.id] ?? null,
+    dirty: dirtyMap[s.projectPath ? normalizePath(s.projectPath) : ''] ?? false
   }))
 }
 
@@ -46,18 +61,49 @@ async function refreshRunning(): Promise<void> {
   cachedRunningIds = [...(await runningResumeIds())]
 }
 
+async function refreshDirty(): Promise<void> {
+  const entries = [...knownFolders.entries()]
+  const next: Record<string, boolean> = {}
+  await Promise.all(entries.map(async ([key, path]) => (next[key] = await gitDirty(path))))
+  dirtyMap = next
+}
+
 async function pushSessions(): Promise<void> {
   if (!mainWindow) return
   const { raw, lockedFolders } = await scanRaw()
   openMap = computeOpen(openMap, raw, cachedRunningIds, lockedFolders)
+  for (const r of raw) if (r.cwd) knownFolders.set(normalizePath(r.cwd), r.cwd)
   const sessions = buildSessions(raw, Object.keys(openMap), Date.now())
   mainWindow.webContents.send('sessions', decorate(sessions))
   updateAttention(sessions)
 }
 
+function notifyNeedsYou(s: Session): void {
+  if (!Notification.isSupported()) return
+  const label = s.name ?? (s.ticket ? `${s.projectName} · ${s.ticket}` : s.projectName)
+  const n = new Notification({ title: 'Claude needs your input', body: label })
+  n.on('click', () => {
+    if (mainWindow) {
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  })
+  n.show()
+}
+
 function updateAttention(sessions: Session[]): void {
   if (!mainWindow) return
-  const count = sessions.filter((s) => s.status === 'waiting').length
+  const waitingIds = new Set<string>()
+  for (const s of sessions) {
+    if (s.status !== 'waiting') continue
+    waitingIds.add(s.id)
+    if (!notifiedWaiting.has(s.id)) {
+      notifiedWaiting.add(s.id)
+      notifyNeedsYou(s)
+    }
+  }
+  for (const id of [...notifiedWaiting]) if (!waitingIds.has(id)) notifiedWaiting.delete(id)
+  const count = waitingIds.size
   if (count > 0) {
     if (!attentionIcon) attentionIcon = nativeImage.createFromPath(attentionPng)
     mainWindow.setOverlayIcon(attentionIcon, `${count} session(s) need you`)
@@ -93,6 +139,10 @@ function removeSessionFiles(id: string): void {
   delete openMap[id]
 }
 
+function applyLaunchOnStartup(on: boolean): void {
+  app.setLoginItemSettings({ openAtLogin: on, args: ['--hidden'] })
+}
+
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 360,
@@ -100,7 +150,7 @@ function createWindow(): BrowserWindow {
     minWidth: 180,
     minHeight: 200,
     frame: false,
-    alwaysOnTop: true,
+    alwaysOnTop: appState.settings.alwaysOnTop,
     skipTaskbar: false,
     show: false,
     backgroundColor: '#0d1117',
@@ -140,6 +190,7 @@ function wireSessions(win: BrowserWindow): void {
   })
   setInterval(pushSessions, 2000)
   setInterval(refreshRunning, 6000)
+  setInterval(refreshDirty, 8000)
 }
 
 function buildTray(win: BrowserWindow): void {
@@ -159,8 +210,12 @@ function buildTray(win: BrowserWindow): void {
       {
         label: 'Launch on startup',
         type: 'checkbox',
-        checked: app.getLoginItemSettings().openAtLogin,
-        click: (i) => app.setLoginItemSettings({ openAtLogin: i.checked, args: ['--hidden'] })
+        checked: appState.settings.launchOnStartup,
+        click: (i) => {
+          appState.settings.launchOnStartup = i.checked
+          applyLaunchOnStartup(i.checked)
+          saveState(statePath, appState)
+        }
       },
       { type: 'separator' },
       { label: 'Quit', click: () => app.quit() }
@@ -182,10 +237,11 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(() => {
-  electronApp.setAppUserModelId('com.electron')
+  electronApp.setAppUserModelId('com.electron.app')
 
   statePath = join(app.getPath('userData'), 'state.json')
   appState = loadState(statePath)
+  applyLaunchOnStartup(appState.settings.launchOnStartup)
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
@@ -195,22 +251,69 @@ if (!app.requestSingleInstanceLock()) {
   process.on('unhandledRejection', (e) => console.error('[diag] unhandledRejection:', e))
 
   ipcMain.on('open-session', (_e, s) => {
-    console.log('[diag] open-session click', s?.projectName, 'isLive=', s?.isLive)
-    if (s?.id) {
-      try {
-        rmSync(joinPath(doneDir(), s.id), { force: true })
-      } catch {
-        /* ignore */
-      }
-      void pushSessions()
+    if (!s?.id) return
+    try {
+      rmSync(joinPath(doneDir(), s.id), { force: true })
+    } catch {
+      /* ignore */
     }
-    void focusOrOpen(s).catch((err) => console.error('[diag] focusOrOpen threw:', err))
+    void pushSessions()
+    const action = appState.settings.clickAction
+    if (action === 'project') openProject(s.projectPath)
+    else if (action === 'terminal') void reopenAndResume(s.projectPath, s.projectName, s.id)
+    else if (action === 'focus') focusWindow(s.projectName)
+    else void focusOrOpen(s).catch((err) => console.error('[diag] focusOrOpen threw:', err))
   })
   ipcMain.on('get-version', (e) => {
     e.returnValue = app.getVersion()
   })
   ipcMain.on('open-ticket', (_e, code: string) => {
-    void shell.openExternal(`https://jira.redge.com/browse/${code}`)
+    void shell.openExternal(appState.settings.jiraBase + code)
+  })
+  ipcMain.on('get-settings', (e) => {
+    e.returnValue = {
+      jiraBase: appState.settings.jiraBase,
+      alwaysOnTop: appState.settings.alwaysOnTop,
+      clickAction: appState.settings.clickAction,
+      launchOnStartup: appState.settings.launchOnStartup
+    }
+  })
+  ipcMain.on('set-settings', (_e, patch: Partial<State['settings']>) => {
+    if (typeof patch.jiraBase === 'string') appState.settings.jiraBase = patch.jiraBase
+    if (typeof patch.alwaysOnTop === 'boolean') {
+      appState.settings.alwaysOnTop = patch.alwaysOnTop
+      mainWindow?.setAlwaysOnTop(patch.alwaysOnTop)
+    }
+    if (patch.clickAction) appState.settings.clickAction = patch.clickAction
+    if (typeof patch.launchOnStartup === 'boolean') {
+      appState.settings.launchOnStartup = patch.launchOnStartup
+      applyLaunchOnStartup(patch.launchOnStartup)
+    }
+    saveState(statePath, appState)
+  })
+  ipcMain.on('session-menu', (_e, s) => {
+    if (!s?.id) return
+    const menu = Menu.buildFromTemplate([
+      { label: s.isLive ? 'Focus window' : 'Open & resume', click: () => void focusOrOpen(s) },
+      { label: 'Open project in VS Code', click: () => openProject(s.projectPath) },
+      {
+        label: 'Resume in side terminal',
+        click: () => void reopenAndResume(s.projectPath, s.projectName, s.id)
+      },
+      { label: 'Focus existing window', click: () => focusWindow(s.projectName) },
+      { label: 'Open folder in Explorer', click: () => void shell.openPath(s.projectPath) },
+      { label: 'Copy resume command', click: () => clipboard.writeText(`claude --resume ${s.id}`) },
+      { type: 'separator' },
+      {
+        label: s.watched ? 'Unwatch' : 'Watch',
+        click: () => {
+          appState = applyWatched(appState, s.id, !s.watched)
+          saveState(statePath, appState)
+          void pushSessions()
+        }
+      }
+    ])
+    menu.popup({ window: mainWindow })
   })
   ipcMain.on('copy-text', (_e, text: string) => {
     clipboard.writeText(text)

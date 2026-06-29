@@ -1,19 +1,51 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 
+export type ClickAction = 'default' | 'project' | 'terminal' | 'focus'
+
+export interface Settings {
+  jiraBase: string
+  alwaysOnTop: boolean
+  clickAction: ClickAction
+  launchOnStartup: boolean
+}
+
 export interface State {
   watched: string[]
   names: Record<string, string>
+  settings: Settings
+}
+
+const CLICK_ACTIONS: ClickAction[] = ['default', 'project', 'terminal', 'focus']
+
+const DEFAULT_SETTINGS: Settings = {
+  jiraBase: 'https://jira.redge.com/browse/',
+  alwaysOnTop: true,
+  clickAction: 'default',
+  launchOnStartup: false
 }
 
 export function loadState(file: string): State {
   try {
     const o = JSON.parse(readFileSync(file, 'utf8'))
+    const s = o.settings && typeof o.settings === 'object' ? o.settings : {}
     return {
       watched: Array.isArray(o.watched) ? o.watched : [],
-      names: o.names && typeof o.names === 'object' ? o.names : {}
+      names: o.names && typeof o.names === 'object' ? o.names : {},
+      settings: {
+        jiraBase: typeof s.jiraBase === 'string' ? s.jiraBase : DEFAULT_SETTINGS.jiraBase,
+        alwaysOnTop:
+          typeof s.alwaysOnTop === 'boolean' ? s.alwaysOnTop : DEFAULT_SETTINGS.alwaysOnTop,
+        clickAction: CLICK_ACTIONS.includes(s.clickAction)
+          ? s.clickAction
+          : DEFAULT_SETTINGS.clickAction,
+        launchOnStartup:
+          typeof s.launchOnStartup === 'boolean'
+            ? s.launchOnStartup
+            : DEFAULT_SETTINGS.launchOnStartup
+      }
     }
   } catch {
-    return { watched: [], names: {} }
+    return { watched: [], names: {}, settings: { ...DEFAULT_SETTINGS } }
   }
 }
 

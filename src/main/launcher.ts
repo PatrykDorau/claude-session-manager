@@ -112,6 +112,25 @@ Write-Host "typed resume command"
   p.stderr?.on('data', (d) => console.error('[ps-err]', d.toString().trim()))
 }
 
+export function focusWindow(projectName: string): void {
+  focusByTitle(projectName)
+}
+
+export function openProject(projectPath: string): void {
+  code([projectPath])
+}
+
+export async function reopenAndResume(
+  projectPath: string,
+  projectName: string,
+  id: string
+): Promise<void> {
+  code([projectPath])
+  const ready = await waitForWorkspaceLock(projectPath, 40000)
+  console.log('[diag] launcher: lock ready=', ready, 'for', projectName)
+  openInTerminal(projectName, id)
+}
+
 export async function focusOrOpen(session: {
   projectPath: string
   projectName: string
@@ -123,8 +142,5 @@ export async function focusOrOpen(session: {
     code([session.projectPath])
     return
   }
-  code([session.projectPath])
-  const ready = await waitForWorkspaceLock(session.projectPath, 40000)
-  console.log('[diag] launcher: lock ready=', ready, 'for', session.projectName)
-  openInTerminal(session.projectName, session.id)
+  await reopenAndResume(session.projectPath, session.projectName, session.id)
 }

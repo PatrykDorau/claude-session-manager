@@ -12,4 +12,7 @@ export interface Session {
   status: Status
   watched: boolean
   name: string | null
+  model: string | null
+  contextTokens: number | null
+  dirty: boolean
 }

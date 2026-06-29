@@ -34,7 +34,7 @@ describe('computeOpen', () => {
 describe('buildSessions', () => {
   it('marks a session live (open) and working when its id is open and recent', () => {
     const out = buildSessions(
-      [{ id: 'a', cwd: 'C:\\X\\krs', gitBranch: null, firstPrompt: null, mtimeMs: now - 1000, needsInput: false, active: false, done: false, pendingToolUse: false }],
+      [{ id: 'a', cwd: 'C:\\X\\krs', gitBranch: null, firstPrompt: null, mtimeMs: now - 1000, needsInput: false, active: false, done: false, pendingToolUse: false, model: null, contextTokens: null }],
       ['a'],
       now
     )
@@ -44,7 +44,7 @@ describe('buildSessions', () => {
 
   it('is closed when not open', () => {
     const out = buildSessions(
-      [{ id: 'a', cwd: 'C:\\X\\krs', gitBranch: null, firstPrompt: null, mtimeMs: now, needsInput: true, active: false, done: false, pendingToolUse: false }],
+      [{ id: 'a', cwd: 'C:\\X\\krs', gitBranch: null, firstPrompt: null, mtimeMs: now, needsInput: true, active: false, done: false, pendingToolUse: false, model: null, contextTokens: null }],
       [],
       now
     )
@@ -54,7 +54,7 @@ describe('buildSessions', () => {
 
   it('is idle when open and quiet, nothing pending', () => {
     const out = buildSessions(
-      [{ id: 'a', cwd: 'C:\\X\\krs', gitBranch: null, firstPrompt: null, mtimeMs: now - 600_000, needsInput: false, active: false, done: false, pendingToolUse: false }],
+      [{ id: 'a', cwd: 'C:\\X\\krs', gitBranch: null, firstPrompt: null, mtimeMs: now - 600_000, needsInput: false, active: false, done: false, pendingToolUse: false, model: null, contextTokens: null }],
       ['a'],
       now
     )
@@ -63,7 +63,7 @@ describe('buildSessions', () => {
 
   it('is waiting when open, stalled, and a tool use is pending', () => {
     const out = buildSessions(
-      [{ id: 'a', cwd: 'C:\\X\\krs', gitBranch: null, firstPrompt: null, mtimeMs: now - 60_000, needsInput: true, active: false, done: false, pendingToolUse: false }],
+      [{ id: 'a', cwd: 'C:\\X\\krs', gitBranch: null, firstPrompt: null, mtimeMs: now - 60_000, needsInput: true, active: false, done: false, pendingToolUse: false, model: null, contextTokens: null }],
       ['a'],
       now
     )
@@ -72,7 +72,7 @@ describe('buildSessions', () => {
 
   it('derives ticket, projectName, lastActive, and defaults watched/name', () => {
     const [s] = buildSessions(
-      [{ id: 'a', cwd: 'C:\\X\\krs-fo-web', gitBranch: 'feat/SOFKAN-9-z', firstPrompt: 'hi', mtimeMs: now, needsInput: false, active: false, done: false, pendingToolUse: false }],
+      [{ id: 'a', cwd: 'C:\\X\\krs-fo-web', gitBranch: 'feat/SOFKAN-9-z', firstPrompt: 'hi', mtimeMs: now, needsInput: false, active: false, done: false, pendingToolUse: false, model: null, contextTokens: null }],
       [],
       now
     )
@@ -86,8 +86,8 @@ describe('buildSessions', () => {
   it('sorts working before waiting before idle, then by recency', () => {
     const out = buildSessions(
       [
-        { id: 'idleNew', cwd: 'C:\\X\\a', gitBranch: null, firstPrompt: null, mtimeMs: now, needsInput: false, active: false, done: false, pendingToolUse: false },
-        { id: 'openWaiting', cwd: 'C:\\X\\krs', gitBranch: null, firstPrompt: null, mtimeMs: now - 60_000, needsInput: true, active: false, done: false, pendingToolUse: false }
+        { id: 'idleNew', cwd: 'C:\\X\\a', gitBranch: null, firstPrompt: null, mtimeMs: now, needsInput: false, active: false, done: false, pendingToolUse: false, model: null, contextTokens: null },
+        { id: 'openWaiting', cwd: 'C:\\X\\krs', gitBranch: null, firstPrompt: null, mtimeMs: now - 60_000, needsInput: true, active: false, done: false, pendingToolUse: false, model: null, contextTokens: null }
       ],
       ['openWaiting'],
       now

@@ -14,7 +14,17 @@ function textOf(content: unknown): string | null {
   return null
 }
 
-export function parseTail(lines: string[]): { pendingToolUse: boolean } {
+interface Tail {
+  pendingToolUse: boolean
+  model: string | null
+  contextTokens: number | null
+}
+
+export function parseTail(lines: string[]): Tail {
+  let lastRealType: string | null = null
+  let pendingToolUse = false
+  let model: string | null = null
+  let contextTokens: number | null = null
   for (let i = lines.length - 1; i >= 0; i--) {
     let o: any
     try {
@@ -22,10 +32,24 @@ export function parseTail(lines: string[]): { pendingToolUse: boolean } {
     } catch {
       continue
     }
-    if (o.type === 'assistant') return { pendingToolUse: o.message?.stop_reason === 'tool_use' }
-    if (o.type === 'user') return { pendingToolUse: false }
+    if (o.type !== 'assistant' && o.type !== 'user') continue
+    if (lastRealType === null) {
+      lastRealType = o.type
+      if (o.type === 'assistant') pendingToolUse = o.message?.stop_reason === 'tool_use'
+    }
+    if (o.type === 'assistant' && model === null && o.message) {
+      if (typeof o.message.model === 'string') model = o.message.model
+      const u = o.message.usage
+      if (u) {
+        contextTokens =
+          (u.input_tokens || 0) +
+          (u.cache_read_input_tokens || 0) +
+          (u.cache_creation_input_tokens || 0)
+      }
+    }
+    if (lastRealType !== null && model !== null) break
   }
-  return { pendingToolUse: false }
+  return { pendingToolUse, model, contextTokens }
 }
 
 export function parseTranscriptHead(lines: string[]): Head {

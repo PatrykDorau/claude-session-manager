@@ -112,7 +112,9 @@ export async function scanRaw(): Promise<ScanResult> {
         needsInput: (needsInput.get(id) ?? -1) >= st.mtimeMs,
         active: active.has(id),
         done: done.has(id),
-        pendingToolUse: tail.pendingToolUse
+        pendingToolUse: tail.pendingToolUse,
+        model: tail.model,
+        contextTokens: tail.contextTokens
       })
     }
   }
