@@ -1,0 +1,4 @@
+{"type":"last-prompt","leafUuid":"x","sessionId":"9d84c0ea"}
+{"type":"user","message":{"role":"user","content":"Fix the next episode bug"},"cwd":"C:\\Users\\ASSET-17300\\Desktop\\Projekty\\zwo\\krs-fo-smarttv","sessionId":"9d84c0ea","gitBranch":"fix/SOFKRS-8028-next-episode"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]},"cwd":"C:\\Users\\ASSET-17300\\Desktop\\Projekty\\zwo\\krs-fo-smarttv","sessionId":"9d84c0ea","gitBranch":"fix/SOFKRS-8028-next-episode"}
+{"type":"system","subtype":"turn_duration","timestamp":"2026-06-27T07:36:28.354Z","sessionId":"9d84c0ea"}
