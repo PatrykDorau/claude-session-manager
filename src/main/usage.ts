@@ -1,4 +1,8 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 import type { Gauge, Severity } from '../renderer/src/types'
+import type { UsageResult } from '../renderer/src/types'
 
 const LABELS: Record<string, string> = {
   session: 'Session (5h)',
@@ -56,4 +60,31 @@ export function parseUsageResponse(raw: unknown): Gauge[] {
   if (numeric(r.seven_day_sonnet?.utilization)) gauges.push(gaugeFromWindow('weekly_sonnet', 'Weekly (Sonnet)', r.seven_day_sonnet))
 
   return gauges
+}
+
+const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
+
+function readToken(): string | null {
+  try {
+    const j = JSON.parse(readFileSync(join(homedir(), '.claude', '.credentials.json'), 'utf8'))
+    const o = j.claudeAiOauth ?? j
+    return typeof o.accessToken === 'string' ? o.accessToken : null
+  } catch {
+    return null
+  }
+}
+
+export async function fetchUsage(): Promise<UsageResult> {
+  const token = readToken()
+  if (!token) return { ok: false, error: 'no-credentials', fetchedAt: Date.now() }
+  try {
+    const res = await fetch(USAGE_URL, {
+      headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' }
+    })
+    if (res.status === 401) return { ok: false, error: 'expired', fetchedAt: Date.now() }
+    if (!res.ok) return { ok: false, error: 'network', fetchedAt: Date.now() }
+    return { ok: true, gauges: parseUsageResponse(await res.json()), fetchedAt: Date.now() }
+  } catch {
+    return { ok: false, error: 'network', fetchedAt: Date.now() }
+  }
 }

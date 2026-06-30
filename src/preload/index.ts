@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import type { Session } from '../renderer/src/types'
+import type { Session, UsageResult } from '../renderer/src/types'
 
 // Custom APIs for renderer
 const api = {
@@ -26,6 +26,10 @@ const api = {
     ipcRenderer.send('remove-session', id, label)
   },
   getVersion: (): string => ipcRenderer.sendSync('get-version'),
+  onUsage: (cb: (u: UsageResult) => void): void => {
+    ipcRenderer.on('usage-update', (_e, u) => cb(u))
+  },
+  getUsage: (): UsageResult | null => ipcRenderer.sendSync('get-usage'),
   getSettings: (): {
     jiraBase: string
     alwaysOnTop: boolean

@@ -27,6 +27,8 @@ import { runningResumeIds, gitDirty } from './processes'
 import { ideDir, projectsDir, doneDir, activeDir, needsInputDir } from './paths'
 import { focusOrOpen, focusWindow, openProject, reopenAndResume } from './launcher'
 import { loadState, saveState, applyWatched, applyName, type State } from './store'
+import { fetchUsage } from './usage'
+import type { UsageResult } from '../renderer/src/types'
 
 let mainWindow: BrowserWindow
 let tray: Tray
@@ -45,6 +47,7 @@ let openMap: Record<string, string> = {}
 let cachedRunningIds: string[] = []
 let attentionIcon: NativeImage | null = null
 let dirtyMap: Record<string, boolean> = {}
+let lastUsage: UsageResult | null = null
 const knownFolders = new Map<string, string>()
 const notifiedWaiting = new Set<string>()
 
@@ -76,6 +79,11 @@ async function pushSessions(): Promise<void> {
   const sessions = buildSessions(raw, Object.keys(openMap), Date.now())
   mainWindow.webContents.send('sessions', decorate(sessions))
   updateAttention(sessions)
+}
+
+async function pushUsage(): Promise<void> {
+  lastUsage = await fetchUsage()
+  mainWindow?.webContents.send('usage-update', lastUsage)
 }
 
 function notifyNeedsYou(s: Session): void {
@@ -187,10 +195,12 @@ function wireSessions(win: BrowserWindow): void {
   win.webContents.on('did-finish-load', async () => {
     await refreshRunning()
     await pushSessions()
+    void pushUsage()
   })
   setInterval(pushSessions, 2000)
   setInterval(refreshRunning, 6000)
   setInterval(refreshDirty, 8000)
+  setInterval(pushUsage, 60000)
 }
 
 function buildTray(win: BrowserWindow): void {
@@ -266,6 +276,9 @@ if (!app.requestSingleInstanceLock()) {
   })
   ipcMain.on('get-version', (e) => {
     e.returnValue = app.getVersion()
+  })
+  ipcMain.on('get-usage', (e) => {
+    e.returnValue = lastUsage
   })
   ipcMain.on('open-ticket', (_e, code: string) => {
     void shell.openExternal(appState.settings.jiraBase + code)
