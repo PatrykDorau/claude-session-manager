@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, provide } from 'vue'
-import type { Session } from './types'
+import type { Session, UsageResult } from './types'
 import SessionList from './components/SessionList.vue'
 import StatsPanel from './components/StatsPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import UsageBar from './components/UsageBar.vue'
 import { sortSessions, type SortMode } from './sort'
 import { matchesQuery, matchesFilter, type StatusFilter } from './filter'
 
 type View = 'list' | 'stats' | 'settings'
 
 const sessions = ref<Session[]>([])
+const usage = ref<UsageResult | null>(window.api.getUsage())
 const loaded = ref(false)
 const minElapsed = ref(false)
 const ready = computed(() => loaded.value && minElapsed.value)
@@ -37,6 +39,7 @@ onMounted(() => {
     sessions.value = s
     loaded.value = true
   })
+  window.api.onUsage((u) => (usage.value = u))
 })
 
 const filtered = computed(() =>
@@ -113,6 +116,7 @@ function toggleControls(): void {
       <SettingsPanel />
     </div>
     <template v-else>
+      <UsageBar :result="usage" />
       <div v-show="controlsOpen" class="filterbar">
         <input v-model="search" class="search" placeholder="Search project, ticket, prompt…" />
         <div class="chips">
