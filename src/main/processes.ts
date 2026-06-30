@@ -23,6 +23,45 @@ export async function gitDirty(folder: string): Promise<boolean> {
   })
 }
 
+export interface AgentInfo {
+  sessionId: string
+  kind: string
+  status: string
+  name: string | null
+}
+
+export async function listAgents(): Promise<AgentInfo[] | null> {
+  return new Promise((resolve) => {
+    let out = ''
+    const p = spawn('claude', ['agents', '--json'], { windowsHide: true, shell: true })
+    p.stdout.on('data', (d) => (out += d.toString()))
+    p.on('error', () => resolve(null))
+    p.on('close', () => {
+      const start = out.indexOf('[')
+      const end = out.lastIndexOf(']')
+      if (start < 0 || end <= start) {
+        resolve(null)
+        return
+      }
+      try {
+        const arr = JSON.parse(out.slice(start, end + 1))
+        resolve(
+          (arr as { sessionId?: string; kind?: string; status?: string; name?: string }[])
+            .filter((a) => a.sessionId)
+            .map((a) => ({
+              sessionId: a.sessionId as string,
+              kind: a.kind ?? 'interactive',
+              status: a.status ?? 'idle',
+              name: a.name ?? null
+            }))
+        )
+      } catch {
+        resolve(null)
+      }
+    })
+  })
+}
+
 export async function runningResumeIds(): Promise<Set<string>> {
   const ps =
     "Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | ForEach-Object { $_.CommandLine }"

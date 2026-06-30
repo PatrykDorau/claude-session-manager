@@ -144,6 +144,7 @@ function ago(ms: number): string {
     <div class="body">
       <div class="line">
         <span class="name">{{ session.projectName }}</span>
+        <span v-if="session.bg" class="bg" title="Background agent — click to open the agent view">bg</span>
         <span class="status" :style="{ color: statusColor() }">{{ statusLabel() }}</span>
         <span class="time">{{ ago(session.lastActive) }}</span>
       </div>
@@ -273,6 +274,17 @@ function ago(ms: number): string {
   flex: none;
   font-size: 10px;
   font-weight: 600;
+}
+.bg {
+  flex: none;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #d2a8ff;
+  border: 1px solid #6e40c9;
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 1.4;
 }
 .metinfo {
   flex: none;

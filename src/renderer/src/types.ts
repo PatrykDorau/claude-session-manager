@@ -15,6 +15,7 @@ export interface Session {
   model: string | null
   contextTokens: number | null
   dirty: boolean
+  bg?: boolean
 }
 
 export type Severity = 'normal' | 'warning' | 'critical'

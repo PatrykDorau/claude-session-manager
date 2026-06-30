@@ -19,3 +19,6 @@ export function activeDir(): string {
 export function doneDir(): string {
   return join(claudeRoot(), 'done')
 }
+export function sessionsDir(): string {
+  return join(claudeRoot(), 'sessions')
+}

@@ -27,6 +27,9 @@ function toggleColorblind(): void {
   colorblind.value = !colorblind.value
   localStorage.setItem('colorblind', colorblind.value ? '1' : '0')
 }
+function switchAccount(): void {
+  window.api.switchAccount()
+}
 </script>
 
 <template>
@@ -59,6 +62,12 @@ function toggleColorblind(): void {
     <div class="toggle" @click="toggleStartup">
       <span>Launch on startup</span>
       <span class="sw" :class="{ on: launchOnStartup }" />
+    </div>
+
+    <div class="field acct">
+      <span class="flbl">Anthropic account</span>
+      <button class="btn" @click="switchAccount">Switch account…</button>
+      <small class="hint">Opens a terminal to sign in with <code>claude auth login</code>. Usage limits update within a minute.</small>
     </div>
   </div>
 </template>
@@ -106,6 +115,22 @@ function toggleColorblind(): void {
   padding: 10px 2px;
   cursor: pointer;
   border-bottom: 1px solid #161b22;
+}
+.acct {
+  margin-top: 16px;
+}
+.btn {
+  font: 12px system-ui;
+  background: #21262d;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.btn:hover {
+  border-color: #58a6ff;
+  color: #fff;
 }
 .sw {
   width: 34px;

@@ -28,6 +28,8 @@ declare global {
         launchOnStartup?: boolean
       }) => void
       sessionMenu: (s: Session) => void
+      switchAccount: () => void
+      minimizeWindow: () => void
     }
   }
 }

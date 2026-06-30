@@ -46,6 +46,12 @@ const api = {
   },
   sessionMenu: (s: Session): void => {
     ipcRenderer.send('session-menu', s)
+  },
+  switchAccount: (): void => {
+    ipcRenderer.send('switch-account')
+  },
+  minimizeWindow: (): void => {
+    ipcRenderer.send('minimize-window')
   }
 }
 

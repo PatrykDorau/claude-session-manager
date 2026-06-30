@@ -1,9 +1,19 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import type { UsageResult } from '../types'
+import type { Gauge, UsageResult } from '../types'
 import { formatReset, severityColor } from '../usage'
 
 defineProps<{ result: UsageResult | null }>()
+
+const SHORT: Record<string, string> = {
+  session: 'Session',
+  weekly_all: 'Weekly',
+  weekly_opus: 'Opus',
+  weekly_sonnet: 'Sonnet'
+}
+function shortLabel(g: Gauge): string {
+  return SHORT[g.key] ?? g.label
+}
 
 const now = ref(Date.now())
 let timer: number | undefined
@@ -18,14 +28,11 @@ onUnmounted(() => {
 <template>
   <div v-if="result && !result.ok" class="ubar unavail">Usage unavailable — open Claude Code</div>
   <div v-else-if="result && result.ok && result.gauges.length" class="ubar">
-    <div v-for="g in result.gauges" :key="g.key" class="urow">
-      <span class="ulbl">{{ g.label }}</span>
-      <span class="utrack">
-        <span class="ufill" :style="{ width: g.percent + '%', background: severityColor(g.severity) }" />
-      </span>
-      <span class="upct">{{ g.percent }}%</span>
-      <span class="ureset">{{ formatReset(g.resetsAt, now) }}</span>
-    </div>
+    <span v-for="g in result.gauges" :key="g.key" class="g">
+      <span class="gt">{{ shortLabel(g) }}</span>
+      <span class="gp" :style="{ color: severityColor(g.severity) }">{{ g.percent }}%</span>
+      <span v-if="g.resetsAt" class="gr">{{ formatReset(g.resetsAt, now) }}</span>
+    </span>
   </div>
 </template>
 
@@ -34,51 +41,28 @@ onUnmounted(() => {
   padding: 6px 10px;
   border-bottom: 1px solid #21262d;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  font-size: 10px;
 }
 .unavail {
+  display: block;
   color: #6e7681;
-  font-size: 10px;
 }
-.urow {
-  display: flex;
+.g {
+  display: inline-flex;
   align-items: center;
-  gap: 7px;
-  font-size: 10px;
-}
-.ulbl {
-  flex: none;
-  width: 96px;
-  color: #8b949e;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  gap: 5px;
   white-space: nowrap;
 }
-.utrack {
-  flex: 1;
-  min-width: 0;
-  height: 5px;
-  background: #21262d;
-  border-radius: 3px;
-  overflow: hidden;
+.gt {
+  color: #8b949e;
 }
-.ufill {
-  display: block;
-  height: 100%;
-  border-radius: 3px;
-}
-.upct {
-  flex: none;
-  width: 30px;
-  text-align: right;
-  color: #e6edf3;
+.gp {
   font-weight: 600;
 }
-.ureset {
-  flex: none;
-  width: 48px;
-  text-align: right;
+.gr {
   color: #6e7681;
 }
 </style>

@@ -202,6 +202,7 @@ h3.first {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  margin-bottom: 22px;
 }
 .gauge {
   display: flex;

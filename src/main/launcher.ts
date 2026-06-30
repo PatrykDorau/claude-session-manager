@@ -45,7 +45,7 @@ async function waitForWorkspaceLock(folder: string, timeoutMs: number): Promise<
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (await workspaceLockExists(folder)) return true
-    await new Promise((r) => setTimeout(r, 500))
+    await new Promise((r) => setTimeout(r, 250))
   }
   return false
 }
@@ -100,7 +100,7 @@ Write-Host "found pid=$($p.Id) title=$($p.MainWindowTitle)"
 if(-not (Focus $p)){ Write-Host "aborted: could not bring VS Code to foreground"; exit }
 Write-Host "opening side terminal"
 $ws.SendKeys('^%{F9}')
-Start-Sleep -Milliseconds 2500
+Start-Sleep -Milliseconds 1500
 if(-not (Focus $p)){ Write-Host "aborted before typing: focus lost"; exit }
 $ws.SendKeys('claude --resume ${id}')
 Start-Sleep -Milliseconds 300
@@ -118,6 +118,20 @@ export function focusWindow(projectName: string): void {
 
 export function openProject(projectPath: string): void {
   code([projectPath])
+}
+
+export function switchAccount(): void {
+  spawn('cmd.exe', ['/c', 'start', 'Claude login', 'cmd', '/k', 'claude auth login'], {
+    detached: true,
+    stdio: 'ignore'
+  }).unref()
+}
+
+export function openAgentView(cwd: string): void {
+  spawn('cmd.exe', ['/c', 'start', 'Claude agents', 'cmd', '/k', `claude agents --cwd "${cwd}"`], {
+    detached: true,
+    stdio: 'ignore'
+  }).unref()
 }
 
 export async function reopenAndResume(

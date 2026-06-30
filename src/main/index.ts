@@ -21,11 +21,18 @@ import type { Session } from '../renderer/src/types'
 import { rmSync, readdirSync, existsSync } from 'node:fs'
 import { join as joinPath } from 'node:path'
 import { scanRaw } from './scanner'
-import { buildSessions, computeOpen } from './aggregate'
+import { buildSessions } from './aggregate'
 import { normalizePath } from './lock'
-import { runningResumeIds, gitDirty } from './processes'
-import { ideDir, projectsDir, doneDir, activeDir, needsInputDir } from './paths'
-import { focusOrOpen, focusWindow, openProject, reopenAndResume } from './launcher'
+import { runningResumeIds, listAgents, gitDirty } from './processes'
+import { ideDir, projectsDir, doneDir, activeDir, needsInputDir, sessionsDir } from './paths'
+import {
+  focusOrOpen,
+  focusWindow,
+  openProject,
+  reopenAndResume,
+  switchAccount,
+  openAgentView
+} from './launcher'
 import { loadState, saveState, applyWatched, applyName, type State } from './store'
 import { fetchUsage } from './usage'
 import type { UsageResult } from '../renderer/src/types'
@@ -43,25 +50,48 @@ let appState: State = {
   }
 }
 let statePath = ''
-let openMap: Record<string, string> = {}
+let liveAgentIds = new Set<string>()
+let agentStatus = new Map<string, string>()
 let cachedRunningIds: string[] = []
 let attentionIcon: NativeImage | null = null
 let dirtyMap: Record<string, boolean> = {}
 let lastUsage: UsageResult | null = null
+let bgAgents = new Map<string, { status: string; name: string | null }>()
 const knownFolders = new Map<string, string>()
 const notifiedWaiting = new Set<string>()
 
 function decorate(sessions: Session[]): Session[] {
-  return sessions.map((s) => ({
-    ...s,
-    watched: appState.watched.includes(s.id),
-    name: appState.names[s.id] ?? null,
-    dirty: dirtyMap[s.projectPath ? normalizePath(s.projectPath) : ''] ?? false
-  }))
+  return sessions.map((s) => {
+    const reg = agentStatus.get(s.id)
+    const status =
+      reg && s.status !== 'waiting' && s.status !== 'checkout'
+        ? reg === 'busy'
+          ? 'working'
+          : 'idle'
+        : s.status
+    return {
+      ...s,
+      watched: appState.watched.includes(s.id),
+      name: appState.names[s.id] ?? null,
+      dirty: dirtyMap[s.projectPath ? normalizePath(s.projectPath) : ''] ?? false,
+      bg: bgAgents.has(s.id),
+      status
+    }
+  })
 }
 
 async function refreshRunning(): Promise<void> {
   cachedRunningIds = [...(await runningResumeIds())]
+}
+
+async function refreshAgents(): Promise<void> {
+  const list = await listAgents()
+  if (!list) return
+  liveAgentIds = new Set(list.map((a) => a.sessionId))
+  agentStatus = new Map(list.map((a) => [a.sessionId, a.status]))
+  bgAgents = new Map(
+    list.filter((a) => a.kind === 'background').map((a) => [a.sessionId, { status: a.status, name: a.name }])
+  )
 }
 
 async function refreshDirty(): Promise<void> {
@@ -73,16 +103,17 @@ async function refreshDirty(): Promise<void> {
 
 async function pushSessions(): Promise<void> {
   if (!mainWindow) return
-  const { raw, lockedFolders } = await scanRaw()
-  openMap = computeOpen(openMap, raw, cachedRunningIds, lockedFolders)
+  const { raw } = await scanRaw()
   for (const r of raw) if (r.cwd) knownFolders.set(normalizePath(r.cwd), r.cwd)
-  const sessions = buildSessions(raw, Object.keys(openMap), Date.now())
+  const openIds = [...new Set([...liveAgentIds, ...cachedRunningIds])]
+  const sessions = buildSessions(raw, openIds, Date.now())
   mainWindow.webContents.send('sessions', decorate(sessions))
   updateAttention(sessions)
 }
 
 async function pushUsage(): Promise<void> {
-  lastUsage = await fetchUsage()
+  const res = await fetchUsage()
+  if (res.ok || !lastUsage?.ok) lastUsage = res
   mainWindow?.webContents.send('usage-update', lastUsage)
 }
 
@@ -144,7 +175,7 @@ function removeSessionFiles(id: string): void {
       /* ignore */
     }
   }
-  delete openMap[id]
+  liveAgentIds.delete(id)
 }
 
 function applyLaunchOnStartup(on: boolean): void {
@@ -171,6 +202,8 @@ function createWindow(): BrowserWindow {
     }
   })
 
+  win.setAlwaysOnTop(appState.settings.alwaysOnTop, 'screen-saver')
+
   win.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
@@ -191,14 +224,25 @@ function wireSessions(win: BrowserWindow): void {
     if (timer) clearTimeout(timer)
     timer = setTimeout(pushSessions, 1000)
   }
+  let aTimer: NodeJS.Timeout | null = null
+  const scheduleAgents = (): void => {
+    if (aTimer) clearTimeout(aTimer)
+    aTimer = setTimeout(async () => {
+      await refreshAgents()
+      await pushSessions()
+    }, 600)
+  }
   chokidar.watch([projectsDir(), ideDir()], { ignoreInitial: true, depth: 2 }).on('all', schedule)
+  chokidar.watch(sessionsDir(), { ignoreInitial: true, depth: 0 }).on('all', scheduleAgents)
   win.webContents.on('did-finish-load', async () => {
     await refreshRunning()
+    await refreshAgents()
     await pushSessions()
     void pushUsage()
   })
   setInterval(pushSessions, 2000)
   setInterval(refreshRunning, 6000)
+  setInterval(refreshAgents, 8000)
   setInterval(refreshDirty, 8000)
   setInterval(pushUsage, 60000)
 }
@@ -214,8 +258,8 @@ function buildTray(win: BrowserWindow): void {
       {
         label: 'Always on top',
         type: 'checkbox',
-        checked: true,
-        click: (i) => win.setAlwaysOnTop(i.checked)
+        checked: appState.settings.alwaysOnTop,
+        click: (i) => win.setAlwaysOnTop(i.checked, 'screen-saver')
       },
       {
         label: 'Launch on startup',
@@ -262,6 +306,10 @@ if (!app.requestSingleInstanceLock()) {
 
   ipcMain.on('open-session', (_e, s) => {
     if (!s?.id) return
+    if (s.bg) {
+      openAgentView(s.projectPath)
+      return
+    }
     try {
       rmSync(joinPath(doneDir(), s.id), { force: true })
     } catch {
@@ -280,6 +328,12 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.on('get-usage', (e) => {
     e.returnValue = lastUsage
   })
+  ipcMain.on('switch-account', () => {
+    switchAccount()
+  })
+  ipcMain.on('minimize-window', () => {
+    mainWindow?.minimize()
+  })
   ipcMain.on('open-ticket', (_e, code: string) => {
     void shell.openExternal(appState.settings.jiraBase + code)
   })
@@ -295,7 +349,7 @@ if (!app.requestSingleInstanceLock()) {
     if (typeof patch.jiraBase === 'string') appState.settings.jiraBase = patch.jiraBase
     if (typeof patch.alwaysOnTop === 'boolean') {
       appState.settings.alwaysOnTop = patch.alwaysOnTop
-      mainWindow?.setAlwaysOnTop(patch.alwaysOnTop)
+      mainWindow?.setAlwaysOnTop(patch.alwaysOnTop, 'screen-saver')
     }
     if (patch.clickAction) appState.settings.clickAction = patch.clickAction
     if (typeof patch.launchOnStartup === 'boolean') {
@@ -307,7 +361,9 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.on('session-menu', (_e, s) => {
     if (!s?.id) return
     const menu = Menu.buildFromTemplate([
-      { label: s.isLive ? 'Focus window' : 'Open & resume', click: () => void focusOrOpen(s) },
+      ...(s.bg
+        ? [{ label: 'Open agent view (attach)', click: () => openAgentView(s.projectPath) }]
+        : [{ label: s.isLive ? 'Focus window' : 'Open & resume', click: () => void focusOrOpen(s) }]),
       { label: 'Open project in VS Code', click: () => openProject(s.projectPath) },
       {
         label: 'Resume in side terminal',
