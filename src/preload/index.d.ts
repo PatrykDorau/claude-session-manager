@@ -30,6 +30,7 @@ declare global {
       sessionMenu: (s: Session) => void
       switchAccount: () => void
       minimizeWindow: () => void
+      onResumeFailed: (cb: (info: { label: string; command: string }) => void) => void
     }
   }
 }

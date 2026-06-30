@@ -52,6 +52,9 @@ const api = {
   },
   minimizeWindow: (): void => {
     ipcRenderer.send('minimize-window')
+  },
+  onResumeFailed: (cb: (info: { label: string; command: string }) => void): void => {
+    ipcRenderer.on('resume-failed', (_e, info) => cb(info))
   }
 }
 

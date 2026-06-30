@@ -30,6 +30,7 @@ import {
   focusWindow,
   openProject,
   reopenAndResume,
+  resumeStandalone,
   switchAccount,
   openAgentView
 } from './launcher'
@@ -115,6 +116,13 @@ async function pushUsage(): Promise<void> {
   const res = await fetchUsage()
   if (res.ok || !lastUsage?.ok) lastUsage = res
   mainWindow?.webContents.send('usage-update', lastUsage)
+}
+
+function notifyResumeFailed(s: Session): void {
+  mainWindow?.webContents.send('resume-failed', {
+    label: s.name ?? s.projectName,
+    command: `claude --resume ${s.id}`
+  })
 }
 
 function notifyNeedsYou(s: Session): void {
@@ -318,9 +326,18 @@ if (!app.requestSingleInstanceLock()) {
     void pushSessions()
     const action = appState.settings.clickAction
     if (action === 'project') openProject(s.projectPath)
-    else if (action === 'terminal') void reopenAndResume(s.projectPath, s.projectName, s.id)
+    else if (action === 'standalone') resumeStandalone(s.projectPath, s.id)
+    else if (action === 'terminal')
+      void reopenAndResume(s.projectPath, s.projectName, s.id).then((ok) => {
+        if (!ok) notifyResumeFailed(s)
+      })
     else if (action === 'focus') focusWindow(s.projectName)
-    else void focusOrOpen(s).catch((err) => console.error('[diag] focusOrOpen threw:', err))
+    else
+      void focusOrOpen(s)
+        .then((ok) => {
+          if (!ok) notifyResumeFailed(s)
+        })
+        .catch((err) => console.error('[diag] focusOrOpen threw:', err))
   })
   ipcMain.on('get-version', (e) => {
     e.returnValue = app.getVersion()
@@ -367,7 +384,14 @@ if (!app.requestSingleInstanceLock()) {
       { label: 'Open project in VS Code', click: () => openProject(s.projectPath) },
       {
         label: 'Resume in side terminal',
-        click: () => void reopenAndResume(s.projectPath, s.projectName, s.id)
+        click: () =>
+          void reopenAndResume(s.projectPath, s.projectName, s.id).then((ok) => {
+            if (!ok) notifyResumeFailed(s)
+          })
+      },
+      {
+        label: 'Resume in standalone terminal',
+        click: () => resumeStandalone(s.projectPath, s.id)
       },
       { label: 'Focus existing window', click: () => focusWindow(s.projectName) },
       { label: 'Open folder in Explorer', click: () => void shell.openPath(s.projectPath) },

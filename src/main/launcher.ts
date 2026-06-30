@@ -50,7 +50,7 @@ async function waitForWorkspaceLock(folder: string, timeoutMs: number): Promise<
   return false
 }
 
-function openInTerminal(needle: string, id: string): void {
+function openInTerminal(needle: string, id: string): Promise<boolean> {
   const ps = `
 $ErrorActionPreference='SilentlyContinue'
 Add-Type @"
@@ -107,9 +107,18 @@ Start-Sleep -Milliseconds 300
 $ws.SendKeys('{ENTER}')
 Write-Host "typed resume command"
 `
-  const p = spawn('powershell.exe', ['-NoProfile', '-Command', ps], { windowsHide: true })
-  p.stdout?.on('data', (d) => console.log('[ps]', d.toString().trim()))
-  p.stderr?.on('data', (d) => console.error('[ps-err]', d.toString().trim()))
+  return new Promise<boolean>((resolve) => {
+    let typed = false
+    const p = spawn('powershell.exe', ['-NoProfile', '-Command', ps], { windowsHide: true })
+    p.stdout?.on('data', (d) => {
+      const s = d.toString()
+      if (s.includes('typed resume command')) typed = true
+      console.log('[ps]', s.trim())
+    })
+    p.stderr?.on('data', (d) => console.error('[ps-err]', d.toString().trim()))
+    p.on('error', () => resolve(false))
+    p.on('close', () => resolve(typed))
+  })
 }
 
 export function focusWindow(projectName: string): void {
@@ -134,15 +143,23 @@ export function openAgentView(cwd: string): void {
   }).unref()
 }
 
+export function resumeStandalone(cwd: string, id: string): void {
+  spawn('cmd.exe', ['/c', 'start', 'Claude Session', 'cmd', '/k', `claude --resume ${id}`], {
+    cwd: cwd || undefined,
+    detached: true,
+    stdio: 'ignore'
+  }).unref()
+}
+
 export async function reopenAndResume(
   projectPath: string,
   projectName: string,
   id: string
-): Promise<void> {
+): Promise<boolean> {
   code([projectPath])
   const ready = await waitForWorkspaceLock(projectPath, 40000)
   console.log('[diag] launcher: lock ready=', ready, 'for', projectName)
-  openInTerminal(projectName, id)
+  return openInTerminal(projectName, id)
 }
 
 export async function focusOrOpen(session: {
@@ -150,11 +167,11 @@ export async function focusOrOpen(session: {
   projectName: string
   id: string
   isLive: boolean
-}): Promise<void> {
+}): Promise<boolean> {
   if (session.isLive) {
     focusByTitle(session.projectName)
     code([session.projectPath])
-    return
+    return true
   }
-  await reopenAndResume(session.projectPath, session.projectName, session.id)
+  return reopenAndResume(session.projectPath, session.projectName, session.id)
 }

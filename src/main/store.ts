@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 
-export type ClickAction = 'default' | 'project' | 'terminal' | 'focus'
+export type ClickAction = 'default' | 'project' | 'terminal' | 'standalone' | 'focus'
 
 export interface Settings {
   jiraBase: string
@@ -15,7 +15,7 @@ export interface State {
   settings: Settings
 }
 
-const CLICK_ACTIONS: ClickAction[] = ['default', 'project', 'terminal', 'focus']
+const CLICK_ACTIONS: ClickAction[] = ['default', 'project', 'terminal', 'standalone', 'focus']
 
 const DEFAULT_SETTINGS: Settings = {
   jiraBase: 'https://jira.redge.com/browse/',

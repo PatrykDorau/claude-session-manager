@@ -44,7 +44,8 @@ function switchAccount(): void {
       <span class="flbl">On click, a session…</span>
       <select v-model="clickAction" class="inp" @change="saveClick">
         <option value="default">opens & resumes (focus if open)</option>
-        <option value="terminal">resumes in a side terminal</option>
+        <option value="terminal">resumes in a VS Code side terminal</option>
+        <option value="standalone">resumes in a standalone terminal (no focus needed)</option>
         <option value="project">just opens the project in VS Code</option>
         <option value="focus">just focuses the existing window</option>
       </select>

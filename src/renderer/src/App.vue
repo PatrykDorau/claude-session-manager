@@ -32,6 +32,8 @@ const sortMode = ref<SortMode>((localStorage.getItem('sortMode') as SortMode) ||
 const groupBy = ref(localStorage.getItem('groupBy') === '1')
 const colorblind = ref(localStorage.getItem('colorblind') === '1')
 provide('colorblind', colorblind)
+const resumeFail = ref<{ label: string; command: string } | null>(null)
+const copied = ref(false)
 
 onMounted(() => {
   setTimeout(() => (minElapsed.value = true), 600)
@@ -40,7 +42,17 @@ onMounted(() => {
     loaded.value = true
   })
   window.api.onUsage((u) => (usage.value = u))
+  window.api.onResumeFailed((info) => {
+    resumeFail.value = info
+    copied.value = false
+  })
 })
+
+function copyResumeCmd(): void {
+  if (!resumeFail.value) return
+  window.api.copyText(resumeFail.value.command)
+  copied.value = true
+}
 
 const filtered = computed(() =>
   sessions.value.filter(
@@ -172,6 +184,21 @@ function minimize(): void {
         />
       </div>
     </template>
+
+    <div v-if="resumeFail" class="modal" @click.self="resumeFail = null">
+      <div class="dialog">
+        <div class="dtitle">Couldn't auto-resume</div>
+        <p class="dmsg">
+          Couldn't focus VS Code to type the command for <b>{{ resumeFail.label }}</b
+          >. Paste this into a terminal to resume it:
+        </p>
+        <code class="cmd">{{ resumeFail.command }}</code>
+        <div class="dbtns">
+          <button class="db" @click="copyResumeCmd">{{ copied ? 'Copied ✓' : 'Copy' }}</button>
+          <button class="db ghost" @click="resumeFail = null">Close</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -378,5 +405,67 @@ ul {
   color: #8b949e;
   padding: 7px 10px;
   text-align: center;
+}
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(1, 4, 9, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 10;
+}
+.dialog {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  padding: 14px;
+  width: 100%;
+  max-width: 320px;
+}
+.dtitle {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.dmsg {
+  margin: 0 0 8px;
+  color: #8b949e;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.cmd {
+  display: block;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 7px 9px;
+  font: 11px ui-monospace, monospace;
+  color: #e6edf3;
+  word-break: break-all;
+  user-select: all;
+}
+.dbtns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+.db {
+  font: 11px system-ui;
+  background: #1f6feb;
+  color: #fff;
+  border: 1px solid #1f6feb;
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.db.ghost {
+  background: none;
+  color: #8b949e;
+  border-color: #30363d;
+}
+.db.ghost:hover {
+  color: #e6edf3;
 }
 </style>
