@@ -16,3 +16,17 @@ export interface Session {
   contextTokens: number | null
   dirty: boolean
 }
+
+export type Severity = 'normal' | 'warning' | 'critical'
+
+export interface Gauge {
+  key: string
+  label: string
+  percent: number
+  severity: Severity
+  resetsAt: number | null
+}
+
+export type UsageResult =
+  | { ok: true; gauges: Gauge[]; fetchedAt: number }
+  | { ok: false; error: 'no-credentials' | 'expired' | 'network'; fetchedAt: number }
