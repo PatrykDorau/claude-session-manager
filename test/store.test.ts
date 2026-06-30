@@ -10,7 +10,7 @@ const base: State = {
   settings: {
     jiraBase: 'https://jira.redge.com/browse/',
     alwaysOnTop: true,
-    clickAction: 'default',
+    clickAction: 'project-cmd',
     launchOnStartup: false
   }
 }

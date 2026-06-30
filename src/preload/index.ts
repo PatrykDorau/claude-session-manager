@@ -26,6 +26,10 @@ const api = {
     ipcRenderer.send('remove-session', id, label)
   },
   getVersion: (): string => ipcRenderer.sendSync('get-version'),
+  getDiagnostics: (): string => ipcRenderer.sendSync('get-diagnostics'),
+  onClaudeStatus: (cb: (s: { claude: boolean; editor: boolean }) => void): void => {
+    ipcRenderer.on('claude-status', (_e, s) => cb(s))
+  },
   onUsage: (cb: (u: UsageResult) => void): void => {
     ipcRenderer.on('usage-update', (_e, u) => cb(u))
   },
@@ -55,6 +59,10 @@ const api = {
   },
   onResumeFailed: (cb: (info: { label: string; command: string }) => void): void => {
     ipcRenderer.on('resume-failed', (_e, info) => cb(info))
+  },
+  installHooks: (): { ok: boolean; error?: string } => ipcRenderer.sendSync('install-hooks'),
+  onPlayAlert: (cb: () => void): void => {
+    ipcRenderer.on('play-alert', () => cb())
   }
 }
 

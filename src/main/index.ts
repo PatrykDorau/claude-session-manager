@@ -20,10 +20,12 @@ import attentionPng from '../../resources/attention.png?asset'
 import type { Session } from '../renderer/src/types'
 import { rmSync, readdirSync, existsSync } from 'node:fs'
 import { join as joinPath } from 'node:path'
+import { release } from 'node:os'
 import { scanRaw } from './scanner'
 import { buildSessions } from './aggregate'
 import { normalizePath } from './lock'
-import { runningResumeIds, listAgents, gitDirty } from './processes'
+import { runningResumeIds, listAgents, gitDirty, probeCommand } from './processes'
+import { formatDiagnostics } from './diagnostics'
 import { ideDir, projectsDir, doneDir, activeDir, needsInputDir, sessionsDir } from './paths'
 import {
   focusOrOpen,
@@ -35,6 +37,7 @@ import {
   openAgentView
 } from './launcher'
 import { loadState, saveState, applyWatched, applyName, type State } from './store'
+import { installHooks } from './hooks'
 import { fetchUsage } from './usage'
 import type { UsageResult } from '../renderer/src/types'
 
@@ -58,18 +61,19 @@ let attentionIcon: NativeImage | null = null
 let dirtyMap: Record<string, boolean> = {}
 let lastUsage: UsageResult | null = null
 let bgAgents = new Map<string, { status: string; name: string | null }>()
+let claudeOk = true
+let editorOk = true
+let claudeVersion: string | null = null
+let lastCounts = { total: 0, live: 0, waiting: 0 }
 const knownFolders = new Map<string, string>()
 const notifiedWaiting = new Set<string>()
 
 function decorate(sessions: Session[]): Session[] {
   return sessions.map((s) => {
     const reg = agentStatus.get(s.id)
-    const status =
-      reg && s.status !== 'waiting' && s.status !== 'checkout'
-        ? reg === 'busy'
-          ? 'working'
-          : 'idle'
-        : s.status
+    let status = s.status
+    if (reg === 'busy') status = 'working'
+    else if (reg === 'idle' && s.status !== 'waiting' && s.status !== 'checkout') status = 'idle'
     return {
       ...s,
       watched: appState.watched.includes(s.id),
@@ -108,8 +112,59 @@ async function pushSessions(): Promise<void> {
   for (const r of raw) if (r.cwd) knownFolders.set(normalizePath(r.cwd), r.cwd)
   const openIds = [...new Set([...liveAgentIds, ...cachedRunningIds])]
   const sessions = buildSessions(raw, openIds, Date.now())
+  lastCounts = {
+    total: sessions.length,
+    live: sessions.filter((s) => s.isLive).length,
+    waiting: sessions.filter((s) => s.status === 'waiting').length
+  }
   mainWindow.webContents.send('sessions', decorate(sessions))
   updateAttention(sessions)
+}
+
+async function probeEnv(): Promise<void> {
+  const [cv, ev] = await Promise.all([
+    probeCommand('claude', ['--version']),
+    probeCommand('code', ['--version'])
+  ])
+  claudeVersion = cv
+  claudeOk = cv !== null
+  editorOk = ev !== null
+  mainWindow?.webContents.send('claude-status', { claude: claudeOk, editor: editorOk })
+}
+
+function openSession(s: Session): void {
+  if (!s?.id) return
+  if (s.bg) {
+    openAgentView(s.projectPath)
+    return
+  }
+  try {
+    rmSync(joinPath(doneDir(), s.id), { force: true })
+  } catch {
+    /* ignore */
+  }
+  void pushSessions()
+  if (!editorOk) {
+    resumeStandalone(s.projectPath, s.id)
+    return
+  }
+  const action = appState.settings.clickAction
+  if (action === 'project-cmd') {
+    openProject(s.projectPath)
+    if (!s.isLive) resumeStandalone(s.projectPath, s.id)
+  } else if (action === 'project') openProject(s.projectPath)
+  else if (action === 'standalone') resumeStandalone(s.projectPath, s.id)
+  else if (action === 'terminal')
+    void reopenAndResume(s.projectPath, s.projectName, s.id).then((ok) => {
+      if (!ok) notifyResumeFailed(s)
+    })
+  else if (action === 'focus') focusWindow(s.projectName)
+  else
+    void focusOrOpen(s)
+      .then((ok) => {
+        if (!ok) notifyResumeFailed(s)
+      })
+      .catch((err) => console.error('[diag] focusOrOpen threw:', err))
 }
 
 async function pushUsage(): Promise<void> {
@@ -128,14 +183,21 @@ function notifyResumeFailed(s: Session): void {
 function notifyNeedsYou(s: Session): void {
   if (!Notification.isSupported()) return
   const label = s.name ?? (s.ticket ? `${s.projectName} · ${s.ticket}` : s.projectName)
-  const n = new Notification({ title: 'Claude needs your input', body: label })
+  const n = new Notification({
+    title: 'Claude needs you',
+    body: label,
+    icon: attentionIcon ?? icon,
+    silent: true
+  })
   n.on('click', () => {
     if (mainWindow) {
       mainWindow.show()
       mainWindow.focus()
     }
+    openSession(s)
   })
   n.show()
+  mainWindow?.webContents.send('play-alert')
 }
 
 function updateAttention(sessions: Session[]): void {
@@ -160,7 +222,11 @@ function updateAttention(sessions: Session[]): void {
     mainWindow.flashFrame(false)
   }
   if (tray) {
-    tray.setToolTip(count ? `Claude Sessions — ${count} need you` : 'Claude Sessions')
+    const live = sessions.filter((s) => s.isLive).length
+    const parts: string[] = []
+    if (count) parts.push(`${count} need you`)
+    if (live) parts.push(`${live} live`)
+    tray.setToolTip(parts.length ? `Claude Sessions — ${parts.join(' · ')}` : 'Claude Sessions')
   }
 }
 
@@ -206,7 +272,8 @@ function createWindow(): BrowserWindow {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
+      autoplayPolicy: 'no-user-gesture-required'
     }
   })
 
@@ -245,6 +312,7 @@ function wireSessions(win: BrowserWindow): void {
   win.webContents.on('did-finish-load', async () => {
     await refreshRunning()
     await refreshAgents()
+    void probeEnv()
     await pushSessions()
     void pushUsage()
   })
@@ -253,6 +321,7 @@ function wireSessions(win: BrowserWindow): void {
   setInterval(refreshAgents, 8000)
   setInterval(refreshDirty, 8000)
   setInterval(pushUsage, 60000)
+  setInterval(probeEnv, 30000)
 }
 
 function buildTray(win: BrowserWindow): void {
@@ -312,35 +381,24 @@ if (!app.requestSingleInstanceLock()) {
   process.on('uncaughtException', (e) => console.error('[diag] uncaughtException:', e))
   process.on('unhandledRejection', (e) => console.error('[diag] unhandledRejection:', e))
 
-  ipcMain.on('open-session', (_e, s) => {
-    if (!s?.id) return
-    if (s.bg) {
-      openAgentView(s.projectPath)
-      return
-    }
-    try {
-      rmSync(joinPath(doneDir(), s.id), { force: true })
-    } catch {
-      /* ignore */
-    }
-    void pushSessions()
-    const action = appState.settings.clickAction
-    if (action === 'project') openProject(s.projectPath)
-    else if (action === 'standalone') resumeStandalone(s.projectPath, s.id)
-    else if (action === 'terminal')
-      void reopenAndResume(s.projectPath, s.projectName, s.id).then((ok) => {
-        if (!ok) notifyResumeFailed(s)
-      })
-    else if (action === 'focus') focusWindow(s.projectName)
-    else
-      void focusOrOpen(s)
-        .then((ok) => {
-          if (!ok) notifyResumeFailed(s)
-        })
-        .catch((err) => console.error('[diag] focusOrOpen threw:', err))
-  })
+  ipcMain.on('open-session', (_e, s) => openSession(s))
   ipcMain.on('get-version', (e) => {
     e.returnValue = app.getVersion()
+  })
+  ipcMain.on('get-diagnostics', (e) => {
+    e.returnValue = formatDiagnostics({
+      version: app.getVersion(),
+      platform: process.platform,
+      release: release(),
+      electron: process.versions.electron,
+      node: process.versions.node,
+      claude: claudeOk ? (claudeVersion ?? '?') : null,
+      editor: editorOk,
+      signedIn: lastUsage?.ok ? 'yes' : lastUsage?.error === 'no-credentials' ? 'no' : 'unknown',
+      total: lastCounts.total,
+      live: lastCounts.live,
+      waiting: lastCounts.waiting
+    })
   })
   ipcMain.on('get-usage', (e) => {
     e.returnValue = lastUsage
@@ -350,6 +408,9 @@ if (!app.requestSingleInstanceLock()) {
   })
   ipcMain.on('minimize-window', () => {
     mainWindow?.minimize()
+  })
+  ipcMain.on('install-hooks', (e) => {
+    e.returnValue = installHooks()
   })
   ipcMain.on('open-ticket', (_e, code: string) => {
     void shell.openExternal(appState.settings.jiraBase + code)

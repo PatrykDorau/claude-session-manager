@@ -13,6 +13,16 @@ export function extractResumeIds(commandLines: string[]): string[] {
   return [...ids]
 }
 
+export async function probeCommand(cmd: string, args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    let out = ''
+    const p = spawn(cmd, args, { windowsHide: true, shell: true })
+    p.stdout?.on('data', (d) => (out += d.toString()))
+    p.on('error', () => resolve(null))
+    p.on('close', (codeNum) => resolve(codeNum === 0 ? out.trim() : null))
+  })
+}
+
 export async function gitDirty(folder: string): Promise<boolean> {
   return new Promise((resolve) => {
     let out = ''

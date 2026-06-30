@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractResumeIds } from '../src/main/processes'
+import { extractResumeIds, probeCommand } from '../src/main/processes'
 
 describe('extractResumeIds', () => {
   it('pulls a single resume id', () => {
@@ -26,5 +26,15 @@ describe('extractResumeIds', () => {
   })
   it('ignores lines without a resume id', () => {
     expect(extractResumeIds(['claude', 'node foo.js', ''])).toEqual([])
+  })
+})
+
+describe('probeCommand', () => {
+  it('returns trimmed stdout when the command exists', async () => {
+    const out = await probeCommand('node', ['--version'])
+    expect(out).toMatch(/^v\d+\./)
+  })
+  it('returns null when the command is missing', async () => {
+    expect(await probeCommand('definitely-not-a-real-command-xyz', ['--version'])).toBe(null)
   })
 })

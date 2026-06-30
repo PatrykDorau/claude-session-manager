@@ -9,7 +9,6 @@ const colorblind = inject<Ref<boolean>>('colorblind', ref(false))
 
 const editing = ref(false)
 const editValue = ref('')
-const copied = ref(false)
 
 const vFocus = { mounted: (el: HTMLInputElement): void => el.focus() }
 
@@ -25,11 +24,6 @@ const remove = (): void => {
   window.api.removeSession(s.id, label)
 }
 
-function copyId(): void {
-  window.api.copyText(props.session.id)
-  copied.value = true
-  setTimeout(() => (copied.value = false), 1200)
-}
 function startEdit(): void {
   editing.value = true
   editValue.value = props.session.name ?? ''
@@ -174,15 +168,6 @@ function ago(ms: number): string {
         />
         <span v-else class="ttl">{{ title() }}</span>
         <span class="actions">
-        <button class="ic" :title="copied ? 'Copied' : 'Copy session id'" @click.stop="copyId">
-          <svg v-if="copied" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="20 6 9 17 4 12" />
-          </svg>
-          <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="9" y="9" width="13" height="13" rx="2" />
-            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-          </svg>
-        </button>
         <button class="ic" title="Rename" @click.stop="startEdit">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" />
@@ -197,6 +182,13 @@ function ago(ms: number): string {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="3 6 5 6 21 6" />
             <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+          </svg>
+        </button>
+        <button class="ic" title="More actions" @click.stop="menu">
+          <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+            <circle cx="12" cy="5" r="2" />
+            <circle cx="12" cy="12" r="2" />
+            <circle cx="12" cy="19" r="2" />
           </svg>
         </button>
         </span>

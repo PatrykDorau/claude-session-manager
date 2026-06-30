@@ -4,11 +4,13 @@ import type { Session, UsageResult } from './types'
 import SessionList from './components/SessionList.vue'
 import StatsPanel from './components/StatsPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import SetupGuide from './components/SetupGuide.vue'
 import UsageBar from './components/UsageBar.vue'
 import { sortSessions, type SortMode } from './sort'
 import { matchesQuery, matchesFilter, type StatusFilter } from './filter'
+import { playSound, type SoundName } from './sound'
 
-type View = 'list' | 'stats' | 'settings'
+type View = 'list' | 'stats' | 'settings' | 'guide'
 
 const sessions = ref<Session[]>([])
 const usage = ref<UsageResult | null>(window.api.getUsage())
@@ -34,6 +36,16 @@ const colorblind = ref(localStorage.getItem('colorblind') === '1')
 provide('colorblind', colorblind)
 const resumeFail = ref<{ label: string; command: string } | null>(null)
 const copied = ref(false)
+const cliStatus = ref<{ claude: boolean; editor: boolean }>({ claude: true, editor: true })
+
+const cliBanner = computed(() => {
+  if (!cliStatus.value.claude) return 'Claude Code not detected on PATH — open Setup'
+  if (!cliStatus.value.editor) return 'VS Code not detected — sessions will open in a terminal'
+  return ''
+})
+const notSignedIn = computed(
+  () => !!usage.value && !usage.value.ok && usage.value.error === 'no-credentials'
+)
 
 onMounted(() => {
   setTimeout(() => (minElapsed.value = true), 600)
@@ -41,12 +53,23 @@ onMounted(() => {
     sessions.value = s
     loaded.value = true
   })
+  window.api.onClaudeStatus((s) => (cliStatus.value = s))
   window.api.onUsage((u) => (usage.value = u))
   window.api.onResumeFailed((info) => {
     resumeFail.value = info
     copied.value = false
   })
+  window.api.onPlayAlert(playChime)
+  if (!localStorage.getItem('guideSeen')) {
+    view.value = 'guide'
+    localStorage.setItem('guideSeen', '1')
+  }
 })
+
+function playChime(): void {
+  if (localStorage.getItem('alertSound') === '0') return
+  playSound((localStorage.getItem('alertSoundName') as SoundName) || 'chime')
+}
 
 function copyResumeCmd(): void {
   if (!resumeFail.value) return
@@ -87,7 +110,9 @@ function minimize(): void {
 <template>
   <div class="wrap">
     <header>
-      <span class="title">Claude Sessions <span v-if="version" class="ver">v{{ version }}</span></span>
+      <span class="title" title="Back to sessions" @click="view = 'list'"
+        >Claude Sessions <span v-if="version" class="ver">v{{ version }}</span></span
+      >
       <div class="hbtns">
         <button
           v-if="view === 'list'"
@@ -108,6 +133,13 @@ function minimize(): void {
             <line x1="18" y1="20" x2="18" y2="9" />
           </svg>
         </button>
+        <button class="hb" :class="{ on: view === 'guide' }" title="Setup guide" @click="show('guide')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+        </button>
         <button
           class="hb"
           :class="{ on: view === 'settings' }"
@@ -126,6 +158,15 @@ function minimize(): void {
         </button>
       </div>
     </header>
+    <div
+      v-if="cliBanner"
+      class="banner"
+      :class="{ warn: !cliStatus.claude }"
+      title="Open the setup guide"
+      @click="view = 'guide'"
+    >
+      {{ cliBanner }}
+    </div>
     <div v-if="!ready" class="loading">
       <div class="spinner" />
     </div>
@@ -135,8 +176,14 @@ function minimize(): void {
     <div v-else-if="view === 'settings'" class="scroll">
       <SettingsPanel />
     </div>
+    <div v-else-if="view === 'guide'" class="scroll">
+      <SetupGuide />
+    </div>
     <template v-else>
       <UsageBar :result="usage" />
+      <div v-if="notSignedIn" class="signin" @click="view = 'settings'">
+        Not signed in — open Settings to switch account
+      </div>
       <div v-show="controlsOpen" class="filterbar">
         <input v-model="search" class="search" placeholder="Search project, ticket, prompt…" />
         <div class="chips">
@@ -228,11 +275,45 @@ header {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.title:hover {
+  color: #58a6ff;
 }
 .ver {
   color: #6e7681;
   font-size: 10px;
   font-weight: 400;
+}
+.banner {
+  flex: none;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  color: #c9d1d9;
+  background: #21262d;
+  border-bottom: 1px solid #30363d;
+}
+.banner.warn {
+  color: #f0e3c2;
+  background: #3d2c10;
+  border-bottom-color: #6b4e16;
+}
+.banner:hover {
+  filter: brightness(1.2);
+}
+.signin {
+  flex: none;
+  padding: 5px 10px;
+  font-size: 10px;
+  color: #e69f00;
+  cursor: pointer;
+  border-bottom: 1px solid #21262d;
+}
+.signin:hover {
+  text-decoration: underline;
 }
 .loading {
   flex: 1;

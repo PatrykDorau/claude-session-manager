@@ -18,6 +18,7 @@ interface Tail {
   pendingToolUse: boolean
   model: string | null
   contextTokens: number | null
+  gitBranch: string | null
 }
 
 export function parseTail(lines: string[]): Tail {
@@ -25,6 +26,7 @@ export function parseTail(lines: string[]): Tail {
   let pendingToolUse = false
   let model: string | null = null
   let contextTokens: number | null = null
+  let gitBranch: string | null = null
   for (let i = lines.length - 1; i >= 0; i--) {
     let o: any
     try {
@@ -33,6 +35,7 @@ export function parseTail(lines: string[]): Tail {
       continue
     }
     if (o.type !== 'assistant' && o.type !== 'user') continue
+    if (gitBranch === null && typeof o.gitBranch === 'string' && o.gitBranch) gitBranch = o.gitBranch
     if (lastRealType === null) {
       lastRealType = o.type
       if (o.type === 'assistant') pendingToolUse = o.message?.stop_reason === 'tool_use'
@@ -47,9 +50,9 @@ export function parseTail(lines: string[]): Tail {
           (u.cache_creation_input_tokens || 0)
       }
     }
-    if (lastRealType !== null && model !== null) break
+    if (lastRealType !== null && model !== null && gitBranch !== null) break
   }
-  return { pendingToolUse, model, contextTokens }
+  return { pendingToolUse, model, contextTokens, gitBranch }
 }
 
 export function parseTranscriptHead(lines: string[]): Head {

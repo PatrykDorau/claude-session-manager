@@ -63,6 +63,15 @@ describe('parseTail', () => {
     expect(r.contextTokens).toBe(56379)
   })
 
+  it('returns the most recent gitBranch (post branch switch)', () => {
+    const oldB = '{"type":"user","gitBranch":"fix/OLD-1-foo","message":{"content":"a"}}'
+    const newB = '{"type":"assistant","gitBranch":"feat/NEW-2-bar","message":{"stop_reason":"end_turn"}}'
+    expect(parseTail([oldB, newB]).gitBranch).toBe('feat/NEW-2-bar')
+  })
+  it('gitBranch is null when no entry carries one', () => {
+    expect(parseTail([asstEndTurn]).gitBranch).toBe(null)
+  })
+
   it('reads model/context from the most recent assistant even if the last entry is a user', () => {
     const asst = JSON.stringify({
       type: 'assistant',

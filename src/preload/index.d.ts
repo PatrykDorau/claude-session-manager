@@ -13,6 +13,8 @@ declare global {
       setName: (id: string, name: string | null) => void
       removeSession: (id: string, label: string) => void
       getVersion: () => string
+      getDiagnostics: () => string
+      onClaudeStatus: (cb: (s: { claude: boolean; editor: boolean }) => void) => void
       onUsage: (cb: (u: UsageResult) => void) => void
       getUsage: () => UsageResult | null
       getSettings: () => {
@@ -31,6 +33,8 @@ declare global {
       switchAccount: () => void
       minimizeWindow: () => void
       onResumeFailed: (cb: (info: { label: string; command: string }) => void) => void
+      installHooks: () => { ok: boolean; error?: string }
+      onPlayAlert: (cb: () => void) => void
     }
   }
 }

@@ -106,7 +106,7 @@ export async function scanRaw(): Promise<ScanResult> {
       raw.push({
         id,
         cwd: head.cwd,
-        gitBranch: head.gitBranch,
+        gitBranch: tail.gitBranch ?? head.gitBranch,
         firstPrompt: head.firstPrompt,
         mtimeMs: st.mtimeMs,
         needsInput: (needsInput.get(id) ?? -1) >= st.mtimeMs,

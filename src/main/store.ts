@@ -1,6 +1,12 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 
-export type ClickAction = 'default' | 'project' | 'terminal' | 'standalone' | 'focus'
+export type ClickAction =
+  | 'project-cmd'
+  | 'default'
+  | 'project'
+  | 'terminal'
+  | 'standalone'
+  | 'focus'
 
 export interface Settings {
   jiraBase: string
@@ -15,12 +21,19 @@ export interface State {
   settings: Settings
 }
 
-const CLICK_ACTIONS: ClickAction[] = ['default', 'project', 'terminal', 'standalone', 'focus']
+const CLICK_ACTIONS: ClickAction[] = [
+  'project-cmd',
+  'default',
+  'project',
+  'terminal',
+  'standalone',
+  'focus'
+]
 
 const DEFAULT_SETTINGS: Settings = {
   jiraBase: 'https://jira.redge.com/browse/',
   alwaysOnTop: true,
-  clickAction: 'default',
+  clickAction: 'project-cmd',
   launchOnStartup: false
 }
 
