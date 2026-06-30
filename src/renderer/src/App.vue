@@ -110,7 +110,7 @@ function toggleControls(): void {
       <div class="spinner" />
     </div>
     <div v-else-if="view === 'stats'" class="scroll">
-      <StatsPanel :sessions="sessions" />
+      <StatsPanel :sessions="sessions" :usage="usage" />
     </div>
     <div v-else-if="view === 'settings'" class="scroll">
       <SettingsPanel />

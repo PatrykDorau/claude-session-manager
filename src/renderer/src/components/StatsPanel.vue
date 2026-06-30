@@ -1,10 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Session } from '../types'
+import type { Session, UsageResult } from '../types'
 import { computeStats } from '../stats'
+import { severityColor } from '../usage'
 
-const props = defineProps<{ sessions: Session[] }>()
+const props = defineProps<{ sessions: Session[]; usage: UsageResult | null }>()
 const stats = computed(() => computeStats(props.sessions, Date.now()))
+
+function resetAt(ms: number): string {
+  return new Date(ms).toLocaleString()
+}
 const maxDay = computed(() => Math.max(1, ...stats.value.perDay.map((d) => d.count)))
 
 function tokens(n: number): string {
@@ -14,6 +19,21 @@ function tokens(n: number): string {
 
 <template>
   <div class="stats">
+    <template v-if="usage && usage.ok && usage.gauges.length">
+      <h3 class="first">Usage limits</h3>
+      <div class="gauges">
+        <div v-for="g in usage.gauges" :key="g.key" class="gauge">
+          <div class="grow">
+            <span>{{ g.label }}</span><span class="num">{{ g.percent }}%</span>
+          </div>
+          <div class="gtrack">
+            <div class="gfill" :style="{ width: g.percent + '%', background: severityColor(g.severity) }" />
+          </div>
+          <div v-if="g.resetsAt" class="greset">resets {{ resetAt(g.resetsAt) }}</div>
+        </div>
+      </div>
+    </template>
+    <div v-else-if="usage && !usage.ok" class="unavail">Usage unavailable — open Claude Code</div>
     <div class="cards">
       <div class="card">
         <div class="big">{{ stats.total }}</div>
@@ -174,5 +194,41 @@ h3 {
 .model {
   color: #6e7681;
   font-size: 10px;
+}
+h3.first {
+  margin-top: 0;
+}
+.gauges {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.gauge {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.grow {
+  display: flex;
+  justify-content: space-between;
+}
+.gtrack {
+  height: 6px;
+  background: #21262d;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.gfill {
+  height: 100%;
+  border-radius: 3px;
+}
+.greset {
+  font-size: 10px;
+  color: #6e7681;
+}
+.unavail {
+  color: #6e7681;
+  font-size: 11px;
+  padding: 2px 0 6px;
 }
 </style>
