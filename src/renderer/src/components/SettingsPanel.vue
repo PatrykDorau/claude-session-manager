@@ -21,6 +21,8 @@ const version = ((): string => {
   }
 })()
 const diagCopied = ref(false)
+const syncing = ref(false)
+const synced = ref(false)
 
 function saveJira(): void {
   window.api.setSettings({ jiraBase: jiraBase.value.trim() })
@@ -30,6 +32,18 @@ function saveJiraToken(): void {
 }
 function saveJiraStatuses(): void {
   window.api.setSettings({ jiraDoneStatuses: jiraDoneStatuses.value })
+}
+async function syncJira(): Promise<void> {
+  if (syncing.value) return
+  syncing.value = true
+  synced.value = false
+  try {
+    await window.api.syncJira()
+  } finally {
+    syncing.value = false
+    synced.value = true
+    setTimeout(() => (synced.value = false), 1500)
+  }
 }
 function saveClick(): void {
   window.api.setSettings({ clickAction: clickAction.value })
@@ -99,6 +113,13 @@ function copyDiag(): void {
       />
       <small class="hint">Comma-separated statuses that count as finished (case-insensitive).</small>
     </label>
+
+    <div class="field">
+      <button class="btn" :disabled="syncing" @click="syncJira">
+        {{ syncing ? 'Syncing…' : synced ? 'Synced ✓' : 'Sync statuses now' }}
+      </button>
+      <small class="hint">Fetches Jira statuses and branch state now instead of waiting for the 30-min poll.</small>
+    </div>
 
     <label class="field">
       <span class="flbl">On click, a session…</span>
@@ -242,6 +263,12 @@ function copyDiag(): void {
 .btn:hover {
   border-color: #58a6ff;
   color: #fff;
+}
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+  border-color: #30363d;
+  color: #e6edf3;
 }
 .sw {
   width: 34px;

@@ -34,6 +34,7 @@ declare global {
         launchOnStartup?: boolean
       }) => void
       setFinished: (id: string, on: boolean) => void
+      syncJira: () => Promise<void>
       sessionMenu: (s: Session) => void
       switchAccount: () => void
       minimizeWindow: () => void

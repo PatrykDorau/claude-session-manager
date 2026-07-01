@@ -55,6 +55,7 @@ const api = {
   setFinished: (id: string, on: boolean): void => {
     ipcRenderer.send('set-finished', id, on)
   },
+  syncJira: (): Promise<void> => ipcRenderer.invoke('sync-jira'),
   sessionMenu: (s: Session): void => {
     ipcRenderer.send('session-menu', s)
   },

@@ -417,6 +417,7 @@ header {
   cursor: pointer;
   position: sticky;
   top: 0;
+  z-index: 3;
 }
 .chev {
   width: 10px;

@@ -521,6 +521,9 @@ if (!app.requestSingleInstanceLock()) {
     saveState(statePath, appState)
     void pushSessions()
   })
+  ipcMain.handle('sync-jira', async () => {
+    await refreshFinishSignals()
+  })
   ipcMain.on('session-menu', (_e, s) => {
     if (!s?.id) return
     if (Date.now() - menuClosedAt < 300) return
