@@ -102,6 +102,7 @@ export async function scanRaw(): Promise<ScanResult> {
       if (!st) continue
       const id = f.replace(/\.jsonl$/, '')
       const head = parseTranscriptHead(await readChunk(full, 32768, false, st.size).catch(() => []))
+      if (!head.cwd) continue
       const tail = parseTail(await readChunk(full, 65536, true, st.size).catch(() => []))
       raw.push({
         id,

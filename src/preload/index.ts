@@ -36,17 +36,24 @@ const api = {
   getUsage: (): UsageResult | null => ipcRenderer.sendSync('get-usage'),
   getSettings: (): {
     jiraBase: string
+    jiraToken: string
+    jiraDoneStatuses: string
     alwaysOnTop: boolean
     clickAction: string
     launchOnStartup: boolean
   } => ipcRenderer.sendSync('get-settings'),
   setSettings: (patch: {
     jiraBase?: string
+    jiraToken?: string
+    jiraDoneStatuses?: string
     alwaysOnTop?: boolean
     clickAction?: string
     launchOnStartup?: boolean
   }): void => {
     ipcRenderer.send('set-settings', patch)
+  },
+  setFinished: (id: string, on: boolean): void => {
+    ipcRenderer.send('set-finished', id, on)
   },
   sessionMenu: (s: Session): void => {
     ipcRenderer.send('session-menu', s)
@@ -63,6 +70,9 @@ const api = {
   installHooks: (): { ok: boolean; error?: string } => ipcRenderer.sendSync('install-hooks'),
   onPlayAlert: (cb: () => void): void => {
     ipcRenderer.on('play-alert', () => cb())
+  },
+  onMenuState: (cb: (open: boolean) => void): void => {
+    ipcRenderer.on('menu-state', (_e, open) => cb(open))
   }
 }
 

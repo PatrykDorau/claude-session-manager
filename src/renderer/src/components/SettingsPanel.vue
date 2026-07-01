@@ -6,6 +6,8 @@ import { SOUNDS, playSound, type SoundName } from '../sound'
 const colorblind = inject<Ref<boolean>>('colorblind', ref(false))
 const initial = window.api.getSettings()
 const jiraBase = ref(initial.jiraBase)
+const jiraToken = ref(initial.jiraToken)
+const jiraDoneStatuses = ref(initial.jiraDoneStatuses)
 const alwaysOnTop = ref(initial.alwaysOnTop)
 const launchOnStartup = ref(initial.launchOnStartup)
 const clickAction = ref(initial.clickAction)
@@ -22,6 +24,12 @@ const diagCopied = ref(false)
 
 function saveJira(): void {
   window.api.setSettings({ jiraBase: jiraBase.value.trim() })
+}
+function saveJiraToken(): void {
+  window.api.setSettings({ jiraToken: jiraToken.value.trim() })
+}
+function saveJiraStatuses(): void {
+  window.api.setSettings({ jiraDoneStatuses: jiraDoneStatuses.value })
 }
 function saveClick(): void {
   window.api.setSettings({ clickAction: clickAction.value })
@@ -64,6 +72,32 @@ function copyDiag(): void {
       <span class="flbl">Jira base URL</span>
       <input v-model="jiraBase" class="inp" spellcheck="false" @change="saveJira" @blur="saveJira" />
       <small class="hint">{{ jiraBase }}SOFKRS-1234</small>
+    </label>
+
+    <label class="field">
+      <span class="flbl">Jira API token</span>
+      <input
+        v-model="jiraToken"
+        type="password"
+        class="inp"
+        spellcheck="false"
+        placeholder="Personal Access Token"
+        @change="saveJiraToken"
+        @blur="saveJiraToken"
+      />
+      <small class="hint">Bearer token for auto-finishing sessions when their ticket is accepted. Leave blank to disable.</small>
+    </label>
+
+    <label class="field">
+      <span class="flbl">Jira "done" statuses</span>
+      <input
+        v-model="jiraDoneStatuses"
+        class="inp"
+        spellcheck="false"
+        @change="saveJiraStatuses"
+        @blur="saveJiraStatuses"
+      />
+      <small class="hint">Comma-separated statuses that count as finished (case-insensitive).</small>
     </label>
 
     <label class="field">

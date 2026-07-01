@@ -16,6 +16,9 @@ export interface Session {
   contextTokens: number | null
   dirty: boolean
   bg?: boolean
+  worktree?: boolean
+  finished?: boolean
+  jiraStatus?: string | null
 }
 
 export type Severity = 'normal' | 'warning' | 'critical'

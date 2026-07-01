@@ -139,23 +139,30 @@ function ago(ms: number): string {
       <div class="line">
         <span class="name">{{ session.projectName }}</span>
         <span v-if="session.bg" class="bg" title="Background agent — click to open the agent view">bg</span>
-        <span class="status" :style="{ color: statusColor() }">{{ statusLabel() }}</span>
-        <span class="time">{{ ago(session.lastActive) }}</span>
-      </div>
-      <div v-if="session.ticket || session.gitBranch || meta()" class="line meta">
-        <span v-if="session.ticket" class="ticket" @click.stop="openTicket">{{ session.ticket }}</span>
-        <span v-if="session.gitBranch" class="branch" :title="session.gitBranch">
-          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <span
+          v-if="session.worktree"
+          class="wt"
+          title="Git worktree — opens/resumes in the worktree folder"
+        >
+          <svg class="wticon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <line x1="6" y1="3" x2="6" y2="15" />
             <circle cx="18" cy="6" r="3" />
             <circle cx="6" cy="18" r="3" />
             <path d="M18 9a9 9 0 0 1-9 9" />
           </svg>
-          {{ branchShort() }}<span v-if="session.dirty" class="dirty" title="Uncommitted changes">●</span>
+          worktree
         </span>
-        <span v-if="meta()" class="metinfo">{{ meta() }}</span>
+        <span
+          v-if="session.finished"
+          class="fin"
+          :title="session.jiraStatus ? 'Finished — ' + session.jiraStatus : 'Finished'"
+        >
+          ✓
+        </span>
+        <span class="status" :style="{ color: statusColor() }">{{ statusLabel() }}</span>
+        <span class="time">{{ ago(session.lastActive) }}</span>
       </div>
-      <div class="line sub">
+      <div class="line prompt">
         <input
           v-if="editing"
           v-focus
@@ -167,31 +174,45 @@ function ago(ms: number): string {
           @blur="commit"
         />
         <span v-else class="ttl">{{ title() }}</span>
-        <span class="actions">
-        <button class="ic" title="Rename" @click.stop="startEdit">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" />
+      </div>
+      <div v-if="session.ticket || session.gitBranch || meta()" class="line meta">
+        <span v-if="session.ticket" class="ticket" @click.stop="openTicket">{{ session.ticket }}</span>
+        <span v-if="session.jiraStatus" class="jira" :title="'Jira status: ' + session.jiraStatus">{{ session.jiraStatus }}</span>
+        <span v-if="session.gitBranch" class="branch" :title="session.gitBranch">
+          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="6" y1="3" x2="6" y2="15" />
+            <circle cx="18" cy="6" r="3" />
+            <circle cx="6" cy="18" r="3" />
+            <path d="M18 9a9 9 0 0 1-9 9" />
           </svg>
-        </button>
-        <button class="ic star" :class="{ on: session.watched }" title="Watch" @click.stop="toggleWatch">
-          <svg viewBox="0 0 24 24" :fill="session.watched ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-          </svg>
-        </button>
-        <button class="ic trash" title="Delete session" @click.stop="remove">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="3 6 5 6 21 6" />
-            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-          </svg>
-        </button>
-        <button class="ic" title="More actions" @click.stop="menu">
-          <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
-            <circle cx="12" cy="5" r="2" />
-            <circle cx="12" cy="12" r="2" />
-            <circle cx="12" cy="19" r="2" />
-          </svg>
-        </button>
+          {{ branchShort() }}<span v-if="session.dirty" class="dirty" title="Uncommitted changes">●</span>
         </span>
+        <span v-if="meta()" class="metinfo">{{ meta() }}</span>
+      </div>
+      <div class="actions">
+      <button class="ic" title="Rename" @click.stop="startEdit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" />
+        </svg>
+      </button>
+      <button class="ic star" :class="{ on: session.watched }" title="Watch" @click.stop="toggleWatch">
+        <svg viewBox="0 0 24 24" :fill="session.watched ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+        </svg>
+      </button>
+      <button class="ic trash" title="Delete session" @click.stop="remove">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6" />
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+        </svg>
+      </button>
+      <button class="ic" title="More actions" @click.stop="menu">
+        <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
+          <circle cx="12" cy="5" r="2" />
+          <circle cx="12" cy="12" r="2" />
+          <circle cx="12" cy="19" r="2" />
+        </svg>
+      </button>
       </div>
     </div>
   </li>
@@ -199,15 +220,13 @@ function ago(ms: number): string {
 
 <style scoped>
 .row {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 9px;
-  padding: 8px 11px;
+  padding: 9px 11px;
   cursor: pointer;
   border-bottom: 1px solid #161b22;
-}
-.row:hover {
-  filter: brightness(1.25);
 }
 .row.waiting {
   animation: rowblink 1.1s ease-in-out infinite;
@@ -237,20 +256,44 @@ function ago(ms: number): string {
   align-items: baseline;
   gap: 7px;
 }
+.line.prompt {
+  margin-top: 3px;
+}
 .line.meta {
-  margin-top: 2px;
+  margin-top: 3px;
   gap: 6px;
 }
-.line.sub {
-  margin-top: 2px;
-  align-items: center;
+.line.meta > * + *:not(.jira)::before {
+  content: '·';
+  margin-right: 6px;
+  color: #484f58;
 }
 .actions {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: auto;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  align-content: center;
+  justify-content: end;
+  gap: 4px;
+  padding: 0 8px 0 26px;
+  background: linear-gradient(to left, rgba(13, 17, 23, 0.96) 58%, rgba(13, 17, 23, 0));
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+.row:hover .actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.actions .ic {
+  padding: 5px;
+}
+.actions .ic svg {
+  width: 17px;
+  height: 17px;
 }
 .name {
   flex: 1;
@@ -278,9 +321,38 @@ function ago(ms: number): string {
   padding: 0 4px;
   line-height: 1.4;
 }
+.wt {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #39c5cf;
+  border: 1px solid #1f6f75;
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 1.4;
+}
+.wticon {
+  width: 8px;
+  height: 8px;
+  flex: none;
+}
+.fin {
+  flex: none;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #3fb950;
+  border: 1px solid #238636;
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 1.4;
+}
 .metinfo {
   flex: none;
-  margin-left: auto;
   color: #6e7681;
   font-size: 10px;
   white-space: nowrap;
@@ -296,6 +368,17 @@ function ago(ms: number): string {
   font-size: 10px;
   font-weight: 500;
   cursor: pointer;
+}
+.jira {
+  flex: none;
+  font-size: 9px;
+  font-weight: 600;
+  color: #c9d1d9;
+  background: #30363d;
+  border-radius: 9px;
+  padding: 1px 7px;
+  line-height: 1.5;
+  white-space: nowrap;
 }
 .ticket:hover {
   text-decoration: underline;
@@ -328,7 +411,7 @@ function ago(ms: number): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #8b949e;
+  color: #adbac7;
   font-size: 11px;
 }
 .edit {

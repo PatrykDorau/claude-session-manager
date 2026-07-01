@@ -24,7 +24,10 @@ import { release } from 'node:os'
 import { scanRaw } from './scanner'
 import { buildSessions } from './aggregate'
 import { normalizePath } from './lock'
-import { runningResumeIds, listAgents, gitDirty, probeCommand } from './processes'
+import { runningResumeIds, listAgents, gitDirty, probeCommand, branchMergedOrGone } from './processes'
+import { detectWorktreeRepo } from './worktree'
+import { fetchIssueStatus } from './jira'
+import { computeFinished, branchKey } from './finished'
 import { formatDiagnostics } from './diagnostics'
 import { ideDir, projectsDir, doneDir, activeDir, needsInputDir, sessionsDir } from './paths'
 import {
@@ -36,7 +39,7 @@ import {
   switchAccount,
   openAgentView
 } from './launcher'
-import { loadState, saveState, applyWatched, applyName, type State } from './store'
+import { loadState, saveState, applyWatched, applyName, applyFinished, type State } from './store'
 import { installHooks } from './hooks'
 import { fetchUsage } from './usage'
 import type { UsageResult } from '../renderer/src/types'
@@ -46,8 +49,12 @@ let tray: Tray
 let appState: State = {
   watched: [],
   names: {},
+  finished: [],
+  finishOptOut: [],
   settings: {
     jiraBase: 'https://jira.redge.com/browse/',
+    jiraToken: '',
+    jiraDoneStatuses: 'Accepted, Done, Closed',
     alwaysOnTop: true,
     clickAction: 'default',
     launchOnStartup: false
@@ -65,21 +72,40 @@ let claudeOk = true
 let editorOk = true
 let claudeVersion: string | null = null
 let lastCounts = { total: 0, live: 0, waiting: 0 }
+let menuClosedAt = 0
+let lastSessions: Session[] = []
+let jiraStatus = new Map<string, string>()
+const branchDone = new Map<string, boolean>()
 const knownFolders = new Map<string, string>()
+const worktreeRepo = new Map<string, string | null>()
 const notifiedWaiting = new Set<string>()
 
 function decorate(sessions: Session[]): Session[] {
+  const finishCtx = {
+    finished: new Set(appState.finished),
+    optOut: new Set(appState.finishOptOut),
+    jiraStatus,
+    branchDone,
+    accepting: appState.settings.jiraDoneStatuses
+  }
   return sessions.map((s) => {
     const reg = agentStatus.get(s.id)
     let status = s.status
     if (reg === 'busy') status = 'working'
     else if (reg === 'idle' && s.status !== 'waiting' && s.status !== 'checkout') status = 'idle'
+    const key = s.projectPath ? normalizePath(s.projectPath) : ''
+    const repo = worktreeRepo.get(key)
+    const fin = computeFinished(s, key, finishCtx)
     return {
       ...s,
+      projectName: repo ?? s.projectName,
+      worktree: !!repo,
       watched: appState.watched.includes(s.id),
       name: appState.names[s.id] ?? null,
-      dirty: dirtyMap[s.projectPath ? normalizePath(s.projectPath) : ''] ?? false,
+      dirty: dirtyMap[key] ?? false,
       bg: bgAgents.has(s.id),
+      finished: fin.finished,
+      jiraStatus: fin.jiraStatus,
       status
     }
   })
@@ -109,9 +135,18 @@ async function refreshDirty(): Promise<void> {
 async function pushSessions(): Promise<void> {
   if (!mainWindow) return
   const { raw } = await scanRaw()
-  for (const r of raw) if (r.cwd) knownFolders.set(normalizePath(r.cwd), r.cwd)
+  for (const r of raw)
+    if (r.cwd) {
+      const key = normalizePath(r.cwd)
+      knownFolders.set(key, r.cwd)
+      if (!worktreeRepo.has(key)) {
+        worktreeRepo.set(key, null)
+        void detectWorktreeRepo(r.cwd).then((repo) => worktreeRepo.set(key, repo))
+      }
+    }
   const openIds = [...new Set([...liveAgentIds, ...cachedRunningIds])]
   const sessions = buildSessions(raw, openIds, Date.now())
+  lastSessions = sessions
   lastCounts = {
     total: sessions.length,
     live: sessions.filter((s) => s.isLive).length,
@@ -119,6 +154,42 @@ async function pushSessions(): Promise<void> {
   }
   mainWindow.webContents.send('sessions', decorate(sessions))
   updateAttention(sessions)
+}
+
+async function refreshFinishSignals(): Promise<void> {
+  const isManual = (id: string): boolean =>
+    appState.finished.includes(id) || appState.finishOptOut.includes(id)
+
+  const token = appState.settings.jiraToken.trim()
+  if (token) {
+    const tickets = [
+      ...new Set(lastSessions.filter((s) => s.ticket).map((s) => s.ticket as string))
+    ]
+    const next = new Map(jiraStatus)
+    await Promise.all(
+      tickets.map(async (t) => {
+        const name = await fetchIssueStatus(appState.settings.jiraBase, token, t)
+        if (name) next.set(t, name)
+      })
+    )
+    jiraStatus = next
+  }
+
+  const branchJobs = new Map<string, { repo: string; branch: string }>()
+  for (const s of lastSessions) {
+    if (s.ticket || !s.gitBranch || !s.projectPath || isManual(s.id)) continue
+    branchJobs.set(branchKey(normalizePath(s.projectPath), s.gitBranch), {
+      repo: s.projectPath,
+      branch: s.gitBranch
+    })
+  }
+  await Promise.all(
+    [...branchJobs].map(async ([k, { repo, branch }]) => {
+      branchDone.set(k, await branchMergedOrGone(repo, branch))
+    })
+  )
+
+  void pushSessions()
 }
 
 async function probeEnv(): Promise<void> {
@@ -155,10 +226,10 @@ function openSession(s: Session): void {
   } else if (action === 'project') openProject(s.projectPath)
   else if (action === 'standalone') resumeStandalone(s.projectPath, s.id)
   else if (action === 'terminal')
-    void reopenAndResume(s.projectPath, s.projectName, s.id).then((ok) => {
+    void reopenAndResume(s.projectPath, s.id).then((ok) => {
       if (!ok) notifyResumeFailed(s)
     })
-  else if (action === 'focus') focusWindow(s.projectName)
+  else if (action === 'focus') focusWindow(s.projectPath)
   else
     void focusOrOpen(s)
       .then((ok) => {
@@ -186,7 +257,7 @@ function notifyNeedsYou(s: Session): void {
   const n = new Notification({
     title: 'Claude needs you',
     body: label,
-    icon: attentionIcon ?? icon,
+    icon,
     silent: true
   })
   n.on('click', () => {
@@ -315,6 +386,7 @@ function wireSessions(win: BrowserWindow): void {
     void probeEnv()
     await pushSessions()
     void pushUsage()
+    void refreshFinishSignals()
   })
   setInterval(pushSessions, 2000)
   setInterval(refreshRunning, 6000)
@@ -322,6 +394,7 @@ function wireSessions(win: BrowserWindow): void {
   setInterval(refreshDirty, 8000)
   setInterval(pushUsage, 60000)
   setInterval(probeEnv, 30000)
+  setInterval(refreshFinishSignals, 1800000)
 }
 
 function buildTray(win: BrowserWindow): void {
@@ -418,6 +491,8 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.on('get-settings', (e) => {
     e.returnValue = {
       jiraBase: appState.settings.jiraBase,
+      jiraToken: appState.settings.jiraToken,
+      jiraDoneStatuses: appState.settings.jiraDoneStatuses,
       alwaysOnTop: appState.settings.alwaysOnTop,
       clickAction: appState.settings.clickAction,
       launchOnStartup: appState.settings.launchOnStartup
@@ -425,6 +500,9 @@ if (!app.requestSingleInstanceLock()) {
   })
   ipcMain.on('set-settings', (_e, patch: Partial<State['settings']>) => {
     if (typeof patch.jiraBase === 'string') appState.settings.jiraBase = patch.jiraBase
+    if (typeof patch.jiraToken === 'string') appState.settings.jiraToken = patch.jiraToken
+    if (typeof patch.jiraDoneStatuses === 'string')
+      appState.settings.jiraDoneStatuses = patch.jiraDoneStatuses
     if (typeof patch.alwaysOnTop === 'boolean') {
       appState.settings.alwaysOnTop = patch.alwaysOnTop
       mainWindow?.setAlwaysOnTop(patch.alwaysOnTop, 'screen-saver')
@@ -435,9 +513,17 @@ if (!app.requestSingleInstanceLock()) {
       applyLaunchOnStartup(patch.launchOnStartup)
     }
     saveState(statePath, appState)
+    void refreshFinishSignals()
+  })
+  ipcMain.on('set-finished', (_e, id: string, on: boolean) => {
+    if (!id) return
+    appState = applyFinished(appState, id, on)
+    saveState(statePath, appState)
+    void pushSessions()
   })
   ipcMain.on('session-menu', (_e, s) => {
     if (!s?.id) return
+    if (Date.now() - menuClosedAt < 300) return
     const menu = Menu.buildFromTemplate([
       ...(s.bg
         ? [{ label: 'Open agent view (attach)', click: () => openAgentView(s.projectPath) }]
@@ -446,7 +532,7 @@ if (!app.requestSingleInstanceLock()) {
       {
         label: 'Resume in side terminal',
         click: () =>
-          void reopenAndResume(s.projectPath, s.projectName, s.id).then((ok) => {
+          void reopenAndResume(s.projectPath, s.id).then((ok) => {
             if (!ok) notifyResumeFailed(s)
           })
       },
@@ -454,10 +540,18 @@ if (!app.requestSingleInstanceLock()) {
         label: 'Resume in standalone terminal',
         click: () => resumeStandalone(s.projectPath, s.id)
       },
-      { label: 'Focus existing window', click: () => focusWindow(s.projectName) },
+      { label: 'Focus existing window', click: () => focusWindow(s.projectPath) },
       { label: 'Open folder in Explorer', click: () => void shell.openPath(s.projectPath) },
       { label: 'Copy resume command', click: () => clipboard.writeText(`claude --resume ${s.id}`) },
       { type: 'separator' },
+      {
+        label: s.finished ? 'Mark not finished' : 'Mark finished',
+        click: () => {
+          appState = applyFinished(appState, s.id, !s.finished)
+          saveState(statePath, appState)
+          void pushSessions()
+        }
+      },
       {
         label: s.watched ? 'Unwatch' : 'Watch',
         click: () => {
@@ -467,7 +561,14 @@ if (!app.requestSingleInstanceLock()) {
         }
       }
     ])
-    menu.popup({ window: mainWindow })
+    mainWindow?.webContents.send('menu-state', true)
+    menu.popup({
+      window: mainWindow,
+      callback: () => {
+        menuClosedAt = Date.now()
+        mainWindow?.webContents.send('menu-state', false)
+      }
+    })
   })
   ipcMain.on('copy-text', (_e, text: string) => {
     clipboard.writeText(text)

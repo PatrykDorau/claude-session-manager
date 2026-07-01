@@ -1,8 +1,5 @@
 import { spawn } from 'node:child_process'
-import { readdir, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
-import { ideDir } from './paths'
-import { parseLockFile, normalizePath } from './lock'
+import { basename } from 'node:path'
 
 function code(args: string[]): void {
   spawn('code', args, { shell: true, detached: true, stdio: 'ignore' }).unref()
@@ -14,40 +11,47 @@ $ErrorActionPreference='SilentlyContinue'
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
-public class W { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
- [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n); }
+public class FG {
+ [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+ [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out int pid);
+ [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+ [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+ [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+ [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+ [DllImport("user32.dll")] public static extern void keybd_event(byte b, byte s, uint f, UIntPtr e);
+ [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+}
 "@
-Get-Process | Where-Object { $_.MainWindowTitle -like '*${needle}*' -and $_.MainWindowTitle -like '*Visual Studio Code*' } |
- ForEach-Object { [W]::ShowWindow($_.MainWindowHandle, 9); [W]::SetForegroundWindow($_.MainWindowHandle) }
+$needle='${needle}'
+$deadline=(Get-Date).AddSeconds(6)
+$p=$null
+while((Get-Date) -lt $deadline){
+ $p=Get-Process | Where-Object { $_.MainWindowTitle -like "*$needle*" -and $_.MainWindowTitle -like '*Visual Studio Code*' } | Select-Object -First 1
+ if($p){break}
+ Start-Sleep -Milliseconds 300
+}
+if(-not $p){ exit }
+$hwnd=$p.MainWindowHandle
+for($i=0;$i -lt 10;$i++){
+ $fg=[FG]::GetForegroundWindow()
+ $d=0
+ $fgThread=[FG]::GetWindowThreadProcessId($fg,[ref]$d)
+ $me=[FG]::GetCurrentThreadId()
+ [FG]::keybd_event(0xA4,0,0,[UIntPtr]::Zero)
+ [FG]::keybd_event(0xA4,0,2,[UIntPtr]::Zero)
+ [FG]::AttachThreadInput($fgThread,$me,$true) | Out-Null
+ [FG]::ShowWindow($hwnd,3) | Out-Null
+ [FG]::BringWindowToTop($hwnd) | Out-Null
+ [FG]::SetForegroundWindow($hwnd) | Out-Null
+ [FG]::AttachThreadInput($fgThread,$me,$false) | Out-Null
+ Start-Sleep -Milliseconds 200
+ $cur=[FG]::GetForegroundWindow()
+ $cp=0
+ [FG]::GetWindowThreadProcessId($cur,[ref]$cp) | Out-Null
+ if($cp -eq $p.Id){break}
+}
 `
-  spawn('powershell.exe', ['-NoProfile', '-Command', ps], {
-    detached: true,
-    stdio: 'ignore'
-  }).unref()
-}
-
-async function workspaceLockExists(folder: string): Promise<boolean> {
-  const target = normalizePath(folder)
-  let files: string[] = []
-  try {
-    files = (await readdir(ideDir())).filter((f) => f.endsWith('.lock'))
-  } catch {
-    return false
-  }
-  for (const f of files) {
-    const lock = parseLockFile(await readFile(join(ideDir(), f), 'utf8').catch(() => ''))
-    if (lock?.workspaceFolders.some((w) => normalizePath(w) === target)) return true
-  }
-  return false
-}
-
-async function waitForWorkspaceLock(folder: string, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (await workspaceLockExists(folder)) return true
-    await new Promise((r) => setTimeout(r, 250))
-  }
-  return false
+  spawn('powershell.exe', ['-NoProfile', '-Command', ps], { windowsHide: true })
 }
 
 function openInTerminal(needle: string, id: string): Promise<boolean> {
@@ -76,7 +80,7 @@ function Focus($proc){
   $fgThread=[FG]::GetWindowThreadProcessId($fg,[ref]$d)
   $me=[FG]::GetCurrentThreadId()
   [FG]::AttachThreadInput($fgThread,$me,$true) | Out-Null
-  [FG]::ShowWindow($hwnd,9) | Out-Null
+  [FG]::ShowWindow($hwnd,3) | Out-Null
   [FG]::BringWindowToTop($hwnd) | Out-Null
   [FG]::SetForegroundWindow($hwnd) | Out-Null
   [FG]::AttachThreadInput($fgThread,$me,$false) | Out-Null
@@ -88,7 +92,7 @@ function Focus($proc){
  }
  return $false
 }
-$deadline=(Get-Date).AddSeconds(25)
+$deadline=(Get-Date).AddSeconds(40)
 $p=$null
 while((Get-Date) -lt $deadline){
  $p=Get-Process | Where-Object { $_.MainWindowTitle -like "*$needle*" -and $_.MainWindowTitle -like '*Visual Studio Code*' } | Select-Object -First 1
@@ -121,8 +125,8 @@ Write-Host "typed resume command"
   })
 }
 
-export function focusWindow(projectName: string): void {
-  focusByTitle(projectName)
+export function focusWindow(projectPath: string): void {
+  focusByTitle(basename(projectPath))
 }
 
 export function openProject(projectPath: string): void {
@@ -151,27 +155,21 @@ export function resumeStandalone(cwd: string, id: string): void {
   }).unref()
 }
 
-export async function reopenAndResume(
-  projectPath: string,
-  projectName: string,
-  id: string
-): Promise<boolean> {
+export async function reopenAndResume(projectPath: string, id: string): Promise<boolean> {
+  const needle = basename(projectPath)
   code([projectPath])
-  const ready = await waitForWorkspaceLock(projectPath, 40000)
-  console.log('[diag] launcher: lock ready=', ready, 'for', projectName)
-  return openInTerminal(projectName, id)
+  return openInTerminal(needle, id)
 }
 
 export async function focusOrOpen(session: {
   projectPath: string
-  projectName: string
   id: string
   isLive: boolean
 }): Promise<boolean> {
   if (session.isLive) {
-    focusByTitle(session.projectName)
     code([session.projectPath])
+    focusByTitle(basename(session.projectPath))
     return true
   }
-  return reopenAndResume(session.projectPath, session.projectName, session.id)
+  return reopenAndResume(session.projectPath, session.id)
 }

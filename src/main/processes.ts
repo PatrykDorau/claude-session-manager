@@ -33,6 +33,43 @@ export async function gitDirty(folder: string): Promise<boolean> {
   })
 }
 
+function git(repo: string, args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    let out = ''
+    const p = spawn('git', ['-C', repo, ...args], { windowsHide: true })
+    p.stdout.on('data', (d) => (out += d.toString()))
+    p.on('error', () => resolve(null))
+    p.on('close', (code) => resolve(code === 0 ? out.trim() : null))
+  })
+}
+
+export function mergedListHas(branchListOutput: string, branch: string): boolean {
+  return branchListOutput
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .includes(branch)
+}
+
+async function resolveDefaultRef(repo: string): Promise<string | null> {
+  const sym = await git(repo, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])
+  if (sym) return sym
+  for (const r of ['origin/main', 'origin/master', 'main', 'master']) {
+    if ((await git(repo, ['rev-parse', '--verify', '--quiet', r])) !== null) return r
+  }
+  return null
+}
+
+export async function branchMergedOrGone(repo: string, branch: string): Promise<boolean> {
+  const exists = await git(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])
+  if (exists === null) return true
+  const def = await resolveDefaultRef(repo)
+  if (!def) return false
+  const merged = await git(repo, ['branch', '--merged', def, '--format=%(refname:short)'])
+  if (merged === null) return false
+  return mergedListHas(merged, branch)
+}
+
 export interface AgentInfo {
   sessionId: string
   kind: string

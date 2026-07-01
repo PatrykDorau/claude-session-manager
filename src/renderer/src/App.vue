@@ -27,6 +27,7 @@ const version = ((): string => {
 const view = ref<View>('list')
 const watchedOpen = ref(true)
 const othersOpen = ref(true)
+const finishedOpen = ref(false)
 const controlsOpen = ref(localStorage.getItem('controlsOpen') !== '0')
 const search = ref('')
 const statusFilter = ref<StatusFilter>('all')
@@ -37,6 +38,7 @@ provide('colorblind', colorblind)
 const resumeFail = ref<{ label: string; command: string } | null>(null)
 const copied = ref(false)
 const cliStatus = ref<{ claude: boolean; editor: boolean }>({ claude: true, editor: true })
+const menuOpen = ref(false)
 
 const cliBanner = computed(() => {
   if (!cliStatus.value.claude) return 'Claude Code not detected on PATH — open Setup'
@@ -60,6 +62,7 @@ onMounted(() => {
     copied.value = false
   })
   window.api.onPlayAlert(playChime)
+  window.api.onMenuState((open) => (menuOpen.value = open))
   if (!localStorage.getItem('guideSeen')) {
     view.value = 'guide'
     localStorage.setItem('guideSeen', '1')
@@ -82,10 +85,16 @@ const filtered = computed(() =>
     (s) => matchesQuery(s, search.value) && matchesFilter(s, statusFilter.value)
   )
 )
-const watchedList = computed(() => filtered.value.filter((s) => s.watched || s.isLive))
-const otherList = computed(() => filtered.value.filter((s) => !(s.watched || s.isLive)))
+const watchedList = computed(() =>
+  filtered.value.filter((s) => !s.finished && (s.watched || s.isLive))
+)
+const otherList = computed(() =>
+  filtered.value.filter((s) => !s.finished && !(s.watched || s.isLive))
+)
+const finishedList = computed(() => filtered.value.filter((s) => s.finished))
 const watchedSorted = computed(() => sortSessions(watchedList.value, sortMode.value))
 const otherSorted = computed(() => sortSessions(otherList.value, 'recency'))
+const finishedSorted = computed(() => sortSessions(finishedList.value, 'recency'))
 
 function setSort(m: SortMode): void {
   sortMode.value = m
@@ -229,8 +238,21 @@ function minimize(): void {
           :group-by="groupBy"
           empty-text="No matching sessions"
         />
+
+        <div v-if="finishedList.length" class="shead" @click="finishedOpen = !finishedOpen">
+          <span class="chev">{{ finishedOpen ? '▾' : '▸' }}</span>
+          Finished <span class="count">{{ finishedList.length }}</span>
+        </div>
+        <SessionList
+          v-show="finishedOpen"
+          :sessions="finishedSorted"
+          :group-by="groupBy"
+          empty-text=""
+        />
       </div>
     </template>
+
+    <div v-if="menuOpen" class="clickblock" @click.stop @contextmenu.prevent />
 
     <div v-if="resumeFail" class="modal" @click.self="resumeFail = null">
       <div class="dialog">
@@ -486,6 +508,12 @@ ul {
   color: #8b949e;
   padding: 7px 10px;
   text-align: center;
+}
+.clickblock {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  -webkit-app-region: no-drag;
 }
 .modal {
   position: fixed;

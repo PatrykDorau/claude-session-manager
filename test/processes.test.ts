@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractResumeIds, probeCommand } from '../src/main/processes'
+import { extractResumeIds, probeCommand, mergedListHas } from '../src/main/processes'
 
 describe('extractResumeIds', () => {
   it('pulls a single resume id', () => {
@@ -36,5 +36,17 @@ describe('probeCommand', () => {
   })
   it('returns null when the command is missing', async () => {
     expect(await probeCommand('definitely-not-a-real-command-xyz', ['--version'])).toBe(null)
+  })
+})
+
+describe('mergedListHas', () => {
+  it('finds the branch in a git branch --merged listing', () => {
+    expect(mergedListHas('  main\n  fix/SOFKRS-8028\n* master\n', 'fix/SOFKRS-8028')).toBe(true)
+  })
+  it('returns false when the branch is not listed', () => {
+    expect(mergedListHas('main\nmaster\n', 'fix/SOFKRS-8028')).toBe(false)
+  })
+  it('handles empty output', () => {
+    expect(mergedListHas('', 'main')).toBe(false)
   })
 })
