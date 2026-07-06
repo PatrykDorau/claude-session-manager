@@ -7,3 +7,5 @@ out
 
 .claudine
 .superpowers
+.claude/worktrees/
+.claude/settings.local.json

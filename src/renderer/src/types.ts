@@ -17,6 +17,7 @@ export interface Session {
   dirty: boolean
   bg?: boolean
   worktree?: boolean
+  repo?: string | null
   finished?: boolean
   jiraStatus?: string | null
 }

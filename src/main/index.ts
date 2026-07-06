@@ -98,8 +98,8 @@ function decorate(sessions: Session[]): Session[] {
     const fin = computeFinished(s, key, finishCtx)
     return {
       ...s,
-      projectName: repo ?? s.projectName,
       worktree: !!repo,
+      repo: repo ?? null,
       watched: appState.watched.includes(s.id),
       name: appState.names[s.id] ?? null,
       dirty: dirtyMap[key] ?? false,

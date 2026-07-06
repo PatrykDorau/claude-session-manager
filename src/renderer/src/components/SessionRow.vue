@@ -128,7 +128,7 @@ function ago(ms: number): string {
     :style="{
       background: rowBg(),
       '--blink-bg': hexToRgba(statusColor(), 0.28),
-      borderLeft: '3px solid ' + colorForProject(session.projectName)
+      borderLeft: '3px solid ' + colorForProject(session.repo || session.projectName)
     }"
     :title="session.firstPrompt ?? ''"
     @click="open"
@@ -142,7 +142,7 @@ function ago(ms: number): string {
         <span
           v-if="session.worktree"
           class="wt"
-          title="Git worktree — opens/resumes in the worktree folder"
+          :title="'Git worktree of ' + (session.repo || 'a repo') + ' — opens/resumes in the worktree folder'"
         >
           <svg class="wticon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <line x1="6" y1="3" x2="6" y2="15" />
@@ -150,7 +150,7 @@ function ago(ms: number): string {
             <circle cx="6" cy="18" r="3" />
             <path d="M18 9a9 9 0 0 1-9 9" />
           </svg>
-          worktree
+          {{ session.repo || 'worktree' }}
         </span>
         <span
           v-if="session.finished"
