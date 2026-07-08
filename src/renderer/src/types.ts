@@ -20,6 +20,7 @@ export interface Session {
   repo?: string | null
   finished?: boolean
   jiraStatus?: string | null
+  manualTicket?: boolean
 }
 
 export type Severity = 'normal' | 'warning' | 'critical'

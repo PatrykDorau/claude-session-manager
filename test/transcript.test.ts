@@ -16,12 +16,19 @@ describe('parseTranscriptHead', () => {
   it('uses the first user message as firstPrompt', () => {
     expect(parseTranscriptHead(lines).firstPrompt).toBe('Fix the next episode bug')
   })
+  it('has null openingTicket when opening prompts carry no ticket', () => {
+    expect(parseTranscriptHead(lines).openingTicket).toBe(null)
+  })
+  it('extracts openingTicket from an opening user message', () => {
+    const l = ['{"type":"user","cwd":"C:/x","message":{"content":"work on SOFKAN-42 please"}}']
+    expect(parseTranscriptHead(l).openingTicket).toBe('SOFKAN-42')
+  })
   it('tolerates garbage lines', () => {
     const h = parseTranscriptHead(['not json', ...lines, '{bad'])
     expect(h.sessionId).toBe('9d84c0ea')
   })
   it('returns nulls for empty input', () => {
-    expect(parseTranscriptHead([])).toEqual({ sessionId: null, cwd: null, gitBranch: null, firstPrompt: null })
+    expect(parseTranscriptHead([])).toEqual({ sessionId: null, cwd: null, gitBranch: null, firstPrompt: null, openingTicket: null })
   })
 })
 

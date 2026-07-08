@@ -35,6 +35,12 @@ declare global {
       }) => void
       setFinished: (id: string, on: boolean) => void
       syncJira: () => Promise<void>
+      listBranchTickets: (projectPath: string) => Promise<{ ticket: string; branch: string }[]>
+      verifyTicket: (
+        input: string
+      ) => Promise<{ configured: boolean; status: string | null; code: string | null }>
+      setTicket: (id: string, value: string | null) => void
+      onOpenTicketPicker: (cb: (s: Session) => void) => void
       sessionMenu: (s: Session) => void
       switchAccount: () => void
       minimizeWindow: () => void

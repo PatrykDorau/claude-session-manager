@@ -24,8 +24,16 @@ import { release } from 'node:os'
 import { scanRaw } from './scanner'
 import { buildSessions } from './aggregate'
 import { normalizePath } from './lock'
-import { runningResumeIds, listAgents, gitDirty, probeCommand, branchMergedOrGone } from './processes'
+import {
+  runningResumeIds,
+  listAgents,
+  gitDirty,
+  probeCommand,
+  branchMergedOrGone,
+  listBranchTickets
+} from './processes'
 import { detectWorktreeRepo } from './worktree'
+import { branchTicket } from './ticket'
 import { fetchIssueStatus } from './jira'
 import { computeFinished, branchKey } from './finished'
 import { formatDiagnostics } from './diagnostics'
@@ -39,7 +47,16 @@ import {
   switchAccount,
   openAgentView
 } from './launcher'
-import { loadState, saveState, applyWatched, applyName, applyFinished, type State } from './store'
+import {
+  loadState,
+  saveState,
+  applyWatched,
+  applyName,
+  applyFinished,
+  applyTicketOverride,
+  overrideTicket,
+  type State
+} from './store'
 import { installHooks } from './hooks'
 import { fetchUsage } from './usage'
 import type { UsageResult } from '../renderer/src/types'
@@ -51,6 +68,7 @@ let appState: State = {
   names: {},
   finished: [],
   finishOptOut: [],
+  ticketOverride: {},
   settings: {
     jiraBase: 'https://jira.redge.com/browse/',
     jiraToken: '',
@@ -96,8 +114,11 @@ function decorate(sessions: Session[]): Session[] {
     const key = s.projectPath ? normalizePath(s.projectPath) : ''
     const repo = worktreeRepo.get(key)
     const fin = computeFinished(s, key, finishCtx)
+    const ov = appState.ticketOverride[s.id]
     return {
       ...s,
+      ticket: overrideTicket(s.ticket, ov),
+      manualTicket: ov !== undefined,
       worktree: !!repo,
       repo: repo ?? null,
       watched: appState.watched.includes(s.id),
@@ -146,13 +167,14 @@ async function pushSessions(): Promise<void> {
     }
   const openIds = [...new Set([...liveAgentIds, ...cachedRunningIds])]
   const sessions = buildSessions(raw, openIds, Date.now())
-  lastSessions = sessions
+  const decorated = decorate(sessions)
+  lastSessions = decorated
   lastCounts = {
     total: sessions.length,
     live: sessions.filter((s) => s.isLive).length,
     waiting: sessions.filter((s) => s.status === 'waiting').length
   }
-  mainWindow.webContents.send('sessions', decorate(sessions))
+  mainWindow.webContents.send('sessions', decorated)
   updateAttention(sessions)
 }
 
@@ -524,6 +546,24 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle('sync-jira', async () => {
     await refreshFinishSignals()
   })
+  ipcMain.handle('list-branch-tickets', async (_e, projectPath: string) => {
+    if (!projectPath) return []
+    return listBranchTickets(projectPath)
+  })
+  ipcMain.handle('verify-ticket', async (_e, input: string) => {
+    const code = branchTicket(input)
+    if (!code) return { configured: false, status: null, code: null }
+    const token = appState.settings.jiraToken.trim()
+    if (!token) return { configured: false, status: null, code }
+    const status = await fetchIssueStatus(appState.settings.jiraBase, token, code)
+    return { configured: true, status, code }
+  })
+  ipcMain.on('set-ticket', (_e, id: string, value: string | null) => {
+    if (!id) return
+    appState = applyTicketOverride(appState, id, value)
+    saveState(statePath, appState)
+    void pushSessions()
+  })
   ipcMain.on('session-menu', (_e, s) => {
     if (!s?.id) return
     if (Date.now() - menuClosedAt < 300) return
@@ -547,6 +587,7 @@ if (!app.requestSingleInstanceLock()) {
       { label: 'Open folder in Explorer', click: () => void shell.openPath(s.projectPath) },
       { label: 'Copy resume command', click: () => clipboard.writeText(`claude --resume ${s.id}`) },
       { type: 'separator' },
+      { label: 'Set ticket…', click: () => mainWindow?.webContents.send('open-ticket-picker', s) },
       {
         label: s.finished ? 'Mark not finished' : 'Mark finished',
         click: () => {

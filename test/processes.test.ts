@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractResumeIds, probeCommand, mergedListHas } from '../src/main/processes'
+import { extractResumeIds, probeCommand, mergedListHas, branchTickets } from '../src/main/processes'
 
 describe('extractResumeIds', () => {
   it('pulls a single resume id', () => {
@@ -48,5 +48,18 @@ describe('mergedListHas', () => {
   })
   it('handles empty output', () => {
     expect(mergedListHas('', 'main')).toBe(false)
+  })
+})
+
+describe('branchTickets', () => {
+  it('keeps only ticket branches, first-seen per ticket, in order', () => {
+    const out = branchTickets('fix/SOFKAN-1-a\nmain\nfeat/SOFKAN-2-b\nchore/SOFKAN-1-dupe\n')
+    expect(out).toEqual([
+      { ticket: 'SOFKAN-1', branch: 'fix/SOFKAN-1-a' },
+      { ticket: 'SOFKAN-2', branch: 'feat/SOFKAN-2-b' }
+    ])
+  })
+  it('is empty when no branch carries a ticket', () => {
+    expect(branchTickets('main\ndevelop\n')).toEqual([])
   })
 })

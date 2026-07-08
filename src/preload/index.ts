@@ -56,6 +56,18 @@ const api = {
     ipcRenderer.send('set-finished', id, on)
   },
   syncJira: (): Promise<void> => ipcRenderer.invoke('sync-jira'),
+  listBranchTickets: (projectPath: string): Promise<{ ticket: string; branch: string }[]> =>
+    ipcRenderer.invoke('list-branch-tickets', projectPath),
+  verifyTicket: (
+    input: string
+  ): Promise<{ configured: boolean; status: string | null; code: string | null }> =>
+    ipcRenderer.invoke('verify-ticket', input),
+  setTicket: (id: string, value: string | null): void => {
+    ipcRenderer.send('set-ticket', id, value)
+  },
+  onOpenTicketPicker: (cb: (s: Session) => void): void => {
+    ipcRenderer.on('open-ticket-picker', (_e, s) => cb(s))
+  },
   sessionMenu: (s: Session): void => {
     ipcRenderer.send('session-menu', s)
   },

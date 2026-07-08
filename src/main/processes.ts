@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { branchTicket } from './ticket'
 
 const RESUME =
   /--resume\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/g
@@ -41,6 +42,32 @@ function git(repo: string, args: string[]): Promise<string | null> {
     p.on('error', () => resolve(null))
     p.on('close', (code) => resolve(code === 0 ? out.trim() : null))
   })
+}
+
+export function branchTickets(gitOutput: string): { ticket: string; branch: string }[] {
+  const seen = new Set<string>()
+  const out: { ticket: string; branch: string }[] = []
+  for (const line of gitOutput.split(/\r?\n/)) {
+    const branch = line.trim()
+    if (!branch) continue
+    const ticket = branchTicket(branch)
+    if (!ticket || seen.has(ticket)) continue
+    seen.add(ticket)
+    out.push({ ticket, branch })
+  }
+  return out
+}
+
+export async function listBranchTickets(
+  repo: string
+): Promise<{ ticket: string; branch: string }[]> {
+  const out = await git(repo, [
+    'for-each-ref',
+    '--sort=-committerdate',
+    '--format=%(refname:short)',
+    'refs/heads'
+  ])
+  return out ? branchTickets(out) : []
 }
 
 export function mergedListHas(branchListOutput: string, branch: string): boolean {

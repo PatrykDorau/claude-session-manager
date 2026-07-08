@@ -22,6 +22,7 @@ export interface State {
   names: Record<string, string>
   finished: string[]
   finishOptOut: string[]
+  ticketOverride: Record<string, string>
   settings: Settings
 }
 
@@ -52,6 +53,8 @@ export function loadState(file: string): State {
       names: o.names && typeof o.names === 'object' ? o.names : {},
       finished: Array.isArray(o.finished) ? o.finished : [],
       finishOptOut: Array.isArray(o.finishOptOut) ? o.finishOptOut : [],
+      ticketOverride:
+        o.ticketOverride && typeof o.ticketOverride === 'object' ? o.ticketOverride : {},
       settings: {
         jiraBase: typeof s.jiraBase === 'string' ? s.jiraBase : DEFAULT_SETTINGS.jiraBase,
         jiraToken: typeof s.jiraToken === 'string' ? s.jiraToken : DEFAULT_SETTINGS.jiraToken,
@@ -71,7 +74,14 @@ export function loadState(file: string): State {
       }
     }
   } catch {
-    return { watched: [], names: {}, finished: [], finishOptOut: [], settings: { ...DEFAULT_SETTINGS } }
+    return {
+      watched: [],
+      names: {},
+      finished: [],
+      finishOptOut: [],
+      ticketOverride: {},
+      settings: { ...DEFAULT_SETTINGS }
+    }
   }
 }
 
@@ -109,4 +119,17 @@ export function applyFinished(state: State, id: string, on: boolean): State {
     optOut.add(id)
   }
   return { ...state, finished: [...finished], finishOptOut: [...optOut] }
+}
+
+export function applyTicketOverride(state: State, id: string, value: string | null): State {
+  const ticketOverride = { ...state.ticketOverride }
+  if (value === null) delete ticketOverride[id]
+  else ticketOverride[id] = value
+  return { ...state, ticketOverride }
+}
+
+export function overrideTicket(auto: string | null, override: string | undefined): string | null {
+  if (override === undefined) return auto
+  if (override === '') return null
+  return override
 }

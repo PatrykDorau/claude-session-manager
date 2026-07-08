@@ -115,7 +115,8 @@ export async function scanRaw(): Promise<ScanResult> {
         done: done.has(id),
         pendingToolUse: tail.pendingToolUse,
         model: tail.model,
-        contextTokens: tail.contextTokens
+        contextTokens: tail.contextTokens,
+        openingTicket: head.openingTicket
       })
     }
   }

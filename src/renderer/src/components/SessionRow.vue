@@ -175,10 +175,11 @@ function ago(ms: number): string {
         />
         <span v-else class="ttl">{{ title() }}</span>
       </div>
-      <div v-if="session.ticket || session.gitBranch || meta()" class="line meta">
+      <div v-if="session.ticket || meta()" class="line meta">
         <span v-if="session.ticket" class="ticket" @click.stop="openTicket">{{ session.ticket }}</span>
+        <span v-if="session.manualTicket" class="pin" title="Ticket set manually">📌</span>
         <span v-if="session.jiraStatus" class="jira" :title="'Jira status: ' + session.jiraStatus">{{ session.jiraStatus }}</span>
-        <span v-if="session.gitBranch" class="branch" :title="session.gitBranch">
+        <span v-if="session.ticket && session.gitBranch" class="branch" :title="session.gitBranch">
           <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="6" y1="3" x2="6" y2="15" />
             <circle cx="18" cy="6" r="3" />
@@ -263,10 +264,15 @@ function ago(ms: number): string {
   margin-top: 3px;
   gap: 6px;
 }
-.line.meta > * + *:not(.jira)::before {
+.line.meta > * + *:not(.jira):not(.pin)::before {
   content: '·';
   margin-right: 6px;
   color: #484f58;
+}
+.pin {
+  font-size: 9px;
+  opacity: 0.7;
+  margin-left: -2px;
 }
 .actions {
   position: absolute;

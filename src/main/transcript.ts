@@ -1,8 +1,11 @@
+import { openingTicket } from './ticket'
+
 interface Head {
   sessionId: string | null
   cwd: string | null
   gitBranch: string | null
   firstPrompt: string | null
+  openingTicket: string | null
 }
 
 function textOf(content: unknown): string | null {
@@ -56,7 +59,8 @@ export function parseTail(lines: string[]): Tail {
 }
 
 export function parseTranscriptHead(lines: string[]): Head {
-  const head: Head = { sessionId: null, cwd: null, gitBranch: null, firstPrompt: null }
+  const head: Head = { sessionId: null, cwd: null, gitBranch: null, firstPrompt: null, openingTicket: null }
+  const userTexts: string[] = []
   for (const line of lines) {
     let o: any
     try {
@@ -67,10 +71,14 @@ export function parseTranscriptHead(lines: string[]): Head {
     if (head.sessionId == null && typeof o.sessionId === 'string') head.sessionId = o.sessionId
     if (head.cwd == null && typeof o.cwd === 'string') head.cwd = o.cwd
     if (head.gitBranch == null && typeof o.gitBranch === 'string') head.gitBranch = o.gitBranch
-    if (head.firstPrompt == null && o.type === 'user' && o.message) {
+    if (o.type === 'user' && o.message) {
       const t = textOf(o.message.content)
-      if (t) head.firstPrompt = t
+      if (t) {
+        if (head.firstPrompt == null) head.firstPrompt = t
+        userTexts.push(t)
+      }
     }
   }
+  head.openingTicket = openingTicket(userTexts)
   return head
 }

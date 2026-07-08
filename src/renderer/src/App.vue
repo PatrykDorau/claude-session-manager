@@ -5,6 +5,7 @@ import SessionList from './components/SessionList.vue'
 import StatsPanel from './components/StatsPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import SetupGuide from './components/SetupGuide.vue'
+import TicketPicker from './components/TicketPicker.vue'
 import UsageBar from './components/UsageBar.vue'
 import { sortSessions, type SortMode } from './sort'
 import { matchesQuery, matchesFilter, type StatusFilter } from './filter'
@@ -26,7 +27,8 @@ const version = ((): string => {
 })()
 const view = ref<View>('list')
 const watchedOpen = ref(true)
-const othersOpen = ref(true)
+const tasksOpen = ref(true)
+const noTaskOpen = ref(true)
 const finishedOpen = ref(false)
 const controlsOpen = ref(localStorage.getItem('controlsOpen') !== '0')
 const search = ref('')
@@ -39,6 +41,7 @@ const resumeFail = ref<{ label: string; command: string } | null>(null)
 const copied = ref(false)
 const cliStatus = ref<{ claude: boolean; editor: boolean }>({ claude: true, editor: true })
 const menuOpen = ref(false)
+const ticketPicker = ref<Session | null>(null)
 
 const cliBanner = computed(() => {
   if (!cliStatus.value.claude) return 'Claude Code not detected on PATH — open Setup'
@@ -63,6 +66,7 @@ onMounted(() => {
   })
   window.api.onPlayAlert(playChime)
   window.api.onMenuState((open) => (menuOpen.value = open))
+  window.api.onOpenTicketPicker((s) => (ticketPicker.value = s))
   if (!localStorage.getItem('guideSeen')) {
     view.value = 'guide'
     localStorage.setItem('guideSeen', '1')
@@ -91,9 +95,12 @@ const watchedList = computed(() =>
 const otherList = computed(() =>
   filtered.value.filter((s) => !s.finished && !(s.watched || s.isLive))
 )
+const taskList = computed(() => otherList.value.filter((s) => s.ticket))
+const noTaskList = computed(() => otherList.value.filter((s) => !s.ticket))
 const finishedList = computed(() => filtered.value.filter((s) => s.finished))
 const watchedSorted = computed(() => sortSessions(watchedList.value, sortMode.value))
-const otherSorted = computed(() => sortSessions(otherList.value, 'recency'))
+const taskSorted = computed(() => sortSessions(taskList.value, 'recency'))
+const noTaskSorted = computed(() => sortSessions(noTaskList.value, 'recency'))
 const finishedSorted = computed(() => sortSessions(finishedList.value, 'recency'))
 
 function setSort(m: SortMode): void {
@@ -228,15 +235,26 @@ function minimize(): void {
           empty-text="Nothing watched or live"
         />
 
-        <div class="shead" @click="othersOpen = !othersOpen">
-          <span class="chev">{{ othersOpen ? '▾' : '▸' }}</span>
-          Other <span class="count">{{ otherList.length }}</span>
+        <div class="shead" @click="tasksOpen = !tasksOpen">
+          <span class="chev">{{ tasksOpen ? '▾' : '▸' }}</span>
+          Tasks <span class="count">{{ taskList.length }}</span>
         </div>
         <SessionList
-          v-show="othersOpen"
-          :sessions="otherSorted"
+          v-show="tasksOpen"
+          :sessions="taskSorted"
           :group-by="groupBy"
-          empty-text="No matching sessions"
+          empty-text="No sessions with a task"
+        />
+
+        <div class="shead" @click="noTaskOpen = !noTaskOpen">
+          <span class="chev">{{ noTaskOpen ? '▾' : '▸' }}</span>
+          No task <span class="count">{{ noTaskList.length }}</span>
+        </div>
+        <SessionList
+          v-show="noTaskOpen"
+          :sessions="noTaskSorted"
+          :group-by="groupBy"
+          empty-text="No sessions without a task"
         />
 
         <div v-if="finishedList.length" class="shead" @click="finishedOpen = !finishedOpen">
@@ -268,6 +286,8 @@ function minimize(): void {
         </div>
       </div>
     </div>
+
+    <TicketPicker v-if="ticketPicker" :session="ticketPicker" @close="ticketPicker = null" />
   </div>
 </template>
 

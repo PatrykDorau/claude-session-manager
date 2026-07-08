@@ -8,6 +8,8 @@ import {
   applyWatched,
   applyName,
   applyFinished,
+  applyTicketOverride,
+  overrideTicket,
   type State
 } from '../src/main/store'
 
@@ -16,6 +18,7 @@ const base: State = {
   names: {},
   finished: [],
   finishOptOut: [],
+  ticketOverride: {},
   settings: {
     jiraBase: 'https://jira.redge.com/browse/',
     jiraToken: '',
@@ -57,6 +60,22 @@ describe('store pure transforms', () => {
     expect(s.finished).toEqual(['a'])
     expect(s.finishOptOut).toEqual([])
   })
+  it('applyTicketOverride pins, marks not-a-task, and resets on null', () => {
+    let s: State = { ...base }
+    s = applyTicketOverride(s, 'a', 'SOFKAN-1')
+    expect(s.ticketOverride).toEqual({ a: 'SOFKAN-1' })
+    s = applyTicketOverride(s, 'b', '')
+    expect(s.ticketOverride).toEqual({ a: 'SOFKAN-1', b: '' })
+    s = applyTicketOverride(s, 'a', null)
+    expect(s.ticketOverride).toEqual({ b: '' })
+  })
+  it('overrideTicket resolves auto vs pin vs not-a-task', () => {
+    expect(overrideTicket('SOFKAN-1', undefined)).toBe('SOFKAN-1')
+    expect(overrideTicket(null, undefined)).toBe(null)
+    expect(overrideTicket('SOFKAN-1', '')).toBe(null)
+    expect(overrideTicket(null, 'SOFKAN-9')).toBe('SOFKAN-9')
+    expect(overrideTicket('SOFKAN-1', 'SOFKAN-9')).toBe('SOFKAN-9')
+  })
 })
 
 describe('store io', () => {
@@ -69,6 +88,7 @@ describe('store io', () => {
       names: { x: 'n' },
       finished: ['f'],
       finishOptOut: ['o'],
+      ticketOverride: { z: 'SOFKAN-1' },
       settings: {
         jiraBase: 'http://jira.local/',
         jiraToken: 'tok',
