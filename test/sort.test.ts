@@ -38,6 +38,17 @@ describe('sortSessions', () => {
     )
     expect(out.map((x) => x.id)).toEqual(['work', 'idle', 'closed'])
   })
+  it('status: needs-you before working before check output', () => {
+    const out = sortSessions(
+      [
+        s({ id: 'check', status: 'checkout' }),
+        s({ id: 'work', status: 'working' }),
+        s({ id: 'wait', status: 'waiting' })
+      ],
+      'status'
+    )
+    expect(out.map((x) => x.id)).toEqual(['wait', 'work', 'check'])
+  })
   it('project: alphabetical by project then recency', () => {
     const out = sortSessions(
       [

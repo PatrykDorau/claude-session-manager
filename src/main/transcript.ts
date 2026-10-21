@@ -1,12 +1,11 @@
-import { openingTicket } from './ticket'
-
 interface Head {
   sessionId: string | null
   cwd: string | null
   gitBranch: string | null
   firstPrompt: string | null
-  openingTicket: string | null
 }
+
+const NOT_PROMPT = /^<(local-command-caveat|system-reminder|local-command-stdout)>/
 
 function textOf(content: unknown): string | null {
   if (typeof content === 'string') return content
@@ -59,8 +58,8 @@ export function parseTail(lines: string[]): Tail {
 }
 
 export function parseTranscriptHead(lines: string[]): Head {
-  const head: Head = { sessionId: null, cwd: null, gitBranch: null, firstPrompt: null, openingTicket: null }
-  const userTexts: string[] = []
+  const head: Head = { sessionId: null, cwd: null, gitBranch: null, firstPrompt: null }
+  let isAfterCaveat = false
   for (const line of lines) {
     let o: any
     try {
@@ -71,14 +70,13 @@ export function parseTranscriptHead(lines: string[]): Head {
     if (head.sessionId == null && typeof o.sessionId === 'string') head.sessionId = o.sessionId
     if (head.cwd == null && typeof o.cwd === 'string') head.cwd = o.cwd
     if (head.gitBranch == null && typeof o.gitBranch === 'string') head.gitBranch = o.gitBranch
-    if (o.type === 'user' && o.message) {
-      const t = textOf(o.message.content)
-      if (t) {
-        if (head.firstPrompt == null) head.firstPrompt = t
-        userTexts.push(t)
-      }
-    }
+    if (head.firstPrompt != null || o.type !== 'user' || !o.message) continue
+    const t = textOf(o.message.content)?.trimStart()
+    const isCaveat = !!t?.startsWith('<local-command-caveat>')
+    const isLocalCommand = isAfterCaveat && !!t?.startsWith('<command-')
+    isAfterCaveat = isCaveat || isLocalCommand
+    if (o.isMeta || o.isCompactSummary || !t || isLocalCommand || NOT_PROMPT.test(t)) continue
+    head.firstPrompt = textOf(o.message.content)
   }
-  head.openingTicket = openingTicket(userTexts)
   return head
 }

@@ -8,8 +8,11 @@ const initial = window.api.getSettings()
 const jiraBase = ref(initial.jiraBase)
 const jiraToken = ref(initial.jiraToken)
 const jiraDoneStatuses = ref(initial.jiraDoneStatuses)
+const ticketPrefixes = ref(initial.ticketPrefixes)
 const alwaysOnTop = ref(initial.alwaysOnTop)
 const launchOnStartup = ref(initial.launchOnStartup)
+const isDockReserving = ref(initial.isDockReserving)
+const isDockOnTop = ref(initial.isDockOnTop)
 const clickAction = ref(initial.clickAction)
 const alertSound = ref(localStorage.getItem('alertSound') !== '0')
 const soundName = ref<SoundName>((localStorage.getItem('alertSoundName') as SoundName) || 'chime')
@@ -29,6 +32,9 @@ function saveJira(): void {
 }
 function saveJiraToken(): void {
   window.api.setSettings({ jiraToken: jiraToken.value.trim() })
+}
+function savePrefixes(): void {
+  window.api.setSettings({ ticketPrefixes: ticketPrefixes.value })
 }
 function saveJiraStatuses(): void {
   window.api.setSettings({ jiraDoneStatuses: jiraDoneStatuses.value })
@@ -51,6 +57,14 @@ function saveClick(): void {
 function toggleTop(): void {
   alwaysOnTop.value = !alwaysOnTop.value
   window.api.setSettings({ alwaysOnTop: alwaysOnTop.value })
+}
+function toggleDockReserve(): void {
+  isDockReserving.value = !isDockReserving.value
+  window.api.setSettings({ isDockReserving: isDockReserving.value })
+}
+function toggleDockOnTop(): void {
+  isDockOnTop.value = !isDockOnTop.value
+  window.api.setSettings({ isDockOnTop: isDockOnTop.value })
 }
 function toggleStartup(): void {
   launchOnStartup.value = !launchOnStartup.value
@@ -114,6 +128,19 @@ function copyDiag(): void {
       <small class="hint">Comma-separated statuses that count as finished (case-insensitive).</small>
     </label>
 
+    <label class="field">
+      <span class="flbl">Ticket prefixes</span>
+      <input
+        v-model="ticketPrefixes"
+        class="inp"
+        spellcheck="false"
+        placeholder="e.g. SOFKRS, SOFKAN"
+        @change="savePrefixes"
+        @blur="savePrefixes"
+      />
+      <small class="hint">The ticket is taken from the first prompt only. Comma-separated prefixes to accept; leave blank to accept any code (UTF-8, SHA-256… are ignored).</small>
+    </label>
+
     <div class="field">
       <button class="btn" :disabled="syncing" @click="syncJira">
         {{ syncing ? 'Syncing…' : synced ? 'Synced ✓' : 'Sync statuses now' }}
@@ -133,6 +160,16 @@ function copyDiag(): void {
       </select>
       <small class="hint">Right-click a session for all actions at once.</small>
     </label>
+
+    <div class="toggle" @click="toggleDockReserve">
+      <span>Docked bar reserves screen space (pushes windows)</span>
+      <span class="sw" :class="{ on: isDockReserving }" />
+    </div>
+
+    <div class="toggle" @click="toggleDockOnTop">
+      <span>Docked bar always on top</span>
+      <span class="sw" :class="{ on: isDockOnTop }" />
+    </div>
 
     <div class="toggle" @click="toggleSound">
       <span>Notification sound</span>

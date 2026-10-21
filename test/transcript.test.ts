@@ -16,19 +16,36 @@ describe('parseTranscriptHead', () => {
   it('uses the first user message as firstPrompt', () => {
     expect(parseTranscriptHead(lines).firstPrompt).toBe('Fix the next episode bug')
   })
-  it('has null openingTicket when opening prompts carry no ticket', () => {
-    expect(parseTranscriptHead(lines).openingTicket).toBe(null)
+  it('skips meta, caveat, reminder and tool_result entries when picking firstPrompt', () => {
+    const l = [
+      '{"type":"user","cwd":"C:/x","isMeta":true,"message":{"content":"<local-command-caveat>x</local-command-caveat>"}}',
+      '{"type":"user","message":{"content":[{"type":"tool_result","content":"SOFKAN-1"}]}}',
+      '{"type":"user","message":{"content":"<system-reminder>SOFKAN-2</system-reminder>"}}',
+      '{"type":"user","message":{"content":"SOFRMPT-3769 popraw"}}'
+    ]
+    expect(parseTranscriptHead(l).firstPrompt).toBe('SOFRMPT-3769 popraw')
   })
-  it('extracts openingTicket from an opening user message', () => {
-    const l = ['{"type":"user","cwd":"C:/x","message":{"content":"work on SOFKAN-42 please"}}']
-    expect(parseTranscriptHead(l).openingTicket).toBe('SOFKAN-42')
+  it('skips a local command such as /clear that follows the caveat entry', () => {
+    const l = [
+      '{"type":"user","cwd":"C:/x","isMeta":true,"message":{"content":"<local-command-caveat>Caveat</local-command-caveat>"}}',
+      '{"type":"user","message":{"content":"<command-name>/clear</command-name> <command-message>clear</command-message> <command-args></command-args>"}}',
+      '{"type":"user","message":{"content":"<local-command-stdout></local-command-stdout>"}}',
+      '{"type":"user","message":{"content":"SOFKRS-77 napraw"}}'
+    ]
+    expect(parseTranscriptHead(l).firstPrompt).toBe('SOFKRS-77 napraw')
+  })
+  it('keeps a skill slash command as the first prompt', () => {
+    const l = [
+      '{"type":"user","cwd":"C:/x","message":{"content":"<command-message>superpowers:brainstorming</command-message> <command-name>/superpowers:brainstorming</command-name> <command-args>SOFKAN-5 x</command-args>"}}'
+    ]
+    expect(parseTranscriptHead(l).firstPrompt).toContain('SOFKAN-5')
   })
   it('tolerates garbage lines', () => {
     const h = parseTranscriptHead(['not json', ...lines, '{bad'])
     expect(h.sessionId).toBe('9d84c0ea')
   })
   it('returns nulls for empty input', () => {
-    expect(parseTranscriptHead([])).toEqual({ sessionId: null, cwd: null, gitBranch: null, firstPrompt: null, openingTicket: null })
+    expect(parseTranscriptHead([])).toEqual({ sessionId: null, cwd: null, gitBranch: null, firstPrompt: null })
   })
 })
 

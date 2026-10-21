@@ -1,5 +1,9 @@
 export type Status = 'working' | 'waiting' | 'checkout' | 'idle' | 'closed'
 
+export type Stage = 'brainstorm' | 'repro' | 'plan' | 'impl' | 'verify' | 'qa' | 'review' | 'mr'
+
+export const STAGES: Stage[] = ['brainstorm', 'repro', 'plan', 'impl', 'verify', 'qa', 'review', 'mr']
+
 export interface Session {
   id: string
   projectPath: string
@@ -15,12 +19,25 @@ export interface Session {
   model: string | null
   contextTokens: number | null
   dirty: boolean
+  stages: Stage[]
   bg?: boolean
   worktree?: boolean
   repo?: string | null
   finished?: boolean
   jiraStatus?: string | null
   manualTicket?: boolean
+}
+
+export interface TaskMeta {
+  ticket: string
+  title: string | null
+  jiraStatus: string | null
+  stage: Stage | null
+  reached: Stage[]
+  folder: string | null
+  mrUrl: string | null
+  isWatched: boolean
+  isFinished: boolean
 }
 
 export type Severity = 'normal' | 'warning' | 'critical'

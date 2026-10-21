@@ -9,7 +9,8 @@ import {
   ipcMain,
   Tray,
   Menu,
-  globalShortcut
+  globalShortcut,
+  screen
 } from 'electron'
 import type { NativeImage } from 'electron'
 import { join } from 'path'
@@ -17,8 +18,9 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import chokidar from 'chokidar'
 import icon from '../../resources/icon.png?asset'
 import attentionPng from '../../resources/attention.png?asset'
-import type { Session } from '../renderer/src/types'
+import { STAGES, type Session, type TaskMeta } from '../renderer/src/types'
 import { rmSync, readdirSync, existsSync } from 'node:fs'
+import { readdir } from 'node:fs/promises'
 import { join as joinPath } from 'node:path'
 import { release } from 'node:os'
 import { scanRaw } from './scanner'
@@ -30,12 +32,14 @@ import {
   gitDirty,
   probeCommand,
   branchMergedOrGone,
-  listBranchTickets
+  listBranchTickets,
+  gitRemote
 } from './processes'
 import { detectWorktreeRepo } from './worktree'
-import { branchTicket } from './ticket'
-import { fetchIssueStatus } from './jira'
+import { branchTicket, parsePrefixes } from './ticket'
+import { fetchIssue } from './jira'
 import { computeFinished, branchKey } from './finished'
+import { findTaskFolder, folderStages, mrSearchUrl, taskFinished, highestStage } from './taskmeta'
 import { formatDiagnostics } from './diagnostics'
 import { ideDir, projectsDir, doneDir, activeDir, needsInputDir, sessionsDir } from './paths'
 import {
@@ -50,34 +54,25 @@ import {
 import {
   loadState,
   saveState,
+  DEFAULT_STATE,
   applyWatched,
   applyName,
   applyFinished,
   applyTicketOverride,
+  applyTicketWatched,
+  applyTicketFinished,
   overrideTicket,
   type State
 } from './store'
 import { installHooks } from './hooks'
+import { nearestEdge, dockBounds, pickDisplay } from './dock'
+import { registerAppBar, unregisterAppBar } from './appbar'
 import { fetchUsage } from './usage'
 import type { UsageResult } from '../renderer/src/types'
 
 let mainWindow: BrowserWindow
 let tray: Tray
-let appState: State = {
-  watched: [],
-  names: {},
-  finished: [],
-  finishOptOut: [],
-  ticketOverride: {},
-  settings: {
-    jiraBase: 'https://jira.redge.com/browse/',
-    jiraToken: '',
-    jiraDoneStatuses: 'Accepted, Done, Closed',
-    alwaysOnTop: true,
-    clickAction: 'default',
-    launchOnStartup: false
-  }
-}
+let appState: State = DEFAULT_STATE()
 let statePath = ''
 let liveAgentIds = new Set<string>()
 let agentStatus = new Map<string, string>()
@@ -92,17 +87,83 @@ let claudeVersion: string | null = null
 let lastCounts = { total: 0, live: 0, waiting: 0 }
 let menuClosedAt = 0
 let lastSessions: Session[] = []
-let jiraStatus = new Map<string, string>()
+const jiraInFlight = new Set<string>()
+const jiraMissed = new Set<string>()
 const branchDone = new Map<string, boolean>()
 const knownFolders = new Map<string, string>()
 const worktreeRepo = new Map<string, string | null>()
 const notifiedWaiting = new Set<string>()
+let lastTasks: Record<string, TaskMeta> = {}
+let opisEntries: { month: string; names: string[] }[] = []
+let folderFiles = new Map<string, string[]>()
+const remotes = new Map<string, string | null>()
+
+const opisDir = (): string => joinPath(app.getPath('desktop'), 'Opis zadan')
+
+async function refreshTaskSources(): Promise<void> {
+  const root = opisDir()
+  const months = (await readdir(root).catch(() => [] as string[])).filter((m) => /^\d{2}-\d{4}$/.test(m))
+  opisEntries = await Promise.all(
+    months.map(async (month) => ({
+      month,
+      names: await readdir(joinPath(root, month)).catch(() => [] as string[])
+    }))
+  )
+  const tickets = new Set(lastSessions.map((s) => s.ticket).filter((t): t is string => !!t))
+  const nextFiles = new Map<string, string[]>()
+  for (const t of tickets) {
+    const hit = findTaskFolder(opisEntries, t)
+    if (!hit || hit.name !== t) continue
+    const dir = joinPath(root, hit.month, hit.name)
+    nextFiles.set(dir, await readdir(dir).catch(() => [] as string[]))
+  }
+  folderFiles = nextFiles
+  for (const [key, path] of knownFolders)
+    if (!remotes.has(key)) remotes.set(key, await gitRemote(path))
+}
+
+function buildTaskMeta(sessions: Session[]): Record<string, TaskMeta> {
+  const out: Record<string, TaskMeta> = {}
+  const byTicket = new Map<string, Session[]>()
+  for (const s of sessions) if (s.ticket) byTicket.set(s.ticket, [...(byTicket.get(s.ticket) ?? []), s])
+  for (const [ticket, list] of byTicket) {
+    const hit = findTaskFolder(opisEntries, ticket)
+    const folder = hit ? joinPath(opisDir(), hit.month, hit.name) : null
+    const reachedSet = new Set([
+      ...list.flatMap((s) => s.stages),
+      ...(folder ? folderStages(folderFiles.get(folder) ?? []) : [])
+    ])
+    const reached = STAGES.filter((st) => reachedSet.has(st))
+    const remote = list
+      .map((s) => remotes.get(normalizePath(s.projectPath)))
+      .find((r): r is string => !!r)
+    const jira = appState.jira[ticket]
+    out[ticket] = {
+      ticket,
+      title: jira?.summary ?? null,
+      jiraStatus: jira?.status ?? null,
+      stage: highestStage(reached),
+      reached,
+      folder,
+      mrUrl: remote ? mrSearchUrl(remote, ticket) : null,
+      isWatched: appState.watchedTickets.includes(ticket),
+      isFinished: taskFinished(
+        ticket,
+        jira?.status ?? null,
+        appState.settings.jiraDoneStatuses,
+        appState.finishedTickets,
+        appState.finishOptOutTickets
+      )
+    }
+  }
+  return out
+}
 
 function decorate(sessions: Session[]): Session[] {
   const finishCtx = {
     finished: new Set(appState.finished),
     optOut: new Set(appState.finishOptOut),
-    jiraStatus,
+    jiraStatus: new Map(Object.entries(appState.jira).map(([k, v]) => [k, v.status])),
     branchDone,
     accepting: appState.settings.jiraDoneStatuses
   }
@@ -166,7 +227,7 @@ async function pushSessions(): Promise<void> {
       }
     }
   const openIds = [...new Set([...liveAgentIds, ...cachedRunningIds])]
-  const sessions = buildSessions(raw, openIds, Date.now())
+  const sessions = buildSessions(raw, openIds, Date.now(), 8000, parsePrefixes(appState.settings.ticketPrefixes))
   const decorated = decorate(sessions)
   lastSessions = decorated
   lastCounts = {
@@ -174,28 +235,44 @@ async function pushSessions(): Promise<void> {
     live: sessions.filter((s) => s.isLive).length,
     waiting: sessions.filter((s) => s.status === 'waiting').length
   }
+  lastTasks = buildTaskMeta(decorated)
+  mainWindow.webContents.send('tasks', lastTasks)
   mainWindow.webContents.send('sessions', decorated)
   updateAttention(sessions)
+  void fetchUnseenTickets(decorated)
+}
+
+async function fetchTickets(tickets: string[]): Promise<void> {
+  const token = appState.settings.jiraToken.trim()
+  if (!token) return
+  const todo = tickets.filter((t) => !jiraInFlight.has(t))
+  todo.forEach((t) => jiraInFlight.add(t))
+  const results = await Promise.all(
+    todo.map(async (t) => [t, await fetchIssue(appState.settings.jiraBase, token, t)] as const)
+  )
+  todo.forEach((t) => jiraInFlight.delete(t))
+  const jira = { ...appState.jira }
+  for (const [t, issue] of results) if (issue) jira[t] = issue
+  appState = { ...appState, jira }
+  saveState(statePath, appState)
+}
+
+async function fetchUnseenTickets(sessions: Session[]): Promise<void> {
+  const unseen = [
+    ...new Set(sessions.map((s) => s.ticket).filter((t): t is string => !!t && !appState.jira[t]))
+  ].filter((t) => !jiraInFlight.has(t) && !jiraMissed.has(t))
+  if (!unseen.length) return
+  await fetchTickets(unseen)
+  unseen.filter((t) => !appState.jira[t]).forEach((t) => jiraMissed.add(t))
+  if (unseen.some((t) => appState.jira[t])) void pushSessions()
 }
 
 async function refreshFinishSignals(): Promise<void> {
   const isManual = (id: string): boolean =>
     appState.finished.includes(id) || appState.finishOptOut.includes(id)
 
-  const token = appState.settings.jiraToken.trim()
-  if (token) {
-    const tickets = [
-      ...new Set(lastSessions.filter((s) => s.ticket).map((s) => s.ticket as string))
-    ]
-    const next = new Map(jiraStatus)
-    await Promise.all(
-      tickets.map(async (t) => {
-        const name = await fetchIssueStatus(appState.settings.jiraBase, token, t)
-        if (name) next.set(t, name)
-      })
-    )
-    jiraStatus = next
-  }
+  jiraMissed.clear()
+  await fetchTickets([...new Set(lastSessions.filter((s) => s.ticket).map((s) => s.ticket as string))])
 
   const branchJobs = new Map<string, { repo: string; branch: string }>()
   for (const s of lastSessions) {
@@ -345,6 +422,93 @@ function removeSessionFiles(id: string): void {
   liveAgentIds.delete(id)
 }
 
+function sendDockState(): void {
+  mainWindow?.webContents.send('dock-state', {
+    isDocked: appState.dock.isDocked,
+    edge: appState.dock.edge
+  })
+}
+
+function releaseAppBar(): void {
+  if (mainWindow) unregisterAppBar(mainWindow.getNativeWindowHandle())
+}
+
+function applyDock(): void {
+  const d = appState.dock
+  if (!mainWindow || !d.isDocked) return
+  const display = pickDisplay(screen.getAllDisplays(), d.displayId, screen.getPrimaryDisplay().id)
+  let bounds = dockBounds(display.workArea, d.edge, d.width)
+  const isShown = mainWindow.isVisible() && !mainWindow.isMinimized()
+  if (appState.settings.isDockReserving && isShown) {
+    const width = dockBounds(display.bounds, d.edge, d.width).width
+    const granted = registerAppBar(
+      mainWindow.getNativeWindowHandle(),
+      d.edge,
+      screen.dipToScreenRect(null, display.bounds),
+      Math.round(width * display.scaleFactor)
+    )
+    if (granted) bounds = screen.screenToDipRect(null, granted)
+  } else releaseAppBar()
+  mainWindow.setAlwaysOnTop(appState.settings.isDockOnTop, 'screen-saver')
+  mainWindow.setBounds(bounds)
+}
+
+function setDocked(isDocked: boolean, atCursor = false): void {
+  if (!mainWindow) return
+  if (isDocked) {
+    const b = mainWindow.getBounds()
+    const display = screen.getDisplayMatching(b)
+    appState.dock = {
+      ...appState.dock,
+      isDocked: true,
+      edge: nearestEdge(b, display.workArea),
+      displayId: display.id,
+      floating: b
+    }
+    applyDock()
+  } else {
+    const f = appState.dock.floating ?? { x: 100, y: 100, width: 360, height: 500 }
+    const cursor = screen.getCursorScreenPoint()
+    appState.dock = { ...appState.dock, isDocked: false }
+    mainWindow.setAlwaysOnTop(appState.settings.alwaysOnTop, 'screen-saver')
+    const target = atCursor ? { ...f, x: Math.round(cursor.x - f.width / 2), y: cursor.y - 12 } : f
+    mainWindow.setBounds(target)
+    releaseAppBar()
+  }
+  saveState(statePath, appState)
+  sendDockState()
+}
+
+function wireDock(win: BrowserWindow): void {
+  win.on('will-resize', (e, _bounds, details) => {
+    if (!appState.dock.isDocked) return
+    const inner = appState.dock.edge === 'left' ? 'right' : 'left'
+    if (details.edge !== inner) e.preventDefault()
+  })
+  win.on('resized', () => {
+    if (!appState.dock.isDocked) return
+    appState.dock = { ...appState.dock, width: win.getBounds().width }
+    saveState(statePath, appState)
+    applyDock()
+  })
+  win.on('will-move', () => {
+    if (appState.dock.isDocked) setDocked(false, true)
+  })
+  win.on('hide', releaseAppBar)
+  win.on('minimize', releaseAppBar)
+  win.on('show', applyDock)
+  win.on('restore', applyDock)
+  let timer: NodeJS.Timeout | null = null
+  const redock = (): void => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(applyDock, 300)
+  }
+  screen.on('display-metrics-changed', redock)
+  screen.on('display-added', redock)
+  screen.on('display-removed', redock)
+  applyDock()
+}
+
 function applyLaunchOnStartup(on: boolean): void {
   app.setLoginItemSettings({ openAtLogin: on, args: ['--hidden'] })
 }
@@ -409,11 +573,13 @@ function wireSessions(win: BrowserWindow): void {
     await pushSessions()
     void pushUsage()
     void refreshFinishSignals()
+    void refreshTaskSources().then(pushSessions)
   })
   setInterval(pushSessions, 2000)
   setInterval(refreshRunning, 6000)
   setInterval(refreshAgents, 8000)
   setInterval(refreshDirty, 8000)
+  setInterval(refreshTaskSources, 8000)
   setInterval(pushUsage, 60000)
   setInterval(probeEnv, 30000)
   setInterval(refreshFinishSignals, 1800000)
@@ -517,7 +683,10 @@ if (!app.requestSingleInstanceLock()) {
       jiraDoneStatuses: appState.settings.jiraDoneStatuses,
       alwaysOnTop: appState.settings.alwaysOnTop,
       clickAction: appState.settings.clickAction,
-      launchOnStartup: appState.settings.launchOnStartup
+      launchOnStartup: appState.settings.launchOnStartup,
+      ticketPrefixes: appState.settings.ticketPrefixes,
+      isDockReserving: appState.settings.isDockReserving,
+      isDockOnTop: appState.settings.isDockOnTop
     }
   })
   ipcMain.on('set-settings', (_e, patch: Partial<State['settings']>) => {
@@ -527,9 +696,13 @@ if (!app.requestSingleInstanceLock()) {
       appState.settings.jiraDoneStatuses = patch.jiraDoneStatuses
     if (typeof patch.alwaysOnTop === 'boolean') {
       appState.settings.alwaysOnTop = patch.alwaysOnTop
-      mainWindow?.setAlwaysOnTop(patch.alwaysOnTop, 'screen-saver')
+      if (!appState.dock.isDocked) mainWindow?.setAlwaysOnTop(patch.alwaysOnTop, 'screen-saver')
     }
+    if (typeof patch.isDockReserving === 'boolean') appState.settings.isDockReserving = patch.isDockReserving
+    if (typeof patch.isDockOnTop === 'boolean') appState.settings.isDockOnTop = patch.isDockOnTop
+    if (typeof patch.isDockReserving === 'boolean' || typeof patch.isDockOnTop === 'boolean') applyDock()
     if (patch.clickAction) appState.settings.clickAction = patch.clickAction
+    if (typeof patch.ticketPrefixes === 'string') appState.settings.ticketPrefixes = patch.ticketPrefixes
     if (typeof patch.launchOnStartup === 'boolean') {
       appState.settings.launchOnStartup = patch.launchOnStartup
       applyLaunchOnStartup(patch.launchOnStartup)
@@ -555,8 +728,8 @@ if (!app.requestSingleInstanceLock()) {
     if (!code) return { configured: false, status: null, code: null }
     const token = appState.settings.jiraToken.trim()
     if (!token) return { configured: false, status: null, code }
-    const status = await fetchIssueStatus(appState.settings.jiraBase, token, code)
-    return { configured: true, status, code }
+    const issue = await fetchIssue(appState.settings.jiraBase, token, code)
+    return { configured: true, status: issue?.status ?? null, code }
   })
   ipcMain.on('set-ticket', (_e, id: string, value: string | null) => {
     if (!id) return
@@ -567,6 +740,7 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.on('session-menu', (_e, s) => {
     if (!s?.id) return
     if (Date.now() - menuClosedAt < 300) return
+    const task: TaskMeta | undefined = s.ticket ? lastTasks[s.ticket] : undefined
     const menu = Menu.buildFromTemplate([
       ...(s.bg
         ? [{ label: 'Open agent view (attach)', click: () => openAgentView(s.projectPath) }]
@@ -589,17 +763,21 @@ if (!app.requestSingleInstanceLock()) {
       { type: 'separator' },
       { label: 'Set ticket…', click: () => mainWindow?.webContents.send('open-ticket-picker', s) },
       {
-        label: s.finished ? 'Mark not finished' : 'Mark finished',
+        label: (task ? task.isFinished : s.finished) ? 'Mark task not finished' : 'Mark finished',
         click: () => {
-          appState = applyFinished(appState, s.id, !s.finished)
+          appState = task
+            ? applyTicketFinished(appState, task.ticket, !task.isFinished)
+            : applyFinished(appState, s.id, !s.finished)
           saveState(statePath, appState)
           void pushSessions()
         }
       },
       {
-        label: s.watched ? 'Unwatch' : 'Watch',
+        label: (task ? task.isWatched : s.watched) ? 'Unpin' : task ? 'Pin task' : 'Watch',
         click: () => {
-          appState = applyWatched(appState, s.id, !s.watched)
+          appState = task
+            ? applyTicketWatched(appState, task.ticket, !task.isWatched)
+            : applyWatched(appState, s.id, !s.watched)
           saveState(statePath, appState)
           void pushSessions()
         }
@@ -613,6 +791,30 @@ if (!app.requestSingleInstanceLock()) {
         mainWindow?.webContents.send('menu-state', false)
       }
     })
+  })
+  ipcMain.on('open-task-folder', (_e, ticket: string) => {
+    const folder = lastTasks[ticket]?.folder
+    if (folder && existsSync(folder)) void shell.openPath(folder)
+  })
+  ipcMain.on('open-mr', (_e, ticket: string) => {
+    const url = lastTasks[ticket]?.mrUrl
+    if (url) void shell.openExternal(url)
+  })
+  ipcMain.on('set-task-watched', (_e, ticket: string, on: boolean) => {
+    if (!ticket) return
+    appState = applyTicketWatched(appState, ticket, on)
+    saveState(statePath, appState)
+    void pushSessions()
+  })
+  ipcMain.on('set-task-finished', (_e, ticket: string, on: boolean) => {
+    if (!ticket) return
+    appState = applyTicketFinished(appState, ticket, on)
+    saveState(statePath, appState)
+    void pushSessions()
+  })
+  ipcMain.on('toggle-dock', () => setDocked(!appState.dock.isDocked))
+  ipcMain.on('get-dock-state', (e) => {
+    e.returnValue = { isDocked: appState.dock.isDocked, edge: appState.dock.edge }
   })
   ipcMain.on('copy-text', (_e, text: string) => {
     clipboard.writeText(text)
@@ -656,6 +858,7 @@ if (!app.requestSingleInstanceLock()) {
   mainWindow = createWindow()
   wireSessions(mainWindow)
   buildTray(mainWindow)
+  wireDock(mainWindow)
 
   mainWindow.on('close', (e) => {
     console.log('[diag] window close event, isQuiting=', (app as never as { isQuiting?: boolean }).isQuiting)
@@ -689,6 +892,7 @@ if (!app.requestSingleInstanceLock()) {
 app.on('before-quit', () => {
   console.log('[diag] before-quit')
   ;(app as unknown as { isQuiting?: boolean }).isQuiting = true
+  releaseAppBar()
 })
 
 app.on('will-quit', () => {

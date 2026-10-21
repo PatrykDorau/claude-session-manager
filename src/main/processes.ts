@@ -44,6 +44,10 @@ function git(repo: string, args: string[]): Promise<string | null> {
   })
 }
 
+export async function gitRemote(repo: string): Promise<string | null> {
+  return git(repo, ['remote', 'get-url', 'origin'])
+}
+
 export function branchTickets(gitOutput: string): { ticket: string; branch: string }[] {
   const seen = new Set<string>()
   const out: { ticket: string; branch: string }[] = []

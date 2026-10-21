@@ -1,19 +1,22 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, provide } from 'vue'
-import type { Session, UsageResult } from './types'
+import type { Session, TaskMeta, UsageResult } from './types'
 import SessionList from './components/SessionList.vue'
 import StatsPanel from './components/StatsPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import SetupGuide from './components/SetupGuide.vue'
 import TicketPicker from './components/TicketPicker.vue'
+import TaskCard from './components/TaskCard.vue'
 import UsageBar from './components/UsageBar.vue'
 import { sortSessions, type SortMode } from './sort'
+import { buildCards, splitSections, sortCards, sortNoTask, cardMatches } from './cards'
 import { matchesQuery, matchesFilter, type StatusFilter } from './filter'
 import { playSound, type SoundName } from './sound'
 
 type View = 'list' | 'stats' | 'settings' | 'guide'
 
 const sessions = ref<Session[]>([])
+const tasks = ref<Record<string, TaskMeta>>({})
 const usage = ref<UsageResult | null>(window.api.getUsage())
 const loaded = ref(false)
 const minElapsed = ref(false)
@@ -26,7 +29,6 @@ const version = ((): string => {
   }
 })()
 const view = ref<View>('list')
-const watchedOpen = ref(true)
 const tasksOpen = ref(true)
 const noTaskOpen = ref(true)
 const finishedOpen = ref(false)
@@ -42,6 +44,7 @@ const copied = ref(false)
 const cliStatus = ref<{ claude: boolean; editor: boolean }>({ claude: true, editor: true })
 const menuOpen = ref(false)
 const ticketPicker = ref<Session | null>(null)
+const dock = ref(window.api.getDockState())
 
 const cliBanner = computed(() => {
   if (!cliStatus.value.claude) return 'Claude Code not detected on PATH — open Setup'
@@ -54,6 +57,8 @@ const notSignedIn = computed(
 
 onMounted(() => {
   setTimeout(() => (minElapsed.value = true), 600)
+  window.api.onTasks((t) => (tasks.value = t))
+  window.api.onDockState((s) => (dock.value = s))
   window.api.onSessions((s) => {
     sessions.value = s
     loaded.value = true
@@ -89,19 +94,25 @@ const filtered = computed(() =>
     (s) => matchesQuery(s, search.value) && matchesFilter(s, statusFilter.value)
   )
 )
-const watchedList = computed(() =>
-  filtered.value.filter((s) => !s.finished && (s.watched || s.isLive))
+const cards = computed(() =>
+  buildCards(sessions.value, tasks.value).filter(
+    (c) => cardMatches(c, search.value) && c.sessions.some((s) => matchesFilter(s, statusFilter.value))
+  )
 )
-const otherList = computed(() =>
-  filtered.value.filter((s) => !s.finished && !(s.watched || s.isLive))
+const sections = computed(() =>
+  splitSections(
+    cards.value,
+    filtered.value.filter((s) => !s.ticket)
+  )
 )
-const taskList = computed(() => otherList.value.filter((s) => s.ticket))
-const noTaskList = computed(() => otherList.value.filter((s) => !s.ticket))
-const finishedList = computed(() => filtered.value.filter((s) => s.finished))
-const watchedSorted = computed(() => sortSessions(watchedList.value, sortMode.value))
-const taskSorted = computed(() => sortSessions(taskList.value, 'recency'))
-const noTaskSorted = computed(() => sortSessions(noTaskList.value, 'recency'))
-const finishedSorted = computed(() => sortSessions(finishedList.value, 'recency'))
+const taskCards = computed(() => sortCards(sections.value.tasks, sortMode.value))
+const noTaskSorted = computed(() => sortNoTask(sections.value.noTask, sortMode.value))
+const finishedCards = computed(() => sortCards(sections.value.finishedCards, 'recency'))
+const finishedSorted = computed(() => sortSessions(sections.value.finishedSessions, 'recency'))
+const finishedCount = computed(() => finishedCards.value.length + finishedSorted.value.length)
+const activeFilterCount = computed(
+  () => (search.value.trim() ? 1 : 0) + (statusFilter.value !== 'all' ? 1 : 0)
+)
 
 function setSort(m: SortMode): void {
   sortMode.value = m
@@ -118,6 +129,9 @@ function toggleControls(): void {
   controlsOpen.value = !controlsOpen.value
   localStorage.setItem('controlsOpen', controlsOpen.value ? '1' : '0')
 }
+function toggleDock(): void {
+  window.api.toggleDock()
+}
 function minimize(): void {
   window.api.minimizeWindow()
 }
@@ -133,13 +147,25 @@ function minimize(): void {
         <button
           v-if="view === 'list'"
           class="hb"
-          :class="{ on: controlsOpen }"
-          title="Search & filters"
+          :class="{ on: controlsOpen, active: activeFilterCount }"
+          :title="controlsOpen ? 'Hide search & filters' : 'Show search & filters'"
           @click="toggleControls"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="11" cy="11" r="7" />
-            <path d="M21 21l-4.3-4.3" />
+            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+          </svg>
+          <span v-if="activeFilterCount" class="badge">{{ activeFilterCount }}</span>
+        </button>
+        <button
+          class="hb"
+          :class="{ on: dock.isDocked }"
+          :title="dock.isDocked ? 'Undock' : 'Dock to the nearest screen edge'"
+          @click="toggleDock"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <line v-if="dock.isDocked && dock.edge === 'left'" x1="9" y1="4" x2="9" y2="20" />
+            <line v-else x1="15" y1="4" x2="15" y2="20" />
           </svg>
         </button>
         <button class="hb" :class="{ on: view === 'stats' }" title="Statistics" @click="show('stats')">
@@ -224,31 +250,18 @@ function minimize(): void {
         </button>
       </div>
       <div class="scroll">
-        <div class="shead" @click="watchedOpen = !watchedOpen">
-          <span class="chev">{{ watchedOpen ? '▾' : '▸' }}</span>
-          Watched <span class="count">{{ watchedList.length }}</span>
-        </div>
-        <SessionList
-          v-show="watchedOpen"
-          :sessions="watchedSorted"
-          :group-by="groupBy"
-          empty-text="Nothing watched or live"
-        />
-
         <div class="shead" @click="tasksOpen = !tasksOpen">
           <span class="chev">{{ tasksOpen ? '▾' : '▸' }}</span>
-          Tasks <span class="count">{{ taskList.length }}</span>
+          Tasks <span class="count">{{ taskCards.length }}</span>
         </div>
-        <SessionList
-          v-show="tasksOpen"
-          :sessions="taskSorted"
-          :group-by="groupBy"
-          empty-text="No sessions with a task"
-        />
+        <ul v-show="tasksOpen">
+          <TaskCard v-for="c in taskCards" :key="c.ticket" :card="c" />
+          <li v-if="!taskCards.length" class="empty">No tasks</li>
+        </ul>
 
         <div class="shead" @click="noTaskOpen = !noTaskOpen">
           <span class="chev">{{ noTaskOpen ? '▾' : '▸' }}</span>
-          No task <span class="count">{{ noTaskList.length }}</span>
+          No task <span class="count">{{ noTaskSorted.length }}</span>
         </div>
         <SessionList
           v-show="noTaskOpen"
@@ -257,10 +270,13 @@ function minimize(): void {
           empty-text="No sessions without a task"
         />
 
-        <div v-if="finishedList.length" class="shead" @click="finishedOpen = !finishedOpen">
+        <div v-if="finishedCount" class="shead" @click="finishedOpen = !finishedOpen">
           <span class="chev">{{ finishedOpen ? '▾' : '▸' }}</span>
-          Finished <span class="count">{{ finishedList.length }}</span>
+          Finished <span class="count">{{ finishedCount }}</span>
         </div>
+        <ul v-show="finishedOpen">
+          <TaskCard v-for="c in finishedCards" :key="c.ticket" :card="c" />
+        </ul>
         <SessionList
           v-show="finishedOpen"
           :sessions="finishedSorted"
@@ -404,6 +420,15 @@ header {
 .hb.on {
   color: #58a6ff;
   border-color: #58a6ff;
+}
+.hb.active {
+  color: #f0883e;
+  border-color: #f0883e;
+}
+.badge {
+  margin-left: 3px;
+  font-size: 10px;
+  font-weight: 700;
 }
 .scroll {
   overflow-y: auto;

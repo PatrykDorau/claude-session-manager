@@ -4,12 +4,12 @@ import { jiraApiUrl, isAccepting } from '../src/main/jira'
 describe('jiraApiUrl', () => {
   it('derives the issue API url from a browse base (trailing slash)', () => {
     expect(jiraApiUrl('https://jira.redge.com/browse/', 'SOFKRS-8028')).toBe(
-      'https://jira.redge.com/rest/api/2/issue/SOFKRS-8028?fields=status'
+      'https://jira.redge.com/rest/api/2/issue/SOFKRS-8028?fields=status,summary'
     )
   })
   it('ignores the path of the browse base, using only the origin', () => {
     expect(jiraApiUrl('https://jira.redge.com/browse/SOFKRS-1', 'KAN-2')).toBe(
-      'https://jira.redge.com/rest/api/2/issue/KAN-2?fields=status'
+      'https://jira.redge.com/rest/api/2/issue/KAN-2?fields=status,summary'
     )
   })
 })

@@ -2,7 +2,7 @@ import type { Session } from './types'
 
 export type SortMode = 'status' | 'recency' | 'project'
 
-const RANK: Record<string, number> = { working: 0, waiting: 1, checkout: 2, idle: 3, closed: 4 }
+export const RANK: Record<string, number> = { waiting: 0, working: 1, checkout: 2, idle: 3, closed: 4 }
 
 export function sortSessions(list: Session[], mode: SortMode): Session[] {
   const out = [...list]

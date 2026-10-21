@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs'
+import type { JiraIssue } from './jira'
 
 export type ClickAction =
   | 'project-cmd'
@@ -15,6 +16,26 @@ export interface Settings {
   alwaysOnTop: boolean
   clickAction: ClickAction
   launchOnStartup: boolean
+  ticketPrefixes: string
+  isDockReserving: boolean
+  isDockOnTop: boolean
+}
+
+export type DockEdge = 'left' | 'right'
+
+export interface Rect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface DockState {
+  isDocked: boolean
+  edge: DockEdge
+  width: number
+  displayId: number | null
+  floating: Rect | null
 }
 
 export interface State {
@@ -23,6 +44,11 @@ export interface State {
   finished: string[]
   finishOptOut: string[]
   ticketOverride: Record<string, string>
+  jira: Record<string, JiraIssue>
+  watchedTickets: string[]
+  finishedTickets: string[]
+  finishOptOutTickets: string[]
+  dock: DockState
   settings: Settings
 }
 
@@ -41,8 +67,52 @@ const DEFAULT_SETTINGS: Settings = {
   jiraDoneStatuses: 'Accepted, Done, Closed',
   alwaysOnTop: true,
   clickAction: 'project-cmd',
-  launchOnStartup: false
+  launchOnStartup: false,
+  ticketPrefixes: '',
+  isDockReserving: false,
+  isDockOnTop: false
 }
+
+const DEFAULT_DOCK: DockState = {
+  isDocked: false,
+  edge: 'right',
+  width: 320,
+  displayId: null,
+  floating: null
+}
+
+const isRect = (r: any): r is Rect =>
+  !!r && ['x', 'y', 'width', 'height'].every((k) => typeof r[k] === 'number')
+
+const loadDock = (d: any): DockState => {
+  if (!d || typeof d !== 'object') return { ...DEFAULT_DOCK }
+  return {
+    isDocked: typeof d.isDocked === 'boolean' ? d.isDocked : DEFAULT_DOCK.isDocked,
+    edge: d.edge === 'left' || d.edge === 'right' ? d.edge : DEFAULT_DOCK.edge,
+    width: typeof d.width === 'number' ? d.width : DEFAULT_DOCK.width,
+    displayId: typeof d.displayId === 'number' ? d.displayId : null,
+    floating: isRect(d.floating) ? d.floating : null
+  }
+}
+
+const stringList = (v: unknown): string[] =>
+  Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []
+
+const bool = (v: unknown, fallback: boolean): boolean => (typeof v === 'boolean' ? v : fallback)
+
+export const DEFAULT_STATE = (): State => ({
+  watched: [],
+  names: {},
+  finished: [],
+  finishOptOut: [],
+  ticketOverride: {},
+  jira: {},
+  watchedTickets: [],
+  finishedTickets: [],
+  finishOptOutTickets: [],
+  dock: { ...DEFAULT_DOCK },
+  settings: { ...DEFAULT_SETTINGS }
+})
 
 export function loadState(file: string): State {
   try {
@@ -55,6 +125,11 @@ export function loadState(file: string): State {
       finishOptOut: Array.isArray(o.finishOptOut) ? o.finishOptOut : [],
       ticketOverride:
         o.ticketOverride && typeof o.ticketOverride === 'object' ? o.ticketOverride : {},
+      jira: o.jira && typeof o.jira === 'object' ? o.jira : {},
+      watchedTickets: stringList(o.watchedTickets),
+      finishedTickets: stringList(o.finishedTickets),
+      finishOptOutTickets: stringList(o.finishOptOutTickets),
+      dock: loadDock(o.dock),
       settings: {
         jiraBase: typeof s.jiraBase === 'string' ? s.jiraBase : DEFAULT_SETTINGS.jiraBase,
         jiraToken: typeof s.jiraToken === 'string' ? s.jiraToken : DEFAULT_SETTINGS.jiraToken,
@@ -70,18 +145,15 @@ export function loadState(file: string): State {
         launchOnStartup:
           typeof s.launchOnStartup === 'boolean'
             ? s.launchOnStartup
-            : DEFAULT_SETTINGS.launchOnStartup
+            : DEFAULT_SETTINGS.launchOnStartup,
+        ticketPrefixes:
+          typeof s.ticketPrefixes === 'string' ? s.ticketPrefixes : DEFAULT_SETTINGS.ticketPrefixes,
+        isDockReserving: bool(s.isDockReserving, DEFAULT_SETTINGS.isDockReserving),
+        isDockOnTop: bool(s.isDockOnTop, DEFAULT_SETTINGS.isDockOnTop)
       }
     }
   } catch {
-    return {
-      watched: [],
-      names: {},
-      finished: [],
-      finishOptOut: [],
-      ticketOverride: {},
-      settings: { ...DEFAULT_SETTINGS }
-    }
+    return DEFAULT_STATE()
   }
 }
 
@@ -132,4 +204,24 @@ export function overrideTicket(auto: string | null, override: string | undefined
   if (override === undefined) return auto
   if (override === '') return null
   return override
+}
+
+export function applyTicketWatched(state: State, ticket: string, on: boolean): State {
+  const set = new Set(state.watchedTickets)
+  if (on) set.add(ticket)
+  else set.delete(ticket)
+  return { ...state, watchedTickets: [...set] }
+}
+
+export function applyTicketFinished(state: State, ticket: string, on: boolean): State {
+  const finished = new Set(state.finishedTickets)
+  const optOut = new Set(state.finishOptOutTickets)
+  if (on) {
+    finished.add(ticket)
+    optOut.delete(ticket)
+  } else {
+    finished.delete(ticket)
+    optOut.add(ticket)
+  }
+  return { ...state, finishedTickets: [...finished], finishOptOutTickets: [...optOut] }
 }

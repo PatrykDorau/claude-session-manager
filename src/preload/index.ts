@@ -1,11 +1,26 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import type { Session, UsageResult } from '../renderer/src/types'
+import type { Session, TaskMeta, UsageResult } from '../renderer/src/types'
 
 // Custom APIs for renderer
 const api = {
   onSessions: (cb: (s: Session[]) => void): void => {
     ipcRenderer.on('sessions', (_e, s) => cb(s))
+  },
+  onTasks: (cb: (t: Record<string, TaskMeta>) => void): void => {
+    ipcRenderer.on('tasks', (_e, t) => cb(t))
+  },
+  openTaskFolder: (ticket: string): void => {
+    ipcRenderer.send('open-task-folder', ticket)
+  },
+  openMr: (ticket: string): void => {
+    ipcRenderer.send('open-mr', ticket)
+  },
+  setTaskWatched: (ticket: string, on: boolean): void => {
+    ipcRenderer.send('set-task-watched', ticket, on)
+  },
+  setTaskFinished: (ticket: string, on: boolean): void => {
+    ipcRenderer.send('set-task-finished', ticket, on)
   },
   openSession: (s: Session): void => {
     ipcRenderer.send('open-session', s)
@@ -41,6 +56,9 @@ const api = {
     alwaysOnTop: boolean
     clickAction: string
     launchOnStartup: boolean
+    ticketPrefixes: string
+    isDockReserving: boolean
+    isDockOnTop: boolean
   } => ipcRenderer.sendSync('get-settings'),
   setSettings: (patch: {
     jiraBase?: string
@@ -49,6 +67,9 @@ const api = {
     alwaysOnTop?: boolean
     clickAction?: string
     launchOnStartup?: boolean
+    ticketPrefixes?: string
+    isDockReserving?: boolean
+    isDockOnTop?: boolean
   }): void => {
     ipcRenderer.send('set-settings', patch)
   },
@@ -83,6 +104,13 @@ const api = {
   installHooks: (): { ok: boolean; error?: string } => ipcRenderer.sendSync('install-hooks'),
   onPlayAlert: (cb: () => void): void => {
     ipcRenderer.on('play-alert', () => cb())
+  },
+  toggleDock: (): void => {
+    ipcRenderer.send('toggle-dock')
+  },
+  getDockState: (): { isDocked: boolean; edge: 'left' | 'right' } => ipcRenderer.sendSync('get-dock-state'),
+  onDockState: (cb: (s: { isDocked: boolean; edge: 'left' | 'right' }) => void): void => {
+    ipcRenderer.on('dock-state', (_e, s) => cb(s))
   },
   onMenuState: (cb: (open: boolean) => void): void => {
     ipcRenderer.on('menu-state', (_e, open) => cb(open))

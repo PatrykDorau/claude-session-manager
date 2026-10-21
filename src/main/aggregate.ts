@@ -1,5 +1,5 @@
-import type { Session } from '../renderer/src/types'
-import { branchTicket } from './ticket'
+import type { Session, Stage } from '../renderer/src/types'
+import { findTicket } from './ticket'
 import { deriveStatus } from './status'
 import { normalizePath } from './lock'
 
@@ -15,7 +15,7 @@ export interface RawSession {
   pendingToolUse: boolean
   model: string | null
   contextTokens: number | null
-  openingTicket?: string | null
+  stages?: Stage[]
 }
 
 function projectName(cwd: string | null): string {
@@ -64,26 +64,10 @@ export function buildSessions(
   raw: RawSession[],
   openIds: string[],
   nowMs: number,
-  workingWindowMs = 8000
+  workingWindowMs = 8000,
+  prefixes: string[] = []
 ): Session[] {
   const openSet = new Set(openIds)
-
-  const groupCount = new Map<string, number>()
-  for (const r of raw) {
-    const bt = branchTicket(r.gitBranch)
-    if (!bt) continue
-    const key = normalizePath(r.cwd ?? '') + ' ' + bt
-    groupCount.set(key, (groupCount.get(key) ?? 0) + 1)
-  }
-
-  const resolveTicket = (r: RawSession): string | null => {
-    const bt = branchTicket(r.gitBranch)
-    if (bt) {
-      const key = normalizePath(r.cwd ?? '') + ' ' + bt
-      if ((groupCount.get(key) ?? 0) <= 1) return bt
-    }
-    return r.openingTicket ?? null
-  }
 
   const sessions = raw.map<Session>((r) => {
     const isLive = openSet.has(r.id)
@@ -92,7 +76,7 @@ export function buildSessions(
       projectPath: r.cwd ?? '',
       projectName: projectName(r.cwd),
       gitBranch: r.gitBranch,
-      ticket: resolveTicket(r),
+      ticket: findTicket(r.firstPrompt, prefixes),
       firstPrompt: r.firstPrompt,
       lastActive: r.mtimeMs,
       isLive,
@@ -110,7 +94,8 @@ export function buildSessions(
       name: null,
       model: r.model,
       contextTokens: r.contextTokens,
-      dirty: false
+      dirty: false,
+      stages: r.stages ?? []
     }
   })
 

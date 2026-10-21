@@ -1,11 +1,16 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
-import type { Session, UsageResult } from '../renderer/src/types'
+import type { Session, TaskMeta, UsageResult } from '../renderer/src/types'
 
 declare global {
   interface Window {
     electron: ElectronAPI
     api: {
       onSessions: (cb: (s: Session[]) => void) => void
+      onTasks: (cb: (t: Record<string, TaskMeta>) => void) => void
+      openTaskFolder: (ticket: string) => void
+      openMr: (ticket: string) => void
+      setTaskWatched: (ticket: string, on: boolean) => void
+      setTaskFinished: (ticket: string, on: boolean) => void
       openSession: (s: Session) => void
       openTicket: (code: string) => void
       copyText: (text: string) => void
@@ -24,6 +29,9 @@ declare global {
         alwaysOnTop: boolean
         clickAction: string
         launchOnStartup: boolean
+        ticketPrefixes: string
+        isDockReserving: boolean
+        isDockOnTop: boolean
       }
       setSettings: (patch: {
         jiraBase?: string
@@ -32,6 +40,9 @@ declare global {
         alwaysOnTop?: boolean
         clickAction?: string
         launchOnStartup?: boolean
+        ticketPrefixes?: string
+        isDockReserving?: boolean
+        isDockOnTop?: boolean
       }) => void
       setFinished: (id: string, on: boolean) => void
       syncJira: () => Promise<void>
@@ -47,6 +58,9 @@ declare global {
       onResumeFailed: (cb: (info: { label: string; command: string }) => void) => void
       installHooks: () => { ok: boolean; error?: string }
       onPlayAlert: (cb: () => void) => void
+      toggleDock: () => void
+      getDockState: () => { isDocked: boolean; edge: 'left' | 'right' }
+      onDockState: (cb: (s: { isDocked: boolean; edge: 'left' | 'right' }) => void) => void
       onMenuState: (cb: (open: boolean) => void) => void
     }
   }

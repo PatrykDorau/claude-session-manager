@@ -72,7 +72,7 @@ describe('buildSessions', () => {
 
   it('derives ticket, projectName, lastActive, and defaults watched/name', () => {
     const [s] = buildSessions(
-      [{ id: 'a', cwd: 'C:\\X\\krs-fo-web', gitBranch: 'feat/SOFKAN-9-z', firstPrompt: 'hi', mtimeMs: now, needsInput: false, active: false, done: false, pendingToolUse: false, model: null, contextTokens: null }],
+      [{ id: 'a', cwd: 'C:\\X\\krs-fo-web', gitBranch: 'feat/SOFKAN-9-z', firstPrompt: 'hi SOFKAN-9', mtimeMs: now, needsInput: false, active: false, done: false, pendingToolUse: false, model: null, contextTokens: null }],
       [],
       now
     )
@@ -99,7 +99,6 @@ describe('buildSessions', () => {
 
 describe('buildSessions ticket resolution', () => {
   const base = {
-    firstPrompt: null,
     mtimeMs: now,
     needsInput: false,
     active: false,
@@ -109,55 +108,32 @@ describe('buildSessions ticket resolution', () => {
     contextTokens: null
   }
 
-  it('tags a solo session on a ticket branch from the branch', () => {
-    const [s] = buildSessions([{ id: 'a', cwd: 'C:\\r', gitBranch: 'fix/SOFKAN-1-x', ...base }], [], now)
-    expect(s.ticket).toBe('SOFKAN-1')
-  })
-
-  it('when two sessions share a branch ticket, only the one whose opening prompt names it is tagged', () => {
-    const out = buildSessions(
-      [
-        { id: 'task', cwd: 'C:\\r', gitBranch: 'fix/SOFKAN-1-x', openingTicket: 'SOFKAN-1', ...base },
-        { id: 'rand', cwd: 'C:\\r', gitBranch: 'fix/SOFKAN-1-x', openingTicket: null, ...base }
-      ],
-      [],
-      now
-    )
-    expect(out.find((s) => s.id === 'task')!.ticket).toBe('SOFKAN-1')
-    expect(out.find((s) => s.id === 'rand')!.ticket).toBe(null)
-  })
-
-  it('leaves both plain when a shared branch ticket is named by neither', () => {
-    const out = buildSessions(
-      [
-        { id: 'a', cwd: 'C:\\r', gitBranch: 'fix/SOFKAN-1-x', openingTicket: null, ...base },
-        { id: 'b', cwd: 'C:\\r', gitBranch: 'fix/SOFKAN-1-x', openingTicket: null, ...base }
-      ],
-      [],
-      now
-    )
-    expect(out.every((s) => s.ticket === null)).toBe(true)
-  })
-
-  it('tags from the opening prompt when the branch has no ticket', () => {
+  it('takes the ticket from the first prompt even when the branch names another', () => {
     const [s] = buildSessions(
-      [{ id: 'a', cwd: 'C:\\r', gitBranch: 'develop', openingTicket: 'SOFKAN-7', ...base }],
+      [{ id: 'a', cwd: 'C:\r', gitBranch: 'fix/SOFRMPT-3779-x', firstPrompt: 'SOFJJJ-2350 zrób to', ...base }],
       [],
       now
+    )
+    expect(s.ticket).toBe('SOFJJJ-2350')
+  })
+
+  it('has no ticket when the first prompt has no code, regardless of branch', () => {
+    const [s] = buildSessions(
+      [{ id: 'a', cwd: 'C:\r', gitBranch: 'fix/SOFKAN-1-x', firstPrompt: 'jakie pytanie', ...base }],
+      [],
+      now
+    )
+    expect(s.ticket).toBe(null)
+  })
+
+  it('honours configured ticket prefixes', () => {
+    const [s] = buildSessions(
+      [{ id: 'a', cwd: 'C:\r', gitBranch: null, firstPrompt: 'ABC-1 then SOFKAN-7', ...base }],
+      [],
+      now,
+      8000,
+      ['SOF']
     )
     expect(s.ticket).toBe('SOFKAN-7')
-  })
-
-  it('does not merge a worktree (distinct cwd) into the parent repo group', () => {
-    const out = buildSessions(
-      [
-        { id: 'main', cwd: 'C:\\r', gitBranch: 'fix/SOFKAN-1-x', ...base },
-        { id: 'wt', cwd: 'C:\\r\\.claude\\worktrees\\w', gitBranch: 'fix/SOFKAN-1-x', ...base }
-      ],
-      [],
-      now
-    )
-    expect(out.find((s) => s.id === 'main')!.ticket).toBe('SOFKAN-1')
-    expect(out.find((s) => s.id === 'wt')!.ticket).toBe('SOFKAN-1')
   })
 })

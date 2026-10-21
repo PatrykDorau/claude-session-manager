@@ -4,6 +4,9 @@ import { ideDir, projectsDir, needsInputDir, activeDir, doneDir } from './paths'
 import { parseLockFile } from './lock'
 import { parseTranscriptHead, parseTail } from './transcript'
 import type { RawSession } from './aggregate'
+import { createStageScanner } from './stages'
+
+const stageScanner = createStageScanner()
 
 export interface ScanResult {
   raw: RawSession[]
@@ -47,6 +50,23 @@ async function readChunk(file: string, maxBytes: number, fromEnd: boolean, size:
       .filter(Boolean)
   } finally {
     await fh.close()
+  }
+}
+
+const HEAD_START = 32768
+const HEAD_MAX = 4 * 1024 * 1024
+const heads = new Map<string, ReturnType<typeof parseTranscriptHead>>()
+
+export async function readHead(file: string, size: number): Promise<ReturnType<typeof parseTranscriptHead>> {
+  const cached = heads.get(file)
+  if (cached) return cached
+  let len = HEAD_START
+  for (;;) {
+    const head = parseTranscriptHead(await readChunk(file, len, false, size).catch(() => []))
+    const isComplete = len >= size || len >= HEAD_MAX
+    if (head.firstPrompt != null || (isComplete && size >= HEAD_MAX)) heads.set(file, head)
+    if (head.firstPrompt != null || isComplete) return head
+    len *= 4
   }
 }
 
@@ -101,13 +121,13 @@ export async function scanRaw(): Promise<ScanResult> {
       const st = await stat(full).catch(() => null)
       if (!st) continue
       const id = f.replace(/\.jsonl$/, '')
-      const head = parseTranscriptHead(await readChunk(full, 32768, false, st.size).catch(() => []))
+      const head = await readHead(full, st.size)
       if (!head.cwd) continue
       const tail = parseTail(await readChunk(full, 65536, true, st.size).catch(() => []))
       raw.push({
         id,
         cwd: head.cwd,
-        gitBranch: tail.gitBranch ?? head.gitBranch,
+        gitBranch: head.gitBranch ?? tail.gitBranch,
         firstPrompt: head.firstPrompt,
         mtimeMs: st.mtimeMs,
         needsInput: (needsInput.get(id) ?? -1) >= st.mtimeMs,
@@ -116,7 +136,7 @@ export async function scanRaw(): Promise<ScanResult> {
         pendingToolUse: tail.pendingToolUse,
         model: tail.model,
         contextTokens: tail.contextTokens,
-        openingTicket: head.openingTicket
+        stages: await stageScanner.scan(full, st.size).catch(() => [])
       })
     }
   }

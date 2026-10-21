@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -9,6 +9,8 @@ import {
   applyName,
   applyFinished,
   applyTicketOverride,
+  applyTicketWatched,
+  applyTicketFinished,
   overrideTicket,
   type State
 } from '../src/main/store'
@@ -19,15 +21,50 @@ const base: State = {
   finished: [],
   finishOptOut: [],
   ticketOverride: {},
+  jira: {},
+  watchedTickets: [],
+  finishedTickets: [],
+  finishOptOutTickets: [],
+  dock: { isDocked: false, edge: 'right', width: 320, displayId: null, floating: null },
   settings: {
     jiraBase: 'https://jira.redge.com/browse/',
     jiraToken: '',
     jiraDoneStatuses: 'Accepted, Done, Closed',
     alwaysOnTop: true,
     clickAction: 'project-cmd',
-    launchOnStartup: false
+    launchOnStartup: false,
+    ticketPrefixes: '',
+    isDockReserving: false,
+    isDockOnTop: false
   }
 }
+
+describe('ticket-level state', () => {
+  it('applyTicketWatched adds and removes a ticket', () => {
+    const on = applyTicketWatched(base, 'X-1', true)
+    expect(on.watchedTickets).toEqual(['X-1'])
+    expect(applyTicketWatched(on, 'X-1', false).watchedTickets).toEqual([])
+  })
+  it('applyTicketFinished toggles finished and opt-out oppositely', () => {
+    const on = applyTicketFinished(base, 'X-1', true)
+    expect(on.finishedTickets).toEqual(['X-1'])
+    const off = applyTicketFinished(on, 'X-1', false)
+    expect(off.finishedTickets).toEqual([])
+    expect(off.finishOptOutTickets).toEqual(['X-1'])
+  })
+  it('defaults the new fields when an old state file lacks them', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'css-'))
+    const file = join(dir, 'state.json')
+    writeFileSync(file, JSON.stringify({ watched: ['a'], settings: { jiraToken: 't' }, dock: { edge: 'up', width: 'x' } }))
+    const s = loadState(file)
+    expect(s.jira).toEqual({})
+    expect(s.watchedTickets).toEqual([])
+    expect(s.dock).toEqual(base.dock)
+    expect(s.settings.isDockReserving).toBe(false)
+    expect(s.settings.ticketPrefixes).toBe('')
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
 
 describe('store pure transforms', () => {
   it('applyWatched adds, is idempotent, and removes', () => {
@@ -89,13 +126,21 @@ describe('store io', () => {
       finished: ['f'],
       finishOptOut: ['o'],
       ticketOverride: { z: 'SOFKAN-1' },
+      jira: { 'SOFKAN-1': { status: 'Done', summary: 'Tytuł' } },
+      watchedTickets: ['SOFKAN-1'],
+      finishedTickets: ['SOFKAN-2'],
+      finishOptOutTickets: ['SOFKAN-3'],
+      dock: { isDocked: true, edge: 'left', width: 300, displayId: 7, floating: { x: 1, y: 2, width: 3, height: 4 } },
       settings: {
         jiraBase: 'http://jira.local/',
         jiraToken: 'tok',
         jiraDoneStatuses: 'Done',
         alwaysOnTop: false,
         clickAction: 'terminal',
-        launchOnStartup: true
+        launchOnStartup: true,
+        ticketPrefixes: 'SOF',
+        isDockReserving: true,
+        isDockOnTop: true
       }
     }
     saveState(file, next)

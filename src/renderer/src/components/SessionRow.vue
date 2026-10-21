@@ -4,7 +4,7 @@ import type { Ref } from 'vue'
 import type { Session } from '../types'
 import { colorForProject } from '../filter'
 
-const props = defineProps<{ session: Session }>()
+const props = defineProps<{ session: Session; isCompact?: boolean }>()
 const colorblind = inject<Ref<boolean>>('colorblind', ref(false))
 
 const editing = ref(false)
@@ -95,10 +95,6 @@ function contextShort(): string {
 function meta(): string {
   return [modelShort(), contextShort()].filter(Boolean).join(' · ')
 }
-function branchShort(): string {
-  const b = props.session.gitBranch ?? ''
-  return b.length > 22 ? b.slice(0, 22) + '…' : b
-}
 function hexToRgba(hex: string, a: number): string {
   const r = parseInt(hex.slice(1, 3), 16)
   const g = parseInt(hex.slice(3, 5), 16)
@@ -137,7 +133,18 @@ function ago(ms: number): string {
     <span class="dot" :style="{ background: statusColor(), boxShadow: '0 0 6px ' + statusColor() }" />
     <div class="body">
       <div class="line">
-        <span class="name">{{ session.projectName }}</span>
+        <input
+          v-if="isCompact && editing"
+          v-focus
+          v-model="editValue"
+          class="edit"
+          @click.stop
+          @keyup.enter="commit"
+          @keyup.esc="editing = false"
+          @blur="commit"
+        />
+        <span v-else-if="isCompact" class="name ttl">{{ title() }}</span>
+        <span v-else class="name">{{ session.projectName }}</span>
         <span v-if="session.bg" class="bg" title="Background agent — click to open the agent view">bg</span>
         <span
           v-if="session.worktree"
@@ -162,7 +169,7 @@ function ago(ms: number): string {
         <span class="status" :style="{ color: statusColor() }">{{ statusLabel() }}</span>
         <span class="time">{{ ago(session.lastActive) }}</span>
       </div>
-      <div class="line prompt">
+      <div v-if="!isCompact" class="line prompt">
         <input
           v-if="editing"
           v-focus
@@ -175,19 +182,10 @@ function ago(ms: number): string {
         />
         <span v-else class="ttl">{{ title() }}</span>
       </div>
-      <div v-if="session.ticket || meta()" class="line meta">
-        <span v-if="session.ticket" class="ticket" @click.stop="openTicket">{{ session.ticket }}</span>
-        <span v-if="session.manualTicket" class="pin" title="Ticket set manually">📌</span>
-        <span v-if="session.jiraStatus" class="jira" :title="'Jira status: ' + session.jiraStatus">{{ session.jiraStatus }}</span>
-        <span v-if="session.ticket && session.gitBranch" class="branch" :title="session.gitBranch">
-          <svg class="bicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="6" y1="3" x2="6" y2="15" />
-            <circle cx="18" cy="6" r="3" />
-            <circle cx="6" cy="18" r="3" />
-            <path d="M18 9a9 9 0 0 1-9 9" />
-          </svg>
-          {{ branchShort() }}<span v-if="session.dirty" class="dirty" title="Uncommitted changes">●</span>
-        </span>
+      <div v-if="(session.ticket && !isCompact) || meta()" class="line meta">
+        <span v-if="session.ticket && !isCompact" class="ticket" @click.stop="openTicket">{{ session.ticket }}</span>
+        <span v-if="session.manualTicket && !isCompact" class="pin" title="Ticket set manually">📌</span>
+        <span v-if="isCompact" class="metinfo">{{ session.projectName }}</span>
         <span v-if="meta()" class="metinfo">{{ meta() }}</span>
       </div>
       <div class="actions">
@@ -196,7 +194,7 @@ function ago(ms: number): string {
           <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" />
         </svg>
       </button>
-      <button class="ic star" :class="{ on: session.watched }" title="Watch" @click.stop="toggleWatch">
+      <button v-if="!isCompact" class="ic star" :class="{ on: session.watched }" title="Watch" @click.stop="toggleWatch">
         <svg viewBox="0 0 24 24" :fill="session.watched ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
         </svg>
@@ -388,28 +386,6 @@ function ago(ms: number): string {
 }
 .ticket:hover {
   text-decoration: underline;
-}
-.branch {
-  flex: 0 1 auto;
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #6e7681;
-  font-size: 10px;
-}
-.bicon {
-  width: 10px;
-  height: 10px;
-  flex: none;
-}
-.dirty {
-  color: #f0883e;
-  margin-left: 2px;
 }
 .ttl {
   flex: 1;
