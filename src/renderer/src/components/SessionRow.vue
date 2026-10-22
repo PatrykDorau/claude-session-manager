@@ -369,7 +369,7 @@ function ago(ms: number): string {
 }
 .ticket {
   flex: none;
-  color: #58a6ff;
+  color: #a371f7;
   font-size: 10px;
   font-weight: 500;
   cursor: pointer;

@@ -55,5 +55,39 @@ export const STAGE_LABEL: Record<Stage, string> = {
   verify: 'Verify',
   qa: 'QA',
   review: 'Review',
-  mr: 'MR'
+  mr: 'MR',
+  testing: 'Internal testing',
+  done: 'Done'
+}
+
+export interface Phase {
+  key: string
+  label: string
+  color: string
+  stages: Stage[]
+}
+
+export const PHASES: Phase[] = [
+  { key: 'analysis', label: 'Analysis', color: '#a371f7', stages: ['brainstorm', 'repro', 'plan'] },
+  { key: 'implementation', label: 'Implementation', color: '#f0883e', stages: ['impl'] },
+  {
+    key: 'verification',
+    label: 'Verification',
+    color: '#e3b341',
+    stages: ['verify', 'qa', 'review']
+  },
+  { key: 'mr', label: 'MR', color: '#a8c94a', stages: ['mr'] },
+  { key: 'testing', label: 'Testing', color: '#56d364', stages: ['testing'] },
+  { key: 'done', label: 'Done', color: '#2ea043', stages: ['done'] }
+]
+
+export const REJECTED_COLOR = '#f85149'
+
+export function phaseOf(stage: Stage): Phase {
+  return PHASES.find((p) => p.stages.includes(stage)) ?? PHASES[0]
+}
+
+export function filledSegments(stage: Stage | null): boolean[] {
+  const current = stage ? PHASES.indexOf(phaseOf(stage)) : -1
+  return PHASES.map((_, i) => i <= current)
 }

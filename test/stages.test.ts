@@ -46,6 +46,18 @@ describe('stagesFromLine', () => {
     expect(stagesFromLine(bash('node C:/x/gitlab.js mr create --draft'))).toEqual(['mr'])
     expect(stagesFromLine(bash('node C:/x/gitlab.js mr list'))).toEqual([])
   })
+  it('detects MR creation from a push with merge request options', () => {
+    expect(
+      stagesFromLine(
+        bash('git push -u origin fix/X-1 -o merge_request.create -o merge_request.target=develop')
+      )
+    ).toEqual(['mr'])
+    expect(stagesFromLine(bash('git push origin fix/X-1'))).toEqual([])
+  })
+  it('detects MR creation from the commit-and-push skill', () => {
+    expect(stagesFromLine(skill('commit-and-push'))).toEqual(['mr'])
+    expect(stagesFromLine(slash('commit-and-push'))).toEqual(['mr'])
+  })
   it('ignores stage names quoted inside ordinary text', () => {
     const quoted = JSON.stringify({
       type: 'assistant',

@@ -241,7 +241,7 @@ function copyDiag(): void {
   outline: none;
 }
 .inp:focus {
-  border-color: #58a6ff;
+  border-color: #a371f7;
 }
 .hint {
   display: block;
@@ -278,8 +278,8 @@ function copyDiag(): void {
 }
 .sndbtn.on {
   color: #fff;
-  background: #1f6feb;
-  border-color: #1f6feb;
+  background: #8957e5;
+  border-color: #8957e5;
 }
 .acct {
   margin-top: 16px;
@@ -298,7 +298,7 @@ function copyDiag(): void {
   cursor: pointer;
 }
 .btn:hover {
-  border-color: #58a6ff;
+  border-color: #a371f7;
   color: #fff;
 }
 .btn:disabled {
@@ -328,7 +328,7 @@ function copyDiag(): void {
   transition: transform 0.15s;
 }
 .sw.on {
-  background: #1f6feb;
+  background: #8957e5;
 }
 .sw.on::after {
   transform: translateX(16px);

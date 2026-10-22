@@ -39,7 +39,16 @@ import { detectWorktreeRepo } from './worktree'
 import { branchTicket, parsePrefixes } from './ticket'
 import { fetchIssue } from './jira'
 import { computeFinished, branchKey } from './finished'
-import { findTaskFolder, folderStages, mrSearchUrl, taskFinished, highestStage } from './taskmeta'
+import {
+  findTaskFolder,
+  folderStages,
+  mrSearchUrl,
+  taskFinished,
+  highestStage,
+  isCompletedStatus,
+  isRejectedStatus,
+  isTestingStatus
+} from './taskmeta'
 import { formatDiagnostics } from './diagnostics'
 import { ideDir, projectsDir, doneDir, activeDir, needsInputDir, sessionsDir } from './paths'
 import {
@@ -129,9 +138,12 @@ function buildTaskMeta(sessions: Session[]): Record<string, TaskMeta> {
   for (const [ticket, list] of byTicket) {
     const hit = findTaskFolder(opisEntries, ticket)
     const folder = hit ? joinPath(opisDir(), hit.month, hit.name) : null
+    const jiraState = appState.jira[ticket]?.status ?? null
     const reachedSet = new Set([
       ...list.flatMap((s) => s.stages),
-      ...(folder ? folderStages(folderFiles.get(folder) ?? []) : [])
+      ...(folder ? folderStages(folderFiles.get(folder) ?? []) : []),
+      ...(isTestingStatus(jiraState) ? ['testing' as const] : []),
+      ...(isCompletedStatus(jiraState, appState.settings.jiraDoneStatuses) ? ['done' as const] : [])
     ])
     const reached = STAGES.filter((st) => reachedSet.has(st))
     const remote = list
@@ -153,7 +165,8 @@ function buildTaskMeta(sessions: Session[]): Record<string, TaskMeta> {
         appState.settings.jiraDoneStatuses,
         appState.finishedTickets,
         appState.finishOptOutTickets
-      )
+      ),
+      isRejected: isRejectedStatus(jiraState)
     }
   }
   return out

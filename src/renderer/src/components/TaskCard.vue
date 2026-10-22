@@ -45,7 +45,7 @@ const background = computed(() => {
 </script>
 
 <template>
-  <li class="card">
+  <li class="card" :class="{ rejected: card.meta?.isRejected }">
     <div
       class="head"
       :class="{ waiting: card.status === 'waiting' }"
@@ -70,7 +70,11 @@ const background = computed(() => {
         <div class="line">
           <span class="ttl">{{ title }}</span>
         </div>
-        <StageBar :stage="card.meta?.stage ?? null" :reached="card.meta?.reached ?? []" />
+        <StageBar
+          :stage="card.meta?.stage ?? null"
+          :reached="card.meta?.reached ?? []"
+          :is-rejected="card.meta?.isRejected"
+        />
       </div>
       <button
         class="exp"
@@ -186,6 +190,19 @@ const background = computed(() => {
 .card {
   border-bottom: 1px solid #161b22;
 }
+.card.rejected .head {
+  background: rgba(248, 81, 73, 0.12) !important;
+  border-left-color: #f85149 !important;
+}
+.card.rejected .ttl {
+  color: #ffa198;
+  text-decoration: line-through;
+  text-decoration-color: rgba(248, 81, 73, 0.6);
+}
+.card.rejected .jira {
+  color: #fff;
+  background: #da3633;
+}
 .head {
   position: relative;
   display: flex;
@@ -227,7 +244,7 @@ const background = computed(() => {
 }
 .ticket {
   flex: none;
-  color: #58a6ff;
+  color: #a371f7;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;

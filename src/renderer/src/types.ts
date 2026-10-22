@@ -1,8 +1,29 @@
 export type Status = 'working' | 'waiting' | 'checkout' | 'idle' | 'closed'
 
-export type Stage = 'brainstorm' | 'repro' | 'plan' | 'impl' | 'verify' | 'qa' | 'review' | 'mr'
+export type Stage =
+  | 'brainstorm'
+  | 'repro'
+  | 'plan'
+  | 'impl'
+  | 'verify'
+  | 'qa'
+  | 'review'
+  | 'mr'
+  | 'testing'
+  | 'done'
 
-export const STAGES: Stage[] = ['brainstorm', 'repro', 'plan', 'impl', 'verify', 'qa', 'review', 'mr']
+export const STAGES: Stage[] = [
+  'brainstorm',
+  'repro',
+  'plan',
+  'impl',
+  'verify',
+  'qa',
+  'review',
+  'mr',
+  'testing',
+  'done'
+]
 
 export interface Session {
   id: string
@@ -38,6 +59,7 @@ export interface TaskMeta {
   mrUrl: string | null
   isWatched: boolean
   isFinished: boolean
+  isRejected: boolean
 }
 
 export type Severity = 'normal' | 'warning' | 'critical'

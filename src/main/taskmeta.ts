@@ -49,6 +49,21 @@ export function taskFinished(
   return isAccepting(jiraStatus, accepting)
 }
 
+const COMPLETED = ['to release', 'done']
+
+export function isCompletedStatus(status: string | null, doneCsv: string): boolean {
+  if (!status) return false
+  return COMPLETED.includes(status.toLowerCase()) || isAccepting(status, doneCsv)
+}
+
+export function isTestingStatus(status: string | null): boolean {
+  return status?.toLowerCase() === 'internal testing'
+}
+
+export function isRejectedStatus(status: string | null): boolean {
+  return status?.toLowerCase() === 'rejected'
+}
+
 export function highestStage(stages: Stage[]): Stage | null {
   const set = new Set(stages)
   return [...STAGES].reverse().find((s) => set.has(s)) ?? null

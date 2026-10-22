@@ -7,8 +7,10 @@ const SKILL_STAGE: Record<string, Stage> = {
   'superpowers:executing-plans': 'impl',
   'superpowers:subagent-driven-development': 'impl',
   'pair-programming': 'impl',
-  'review-mr': 'review'
+  'review-mr': 'review',
+  'commit-and-push': 'mr'
 }
+const MR_COMMAND = /gitlab\.js\s+mr\s+create\b|git\s+push\b.*merge_request\.create/
 const VERIFY_MODES: Record<string, Stage> = { repro: 'repro', verify: 'verify', qa: 'qa' }
 const SLASH =
   /^\s*(?:<command-message>[^<]*<\/command-message>\s*)?<command-name>\/?([^<]+)<\/command-name>\s*(?:<command-args>([^<]*)<\/command-args>)?/
@@ -20,7 +22,12 @@ function stageOfSkill(name: string, args: string): Stage | null {
 }
 
 function isCandidate(line: string): boolean {
-  return line.includes('"Skill"') || line.includes('gitlab.js') || line.includes('<command-name>')
+  return (
+    line.includes('"Skill"') ||
+    line.includes('gitlab.js') ||
+    line.includes('merge_request.create') ||
+    line.includes('<command-name>')
+  )
 }
 
 export function stagesFromLine(line: string): Stage[] {
@@ -39,7 +46,7 @@ export function stagesFromLine(line: string): Stage[] {
       if (c.name === 'Skill' && typeof c.input?.skill === 'string') {
         const st = stageOfSkill(c.input.skill, typeof c.input.args === 'string' ? c.input.args : '')
         if (st) out.push(st)
-      } else if (c.name === 'Bash' && /gitlab\.js\s+mr\s+create\b/.test(c.input?.command ?? '')) {
+      } else if (c.name === 'Bash' && MR_COMMAND.test(c.input?.command ?? '')) {
         out.push('mr')
       }
     }

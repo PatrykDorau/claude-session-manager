@@ -114,9 +114,9 @@ const save = (value: string | null): void => {
 }
 .db {
   font: 11px system-ui;
-  background: #1f6feb;
+  background: #8957e5;
   color: #fff;
-  border: 1px solid #1f6feb;
+  border: 1px solid #8957e5;
   border-radius: 6px;
   padding: 5px 12px;
   cursor: pointer;

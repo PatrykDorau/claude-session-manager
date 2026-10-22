@@ -4,7 +4,10 @@ import {
   folderStages,
   mrSearchUrl,
   taskFinished,
-  highestStage
+  highestStage,
+  isCompletedStatus,
+  isRejectedStatus,
+  isTestingStatus
 } from '../src/main/taskmeta'
 
 describe('findTaskFolder', () => {
@@ -77,5 +80,35 @@ describe('highestStage', () => {
   it('returns the latest stage in workflow order or null', () => {
     expect(highestStage(['qa', 'brainstorm'])).toBe('qa')
     expect(highestStage([])).toBe(null)
+  })
+})
+
+describe('isCompletedStatus', () => {
+  it('treats To Release and Done as completed, case-insensitively', () => {
+    expect(isCompletedStatus('To Release', '')).toBe(true)
+    expect(isCompletedStatus('done', '')).toBe(true)
+    expect(isCompletedStatus('Code review', '')).toBe(false)
+    expect(isCompletedStatus(null, '')).toBe(false)
+  })
+  it('also accepts the configured done statuses', () => {
+    expect(isCompletedStatus('Accepted', 'Accepted, Closed')).toBe(true)
+  })
+})
+
+describe('isRejectedStatus', () => {
+  it('detects Rejected only', () => {
+    expect(isRejectedStatus('Rejected')).toBe(true)
+    expect(isRejectedStatus('rejected')).toBe(true)
+    expect(isRejectedStatus('In Progress')).toBe(false)
+    expect(isRejectedStatus(null)).toBe(false)
+  })
+})
+
+describe('isTestingStatus', () => {
+  it('detects Internal testing case-insensitively', () => {
+    expect(isTestingStatus('Internal testing')).toBe(true)
+    expect(isTestingStatus('internal Testing')).toBe(true)
+    expect(isTestingStatus('Code review')).toBe(false)
+    expect(isTestingStatus(null)).toBe(false)
   })
 })

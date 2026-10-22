@@ -122,7 +122,7 @@ function tokens(n: number): string {
 .big {
   font-size: 22px;
   font-weight: 700;
-  color: #58a6ff;
+  color: #a371f7;
 }
 .lbl {
   font-size: 10px;
@@ -157,7 +157,7 @@ h3 {
 .fill {
   width: 100%;
   min-height: 2px;
-  background: #58a6ff;
+  background: #a371f7;
   border-radius: 3px 3px 0 0;
 }
 .barlbl {

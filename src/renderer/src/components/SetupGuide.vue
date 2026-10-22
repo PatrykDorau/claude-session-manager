@@ -81,7 +81,7 @@ h2 {
 h3 {
   font-size: 12px;
   font-weight: 600;
-  color: #58a6ff;
+  color: #a371f7;
   margin: 16px 0 4px;
 }
 .lead {
@@ -115,9 +115,9 @@ code.block {
 }
 .btn {
   font: 12px system-ui;
-  background: #1f6feb;
+  background: #8957e5;
   color: #fff;
-  border: 1px solid #1f6feb;
+  border: 1px solid #8957e5;
   border-radius: 6px;
   padding: 6px 12px;
   cursor: pointer;

@@ -337,7 +337,7 @@ header {
   -webkit-app-region: no-drag;
 }
 .title:hover {
-  color: #58a6ff;
+  color: #a371f7;
 }
 .ver {
   color: #6e7681;
@@ -383,7 +383,7 @@ header {
   width: 26px;
   height: 26px;
   border: 3px solid #21262d;
-  border-top-color: #58a6ff;
+  border-top-color: #a371f7;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -418,8 +418,8 @@ header {
   color: #e6edf3;
 }
 .hb.on {
-  color: #58a6ff;
-  border-color: #58a6ff;
+  color: #a371f7;
+  border-color: #a371f7;
 }
 .hb.active {
   color: #f0883e;
@@ -497,8 +497,8 @@ header {
 }
 .chips button.on {
   color: #fff;
-  background: #1f6feb;
-  border-color: #1f6feb;
+  background: #8957e5;
+  border-color: #8957e5;
 }
 .search {
   width: 100%;
@@ -512,7 +512,7 @@ header {
   outline: none;
 }
 .search:focus {
-  border-color: #58a6ff;
+  border-color: #a371f7;
 }
 .toolbar {
   display: flex;
@@ -542,8 +542,8 @@ header {
 }
 .sortbtns button.on,
 .grp.on {
-  color: #58a6ff;
-  border-color: #58a6ff;
+  color: #a371f7;
+  border-color: #a371f7;
 }
 ul {
   list-style: none;
@@ -608,9 +608,9 @@ ul {
 }
 .db {
   font: 11px system-ui;
-  background: #1f6feb;
+  background: #8957e5;
   color: #fff;
-  border: 1px solid #1f6feb;
+  border: 1px solid #8957e5;
   border-radius: 6px;
   padding: 5px 12px;
   cursor: pointer;
