@@ -58,7 +58,8 @@ import {
   reopenAndResume,
   resumeStandalone,
   switchAccount,
-  openAgentView
+  openAgentView,
+  resumeCommand
 } from './launcher'
 import {
   loadState,
@@ -329,17 +330,17 @@ function openSession(s: Session): void {
   }
   void pushSessions()
   if (!editorOk) {
-    resumeStandalone(s.projectPath, s.id)
+    resumeStandalone(s.projectPath, s.id, s.ticket)
     return
   }
   const action = appState.settings.clickAction
   if (action === 'project-cmd') {
     openProject(s.projectPath)
-    if (!s.isLive) resumeStandalone(s.projectPath, s.id)
+    if (!s.isLive) resumeStandalone(s.projectPath, s.id, s.ticket)
   } else if (action === 'project') openProject(s.projectPath)
-  else if (action === 'standalone') resumeStandalone(s.projectPath, s.id)
+  else if (action === 'standalone') resumeStandalone(s.projectPath, s.id, s.ticket)
   else if (action === 'terminal')
-    void reopenAndResume(s.projectPath, s.id).then((ok) => {
+    void reopenAndResume(s.projectPath, s.id, s.ticket).then((ok) => {
       if (!ok) notifyResumeFailed(s)
     })
   else if (action === 'focus') focusWindow(s.projectPath)
@@ -360,7 +361,7 @@ async function pushUsage(): Promise<void> {
 function notifyResumeFailed(s: Session): void {
   mainWindow?.webContents.send('resume-failed', {
     label: s.name ?? s.projectName,
-    command: `claude --resume ${s.id}`
+    command: resumeCommand(s.id, s.ticket)
   })
 }
 
@@ -765,17 +766,17 @@ if (!app.requestSingleInstanceLock()) {
       {
         label: 'Resume in side terminal',
         click: () =>
-          void reopenAndResume(s.projectPath, s.id).then((ok) => {
+          void reopenAndResume(s.projectPath, s.id, s.ticket).then((ok) => {
             if (!ok) notifyResumeFailed(s)
           })
       },
       {
         label: 'Resume in standalone terminal',
-        click: () => resumeStandalone(s.projectPath, s.id)
+        click: () => resumeStandalone(s.projectPath, s.id, s.ticket)
       },
       { label: 'Focus existing window', click: () => focusWindow(s.projectPath) },
       { label: 'Open folder in Explorer', click: () => void shell.openPath(s.projectPath) },
-      { label: 'Copy resume command', click: () => clipboard.writeText(`claude --resume ${s.id}`) },
+      { label: 'Copy resume command', click: () => clipboard.writeText(resumeCommand(s.id, s.ticket)) },
       { type: 'separator' },
       { label: 'Set ticket…', click: () => mainWindow?.webContents.send('open-ticket-picker', s) },
       {

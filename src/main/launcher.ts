@@ -1,6 +1,10 @@
 import { spawn } from 'node:child_process'
 import { basename } from 'node:path'
 
+export function resumeCommand(id: string, ticket: string | null): string {
+  return ticket ? `claude --resume ${id} --name ${ticket}` : `claude --resume ${id}`
+}
+
 function code(args: string[]): void {
   spawn('code', args, { shell: true, detached: true, stdio: 'ignore' }).unref()
 }
@@ -54,7 +58,7 @@ for($i=0;$i -lt 10;$i++){
   spawn('powershell.exe', ['-NoProfile', '-Command', ps], { windowsHide: true })
 }
 
-function openInTerminal(needle: string, id: string): Promise<boolean> {
+function openInTerminal(needle: string, command: string): Promise<boolean> {
   const ps = `
 $ErrorActionPreference='SilentlyContinue'
 Add-Type @"
@@ -106,7 +110,7 @@ Write-Host "opening side terminal"
 $ws.SendKeys('^%{F9}')
 Start-Sleep -Milliseconds 1500
 if(-not (Focus $p)){ Write-Host "aborted before typing: focus lost"; exit }
-$ws.SendKeys('claude --resume ${id}')
+$ws.SendKeys('${command}')
 Start-Sleep -Milliseconds 300
 $ws.SendKeys('{ENTER}')
 Write-Host "typed resume command"
@@ -147,29 +151,34 @@ export function openAgentView(cwd: string): void {
   }).unref()
 }
 
-export function resumeStandalone(cwd: string, id: string): void {
-  spawn('cmd.exe', ['/c', 'start', 'Claude Session', 'cmd', '/k', `claude --resume ${id}`], {
+export function resumeStandalone(cwd: string, id: string, ticket: string | null): void {
+  spawn('cmd.exe', ['/c', 'start', 'Claude Session', 'cmd', '/k', resumeCommand(id, ticket)], {
     cwd: cwd || undefined,
     detached: true,
     stdio: 'ignore'
   }).unref()
 }
 
-export async function reopenAndResume(projectPath: string, id: string): Promise<boolean> {
+export async function reopenAndResume(
+  projectPath: string,
+  id: string,
+  ticket: string | null
+): Promise<boolean> {
   const needle = basename(projectPath)
   code([projectPath])
-  return openInTerminal(needle, id)
+  return openInTerminal(needle, resumeCommand(id, ticket))
 }
 
 export async function focusOrOpen(session: {
   projectPath: string
   id: string
   isLive: boolean
+  ticket: string | null
 }): Promise<boolean> {
   if (session.isLive) {
     code([session.projectPath])
     focusByTitle(basename(session.projectPath))
     return true
   }
-  return reopenAndResume(session.projectPath, session.id)
+  return reopenAndResume(session.projectPath, session.id, session.ticket)
 }
