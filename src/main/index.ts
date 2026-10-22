@@ -74,6 +74,7 @@ import {
   type State
 } from './store'
 import { installHooks } from './hooks'
+import { clearInheritedSessionMarker } from './env'
 import { nearestEdge, dockBounds, pickDisplay } from './dock'
 import { registerAppBar, unregisterAppBar } from './appbar'
 import { fetchUsage } from './usage'
@@ -627,6 +628,8 @@ function buildTray(win: BrowserWindow): void {
     ])
   )
 }
+
+clearInheritedSessionMarker(process.env)
 
 app.commandLine.appendSwitch('disable-gpu-shader-disk-cache')
 app.commandLine.appendSwitch('disable-http-cache')
