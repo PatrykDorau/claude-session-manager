@@ -2,7 +2,7 @@
 import { ref, computed, inject } from 'vue'
 import type { Ref } from 'vue'
 import type { Card } from '../cards'
-import { primarySession } from '../cards'
+import { primarySession, plainSession } from '../cards'
 import { colorForProject } from '../filter'
 import { statusColor, statusLabel, cleanPrompt, ago } from '../display'
 import SessionRow from './SessionRow.vue'
@@ -21,8 +21,8 @@ const title = computed(() => {
   return cleanPrompt(oldest?.name ?? oldest?.firstPrompt ?? '')
 })
 
-const openPrimary = (): void => window.api.openSession({ ...primarySession(props.card) })
-const openMenu = (): void => window.api.sessionMenu({ ...primarySession(props.card) })
+const openPrimary = (): void => window.api.openSession(plainSession(primarySession(props.card)))
+const openMenu = (): void => window.api.sessionMenu(plainSession(primarySession(props.card)))
 const openTicket = (): void => window.api.openTicket(props.card.ticket)
 const openFolder = (): void => window.api.openTaskFolder(props.card.ticket)
 const openMr = (): void => window.api.openMr(props.card.ticket)

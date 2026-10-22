@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest'
+import { reactive } from 'vue'
 import {
   buildCards,
   splitSections,
   sortCards,
   primarySession,
   sortNoTask,
-  cardMatches
+  cardMatches,
+  plainSession
 } from '../src/renderer/src/cards'
 import type { Session, TaskMeta } from '../src/renderer/src/types'
 
@@ -164,5 +166,14 @@ describe('cardMatches', () => {
     expect(cardMatches(card, 'epg')).toBe(true)
     expect(cardMatches(card, 'hello')).toBe(true)
     expect(cardMatches(card, 'nothing')).toBe(false)
+  })
+})
+
+describe('plainSession', () => {
+  it('returns a session that survives structured cloning from a reactive source', () => {
+    const state = reactive({ list: [s({ id: 'a', ticket: 'X-1', stages: ['brainstorm'] })] })
+    const out = plainSession(state.list[0])
+    expect(() => structuredClone(out)).not.toThrow()
+    expect(out.stages).toEqual(['brainstorm'])
   })
 })

@@ -3,6 +3,7 @@ import { ref, inject } from 'vue'
 import type { Ref } from 'vue'
 import type { Session } from '../types'
 import { colorForProject } from '../filter'
+import { plainSession } from '../cards'
 
 const props = defineProps<{ session: Session; isCompact?: boolean }>()
 const colorblind = inject<Ref<boolean>>('colorblind', ref(false))
@@ -12,12 +13,12 @@ const editValue = ref('')
 
 const vFocus = { mounted: (el: HTMLInputElement): void => el.focus() }
 
-const open = (): void => window.api.openSession({ ...props.session })
+const open = (): void => window.api.openSession(plainSession(props.session))
 const openTicket = (): void => {
   if (props.session.ticket) window.api.openTicket(props.session.ticket)
 }
 const toggleWatch = (): void => window.api.setWatched(props.session.id, !props.session.watched)
-const menu = (): void => window.api.sessionMenu({ ...props.session })
+const menu = (): void => window.api.sessionMenu(plainSession(props.session))
 const remove = (): void => {
   const s = props.session
   const label = s.ticket ? `${s.projectName} · ${s.ticket}` : s.projectName

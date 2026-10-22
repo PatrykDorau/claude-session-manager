@@ -1,3 +1,4 @@
+import { toRaw } from 'vue'
 import type { Session, Status, TaskMeta } from './types'
 import { RANK, sortSessions, type SortMode } from './sort'
 import { matchesQuery } from './filter'
@@ -76,4 +77,9 @@ export function cardMatches(card: Card, query: string): boolean {
   if (!q) return true
   if ((card.meta?.title ?? '').toLowerCase().includes(q)) return true
   return card.sessions.some((s) => matchesQuery(s, q))
+}
+
+export function plainSession(s: Session): Session {
+  const raw = toRaw(s)
+  return { ...raw, stages: [...raw.stages] }
 }
