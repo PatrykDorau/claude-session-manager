@@ -272,6 +272,15 @@ async function fetchTickets(tickets: string[]): Promise<void> {
   saveState(statePath, appState)
 }
 
+async function refreshOpenTickets(): Promise<void> {
+  const open = Object.values(lastTasks)
+    .filter((t) => !t.isFinished)
+    .map((t) => t.ticket)
+  if (!open.length) return
+  await fetchTickets(open)
+  void pushSessions()
+}
+
 async function fetchUnseenTickets(sessions: Session[]): Promise<void> {
   const unseen = [
     ...new Set(sessions.map((s) => s.ticket).filter((t): t is string => !!t && !appState.jira[t]))
@@ -598,6 +607,7 @@ function wireSessions(win: BrowserWindow): void {
   setInterval(pushUsage, 60000)
   setInterval(probeEnv, 30000)
   setInterval(refreshFinishSignals, 1800000)
+  setInterval(refreshOpenTickets, 120000)
 }
 
 function buildTray(win: BrowserWindow): void {

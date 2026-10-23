@@ -7,7 +7,8 @@ import {
   primarySession,
   sortNoTask,
   cardMatches,
-  plainSession
+  plainSession,
+  jiraGroup
 } from '../src/renderer/src/cards'
 import type { Session, TaskMeta } from '../src/renderer/src/types'
 
@@ -175,5 +176,50 @@ describe('plainSession', () => {
     const out = plainSession(state.list[0])
     expect(() => structuredClone(out)).not.toThrow()
     expect(out.stages).toEqual(['brainstorm'])
+  })
+})
+
+describe('jiraGroup', () => {
+  it('follows the flow: In Progress, Code review, testing, then everything else', () => {
+    expect(jiraGroup('In Progress')).toBe(0)
+    expect(jiraGroup('in progress')).toBe(0)
+    expect(jiraGroup('Code review')).toBe(1)
+    expect(jiraGroup('Waiting for internal testing')).toBe(2)
+    expect(jiraGroup('Internal testing')).toBe(2)
+    expect(jiraGroup('Rejected')).toBe(3)
+    expect(jiraGroup('To Do')).toBe(3)
+    expect(jiraGroup(null)).toBe(3)
+  })
+})
+
+describe('sortCards by Jira status', () => {
+  it('orders In Progress, Code review, testing, then the rest, before urgency', () => {
+    const cards = buildCards(
+      [
+        s({ id: 'a', ticket: 'A-1', status: 'waiting' }),
+        s({ id: 'b', ticket: 'B-1', status: 'closed' }),
+        s({ id: 'c', ticket: 'C-1', status: 'closed' }),
+        s({ id: 'd', ticket: 'D-1', status: 'working' }),
+        s({ id: 'e', ticket: 'E-1', status: 'closed' })
+      ],
+      {
+        'A-1': meta('A-1', { jiraStatus: 'On Hold' }),
+        'B-1': meta('B-1', { jiraStatus: 'Internal testing' }),
+        'C-1': meta('C-1', { jiraStatus: 'In Progress' }),
+        'D-1': meta('D-1', { jiraStatus: 'Waiting for internal testing' }),
+        'E-1': meta('E-1', { jiraStatus: 'Code review' })
+      }
+    )
+    expect(sortCards(cards, 'status').map((c) => c.ticket)).toEqual(['C-1', 'E-1', 'D-1', 'B-1', 'A-1'])
+  })
+  it('keeps pinned cards above every group', () => {
+    const cards = buildCards(
+      [s({ id: 'a', ticket: 'A-1' }), s({ id: 'b', ticket: 'B-1' })],
+      {
+        'A-1': meta('A-1', { jiraStatus: 'To Do', isWatched: true }),
+        'B-1': meta('B-1', { jiraStatus: 'In Progress' })
+      }
+    )
+    expect(sortCards(cards, 'recency').map((c) => c.ticket)).toEqual(['A-1', 'B-1'])
   })
 })

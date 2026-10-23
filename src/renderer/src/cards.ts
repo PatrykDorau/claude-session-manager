@@ -63,8 +63,20 @@ export function sortCards(cards: Card[], mode: SortMode): Card[] {
     return byUrgency(primarySession(a), primarySession(b))
   }
   return [...cards].sort(
-    (a, b) => Number(!!b.meta?.isWatched) - Number(!!a.meta?.isWatched) || byMode(a, b)
+    (a, b) =>
+      Number(!!b.meta?.isWatched) - Number(!!a.meta?.isWatched) ||
+      jiraGroup(a.meta?.jiraStatus ?? null) - jiraGroup(b.meta?.jiraStatus ?? null) ||
+      byMode(a, b)
   )
+}
+
+const TESTING_STATUSES = ['waiting for internal testing', 'internal testing']
+
+export function jiraGroup(status: string | null): number {
+  const s = status?.toLowerCase() ?? ''
+  if (s === 'in progress') return 0
+  if (s === 'code review') return 1
+  return TESTING_STATUSES.includes(s) ? 2 : 3
 }
 
 export function sortNoTask(list: Session[], mode: SortMode): Session[] {
