@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import type { Session, TaskMeta, UsageResult } from '../renderer/src/types'
+import type { CloseCandidate, Session, TaskMeta, UsageResult, VscodeProfile } from '../renderer/src/types'
 
 // Custom APIs for renderer
 const api = {
@@ -22,6 +22,21 @@ const api = {
   setTaskFinished: (ticket: string, on: boolean): void => {
     ipcRenderer.send('set-task-finished', ticket, on)
   },
+  onRestoreState: (cb: (r: { count: number }) => void): void => {
+    ipcRenderer.on('restore-state', (_e, r) => cb(r))
+  },
+  restoreSessions: (): void => {
+    ipcRenderer.send('restore-sessions')
+  },
+  dismissRestore: (): void => {
+    ipcRenderer.send('dismiss-restore')
+  },
+  onCloseCandidates: (cb: (list: CloseCandidate[]) => void): void => {
+    ipcRenderer.on('close-candidates', (_e, list) => cb(list))
+  },
+  closeSessions: (ids: string[]): Promise<string[]> => ipcRenderer.invoke('close-sessions', ids),
+  getVscodeLayout: (): VscodeProfile[] => ipcRenderer.sendSync('vscode-layout-status'),
+  applyVscodeLayout: (): VscodeProfile[] => ipcRenderer.sendSync('vscode-layout-apply'),
   openSession: (s: Session): void => {
     ipcRenderer.send('open-session', s)
   },

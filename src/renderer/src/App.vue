@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, provide } from 'vue'
-import type { Session, TaskMeta, UsageResult } from './types'
+import type { CloseCandidate, Session, TaskMeta, UsageResult } from './types'
 import SessionList from './components/SessionList.vue'
 import StatsPanel from './components/StatsPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import SetupGuide from './components/SetupGuide.vue'
 import TicketPicker from './components/TicketPicker.vue'
 import TaskCard from './components/TaskCard.vue'
+import CloseFinishedDialog from './components/CloseFinishedDialog.vue'
 import UsageBar from './components/UsageBar.vue'
 import { sortSessions, type SortMode } from './sort'
 import { buildCards, splitSections, sortCards, sortNoTask, cardMatches } from './cards'
@@ -45,6 +46,14 @@ const cliStatus = ref<{ claude: boolean; editor: boolean }>({ claude: true, edit
 const menuOpen = ref(false)
 const ticketPicker = ref<Session | null>(null)
 const dock = ref(window.api.getDockState())
+const restoreCount = ref(0)
+const restoreSessions = (): void => window.api.restoreSessions()
+const dismissRestore = (): void => window.api.dismissRestore()
+const closeCandidates = ref<CloseCandidate[]>([])
+const closeDialog = ref<CloseCandidate[] | null>(null)
+const openCloseDialog = (): void => {
+  closeDialog.value = [...closeCandidates.value]
+}
 
 const cliBanner = computed(() => {
   if (!cliStatus.value.claude) return 'Claude Code not detected on PATH — open Setup'
@@ -69,6 +78,8 @@ onMounted(() => {
     resumeFail.value = info
     copied.value = false
   })
+  window.api.onRestoreState((r) => (restoreCount.value = r.count))
+  window.api.onCloseCandidates((list) => (closeCandidates.value = list))
   window.api.onPlayAlert(playChime)
   window.api.onMenuState((open) => (menuOpen.value = open))
   window.api.onOpenTicketPicker((s) => (ticketPicker.value = s))
@@ -250,9 +261,17 @@ function minimize(): void {
         </button>
       </div>
       <div class="scroll">
+        <div v-if="restoreCount" class="restore">
+          <span>Restore {{ restoreCount }} {{ restoreCount === 1 ? 'session' : 'sessions' }} from last work</span>
+          <button class="primary" @click="restoreSessions">Restore</button>
+          <button @click="dismissRestore">Dismiss</button>
+        </div>
         <div class="shead" @click="tasksOpen = !tasksOpen">
           <span class="chev">{{ tasksOpen ? '▾' : '▸' }}</span>
           Tasks <span class="count">{{ taskCards.length }}</span>
+          <button v-if="closeCandidates.length" class="closefin" @click.stop="openCloseDialog">
+            Close finished sessions ({{ closeCandidates.length }})
+          </button>
         </div>
         <ul v-show="tasksOpen">
           <TaskCard v-for="c in taskCards" :key="c.ticket" :card="c" />
@@ -304,6 +323,11 @@ function minimize(): void {
     </div>
 
     <TicketPicker v-if="ticketPicker" :session="ticketPicker" @close="ticketPicker = null" />
+    <CloseFinishedDialog
+      v-if="closeDialog"
+      :candidates="closeDialog"
+      @close="closeDialog = null"
+    />
   </div>
 </template>
 
@@ -361,6 +385,46 @@ header {
 }
 .banner:hover {
   filter: brightness(1.2);
+}
+.restore {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 8px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: #c9d1d9;
+  background: #1c1530;
+  border: 1px solid #8957e5;
+  border-radius: 6px;
+}
+.restore span {
+  flex: 1;
+}
+.restore button {
+  font-size: 11px;
+  padding: 2px 8px;
+  color: #c9d1d9;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.restore button.primary {
+  background: #8957e5;
+  border-color: #8957e5;
+  color: #fff;
+}
+.closefin {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 400;
+  padding: 1px 8px;
+  color: #fff;
+  background: #8957e5;
+  border: 1px solid #8957e5;
+  border-radius: 4px;
+  cursor: pointer;
 }
 .signin {
   flex: none;

@@ -1,5 +1,5 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
-import type { Session, TaskMeta, UsageResult } from '../renderer/src/types'
+import type { CloseCandidate, Session, TaskMeta, UsageResult, VscodeProfile } from '../renderer/src/types'
 
 declare global {
   interface Window {
@@ -11,6 +11,13 @@ declare global {
       openMr: (ticket: string) => void
       setTaskWatched: (ticket: string, on: boolean) => void
       setTaskFinished: (ticket: string, on: boolean) => void
+      onRestoreState: (cb: (r: { count: number }) => void) => void
+      restoreSessions: () => void
+      dismissRestore: () => void
+      onCloseCandidates: (cb: (list: CloseCandidate[]) => void) => void
+      closeSessions: (ids: string[]) => Promise<string[]>
+      getVscodeLayout: () => VscodeProfile[]
+      applyVscodeLayout: () => VscodeProfile[]
       openSession: (s: Session) => void
       openTicket: (code: string) => void
       copyText: (text: string) => void

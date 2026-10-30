@@ -19,7 +19,7 @@ import chokidar from 'chokidar'
 import icon from '../../resources/icon.png?asset'
 import attentionPng from '../../resources/attention.png?asset'
 import { STAGES, type Session, type TaskMeta } from '../renderer/src/types'
-import { rmSync, readdirSync, existsSync } from 'node:fs'
+import { rmSync, readdirSync, existsSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { join as joinPath } from 'node:path'
 import { release } from 'node:os'
@@ -33,7 +33,9 @@ import {
   probeCommand,
   branchMergedOrGone,
   listBranchTickets,
-  gitRemote
+  gitRemote,
+  listProcesses,
+  killProcess
 } from './processes'
 import { detectWorktreeRepo } from './worktree'
 import { branchTicket, parsePrefixes } from './ticket'
@@ -59,8 +61,26 @@ import {
   resumeStandalone,
   switchAccount,
   openAgentView,
-  resumeCommand
+  resumeCommand,
+  type ResumeKey
 } from './launcher'
+import {
+  profileDirFor,
+  profileName,
+  layoutStatus,
+  applyLayoutConfig,
+  type LayoutStatus
+} from './vscodeconfig'
+import { choosePane, type Placement } from './pane'
+import { updateSnapshot, restoreQueue, forgetSessions } from './restore'
+import {
+  closeCandidates,
+  parseSessionFile,
+  killChain,
+  sessionPid,
+  isSessionProcess,
+  type SessionFile
+} from './closing'
 import {
   loadState,
   saveState,
@@ -98,6 +118,10 @@ let claudeVersion: string | null = null
 let lastCounts = { total: 0, live: 0, waiting: 0 }
 let menuClosedAt = 0
 let lastSessions: Session[] = []
+const resuming = new Map<string, Placement | null>()
+let restoreSavedAt = 0
+let restoreSavedKey = ''
+let isProcessScanReady = false
 const jiraInFlight = new Set<string>()
 const jiraMissed = new Set<string>()
 const branchDone = new Map<string, boolean>()
@@ -231,7 +255,7 @@ async function refreshDirty(): Promise<void> {
 
 async function pushSessions(): Promise<void> {
   if (!mainWindow) return
-  const { raw } = await scanRaw()
+  const { raw, lockedFolders } = await scanRaw()
   for (const r of raw)
     if (r.cwd) {
       const key = normalizePath(r.cwd)
@@ -251,10 +275,143 @@ async function pushSessions(): Promise<void> {
     waiting: sessions.filter((s) => s.status === 'waiting').length
   }
   lastTasks = buildTaskMeta(decorated)
+  trackRestore(decorated, lockedFolders.length > 0)
   mainWindow.webContents.send('tasks', lastTasks)
   mainWindow.webContents.send('sessions', decorated)
+  mainWindow.webContents.send('close-candidates', openCloseCandidates())
   updateAttention(sessions)
   void fetchUnseenTickets(decorated)
+}
+
+const jiraTitles = (): Record<string, string | null> =>
+  Object.fromEntries(Object.entries(appState.jira).map(([k, v]) => [k, v.summary]))
+
+const closedIds = new Set<string>()
+
+const openCloseCandidates = (): ReturnType<typeof closeCandidates> =>
+  closeCandidates(lastSessions, jiraTitles()).filter((c) => !closedIds.has(c.id))
+
+const sessionFiles = (): SessionFile[] => {
+  try {
+    return readdirSync(sessionsDir())
+      .filter((n) => n.endsWith('.json'))
+      .map((n) => parseSessionFile(readText(joinPath(sessionsDir(), n)) ?? ''))
+      .filter((f): f is SessionFile => f !== null)
+  } catch {
+    return []
+  }
+}
+
+const closeSessions = async (ids: string[]): Promise<string[]> => {
+  const candidates = openCloseCandidates().filter((c) => ids.includes(c.id))
+  const files = sessionFiles()
+  const procs = await listProcesses()
+  const targets = candidates.map((c) => {
+    const pid = sessionPid(files, c.id, procs)
+    const file = files.find((f) => f.pid === pid && f.sessionId === c.id)
+    return { c, file, chain: pid === null ? [] : killChain(pid, procs) }
+  })
+  for (const t of targets) if (t.chain.length) await killProcess(t.chain[t.chain.length - 1], true)
+  const after = await listProcesses()
+  const closed: string[] = []
+  const failed: string[] = []
+  for (const t of targets) {
+    if (t.file && t.chain.length && !isSessionProcess(t.file, after)) closed.push(t.c.id)
+    else failed.push(t.c.ticket)
+  }
+  for (const id of closed) closedIds.add(id)
+  appState = { ...appState, restore: forgetSessions(appState.restore, closed) }
+  saveState(statePath, appState)
+  void pushSessions()
+  return failed
+}
+
+function trackRestore(sessions: Session[], isAnyWindowOpen: boolean): void {
+  if (!isProcessScanReady) return
+  const now = Date.now()
+  for (const id of closedIds) if (!sessions.some((s) => s.id === id && s.isLive)) closedIds.delete(id)
+  const live = sessions.filter((s) => s.isLive && !s.bg && s.projectPath && !closedIds.has(s.id))
+  const liveIds = live.map((s) => s.id)
+  for (const id of liveIds) resuming.delete(id)
+  const restore = updateSnapshot(appState.restore, live, isAnyWindowOpen, now)
+  const pane = Object.fromEntries(
+    Object.entries(appState.pane).filter(([id]) => liveIds.includes(id) || resuming.has(id))
+  )
+  appState = { ...appState, restore, pane }
+  const key = JSON.stringify([restore.snapshot.map((e) => e.id), restore.pendingRemoval, pane])
+  if (key !== restoreSavedKey || now - restoreSavedAt >= 30000) {
+    restoreSavedKey = key
+    restoreSavedAt = now
+    saveState(statePath, appState)
+  }
+  const knownIds = sessions.map((s) => s.id)
+  const count = restoreQueue(restore.snapshot, liveIds, knownIds, now).filter(
+    (e) => !resuming.has(e.id)
+  ).length
+  mainWindow?.webContents.send('restore-state', { count })
+}
+
+const vscodeUserDir = (): string => joinPath(process.env.APPDATA ?? '', 'Code', 'User')
+
+const readText = (file: string): string | null => {
+  try {
+    return readFileSync(file, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+const storageJson = (): string =>
+  readText(joinPath(vscodeUserDir(), 'globalStorage', 'storage.json')) ?? ''
+
+const profileStatus = (dir: string): LayoutStatus =>
+  layoutStatus(
+    readText(joinPath(dir, 'settings.json')),
+    readText(joinPath(dir, 'keybindings.json'))
+  )
+
+const usedProfiles = (): { profileDir: string; name: string; status: LayoutStatus }[] => {
+  const storage = storageJson()
+  const folders = [...new Set(lastSessions.map((s) => s.projectPath).filter(Boolean))]
+  const dirs = [...new Set(folders.map((f) => profileDirFor(f, storage, vscodeUserDir())))]
+  return dirs.map((profileDir) => ({
+    profileDir,
+    name: profileName(profileDir, storage, vscodeUserDir()),
+    status: profileStatus(profileDir)
+  }))
+}
+
+const resumeKeyFor = (s: { id: string; projectPath: string }): ResumeKey => {
+  const dir = profileDirFor(s.projectPath, storageJson(), vscodeUserDir())
+  if (profileStatus(dir) !== 'configured') return 'F9'
+  const liveIds = lastSessions.filter((x) => x.isLive).map((x) => x.id)
+  const pending = [...resuming.values()].filter((p): p is Placement => !!p)
+  const placement: Placement = {
+    pane: choosePane(s.projectPath, liveIds, appState.pane, pending),
+    folder: s.projectPath
+  }
+  resuming.set(s.id, placement)
+  appState = { ...appState, pane: { ...appState.pane, [s.id]: placement } }
+  saveState(statePath, appState)
+  return placement.pane === 'top' ? 'F9' : 'F10'
+}
+
+async function resumeInVsCode(s: Session): Promise<boolean> {
+  if (resuming.has(s.id)) return true
+  resuming.set(s.id, null)
+  const key = resumeKeyFor(s)
+  const isLayoutConfigured = !!resuming.get(s.id)
+  const ok = await reopenAndResume(s.projectPath, s.id, s.ticket, key, isLayoutConfigured)
+  const forget = (): boolean => resuming.delete(s.id)
+  if (!ok) forget()
+  else setTimeout(forget, 60000)
+  return ok
+}
+
+function resumeOrNotify(s: Session): void {
+  void resumeInVsCode(s).then((ok) => {
+    if (!ok) notifyResumeFailed(s)
+  })
 }
 
 async function fetchTickets(tickets: string[]): Promise<void> {
@@ -338,6 +495,7 @@ function openSession(s: Session): void {
     /* ignore */
   }
   void pushSessions()
+  if (resuming.has(s.id)) return
   if (!editorOk) {
     resumeStandalone(s.projectPath, s.id, s.ticket)
     return
@@ -348,11 +506,9 @@ function openSession(s: Session): void {
     if (!s.isLive) resumeStandalone(s.projectPath, s.id, s.ticket)
   } else if (action === 'project') openProject(s.projectPath)
   else if (action === 'standalone') resumeStandalone(s.projectPath, s.id, s.ticket)
-  else if (action === 'terminal')
-    void reopenAndResume(s.projectPath, s.id, s.ticket).then((ok) => {
-      if (!ok) notifyResumeFailed(s)
-    })
+  else if (action === 'terminal') resumeOrNotify(s)
   else if (action === 'focus') focusWindow(s.projectPath)
+  else if (!s.isLive) resumeOrNotify(s)
   else
     void focusOrOpen(s)
       .then((ok) => {
@@ -593,6 +749,7 @@ function wireSessions(win: BrowserWindow): void {
   win.webContents.on('did-finish-load', async () => {
     await refreshRunning()
     await refreshAgents()
+    isProcessScanReady = true
     void probeEnv()
     await pushSessions()
     void pushUsage()
@@ -771,18 +928,15 @@ if (!app.requestSingleInstanceLock()) {
     const menu = Menu.buildFromTemplate([
       ...(s.bg
         ? [{ label: 'Open agent view (attach)', click: () => openAgentView(s.projectPath) }]
-        : [{ label: s.isLive ? 'Focus window' : 'Open & resume', click: () => void focusOrOpen(s) }]),
+        : [{ label: s.isLive ? 'Focus window' : 'Open & resume', click: () => (s.isLive ? void focusOrOpen(s) : resumeOrNotify(s)) }]),
       { label: 'Open project in VS Code', click: () => openProject(s.projectPath) },
       {
         label: 'Resume in side terminal',
-        click: () =>
-          void reopenAndResume(s.projectPath, s.id, s.ticket).then((ok) => {
-            if (!ok) notifyResumeFailed(s)
-          })
+        click: () => resumeOrNotify(s)
       },
       {
         label: 'Resume in standalone terminal',
-        click: () => resumeStandalone(s.projectPath, s.id, s.ticket)
+        click: () => !resuming.has(s.id) && resumeStandalone(s.projectPath, s.id, s.ticket)
       },
       { label: 'Focus existing window', click: () => focusWindow(s.projectPath) },
       { label: 'Open folder in Explorer', click: () => void shell.openPath(s.projectPath) },
@@ -838,6 +992,45 @@ if (!app.requestSingleInstanceLock()) {
     appState = applyTicketFinished(appState, ticket, on)
     saveState(statePath, appState)
     void pushSessions()
+  })
+  ipcMain.on('restore-sessions', () => {
+    const liveIds = lastSessions.filter((s) => s.isLive).map((s) => s.id)
+    const byId = new Map(lastSessions.map((s) => [s.id, s]))
+    for (const e of restoreQueue(appState.restore.snapshot, liveIds, [...byId.keys()], Date.now()))
+      resumeOrNotify(byId.get(e.id) as Session)
+    void pushSessions()
+  })
+  ipcMain.on('dismiss-restore', () => {
+    const liveIds = lastSessions.filter((s) => s.isLive).map((s) => s.id)
+    const knownIds = lastSessions.map((s) => s.id)
+    const stale = new Set(
+      restoreQueue(appState.restore.snapshot, liveIds, knownIds, Date.now()).map((e) => e.id)
+    )
+    const snapshot = appState.restore.snapshot.filter((e) => !stale.has(e.id))
+    appState = { ...appState, restore: { ...appState.restore, snapshot } }
+    saveState(statePath, appState)
+    void pushSessions()
+  })
+  ipcMain.handle('close-sessions', (_e, ids: string[]) => closeSessions(ids))
+  ipcMain.on('vscode-layout-status', (e) => {
+    e.returnValue = usedProfiles()
+  })
+  ipcMain.on('vscode-layout-apply', (e) => {
+    for (const { profileDir } of usedProfiles()) {
+      const settingsFile = joinPath(profileDir, 'settings.json')
+      const keybindingsFile = joinPath(profileDir, 'keybindings.json')
+      try {
+        for (const f of [settingsFile, keybindingsFile])
+          if (existsSync(f) && !existsSync(`${f}.bak-claude-sessions`))
+            copyFileSync(f, `${f}.bak-claude-sessions`)
+        const out = applyLayoutConfig(readText(settingsFile), readText(keybindingsFile))
+        writeFileSync(settingsFile, out.settings, 'utf8')
+        writeFileSync(keybindingsFile, out.keybindings, 'utf8')
+      } catch (err) {
+        console.error('[vscode-layout] apply failed:', profileDir, err)
+      }
+    }
+    e.returnValue = usedProfiles()
   })
   ipcMain.on('toggle-dock', () => setDocked(!appState.dock.isDocked))
   ipcMain.on('get-dock-state', (e) => {

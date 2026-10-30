@@ -62,6 +62,20 @@ export interface TaskMeta {
   isRejected: boolean
 }
 
+export interface CloseCandidate {
+  id: string
+  ticket: string
+  title: string
+  projectName: string
+  status: Status
+}
+
+export interface VscodeProfile {
+  profileDir: string
+  name: string
+  status: 'configured' | 'missing' | 'conflict'
+}
+
 export type Severity = 'normal' | 'warning' | 'critical'
 
 export interface Gauge {

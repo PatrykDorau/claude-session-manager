@@ -1,5 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import type { JiraIssue } from './jira'
+import type { Placement } from './pane'
+import type { RestoreState } from './restore'
 
 export type ClickAction =
   | 'project-cmd'
@@ -49,6 +51,8 @@ export interface State {
   finishedTickets: string[]
   finishOptOutTickets: string[]
   dock: DockState
+  pane: Record<string, Placement>
+  restore: RestoreState
   settings: Settings
 }
 
@@ -95,6 +99,15 @@ const loadDock = (d: any): DockState => {
   }
 }
 
+const isObject = (v: unknown): v is Record<string, any> =>
+  !!v && typeof v === 'object' && !Array.isArray(v)
+
+const loadRestore = (r: unknown): RestoreState => ({
+  snapshot: isObject(r) && Array.isArray(r.snapshot) ? r.snapshot : [],
+  pendingRemoval: isObject(r) && isObject(r.pendingRemoval) ? r.pendingRemoval : {},
+  lastScanAt: isObject(r) && typeof r.lastScanAt === 'number' ? r.lastScanAt : 0
+})
+
 const stringList = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []
 
@@ -111,6 +124,8 @@ export const DEFAULT_STATE = (): State => ({
   finishedTickets: [],
   finishOptOutTickets: [],
   dock: { ...DEFAULT_DOCK },
+  pane: {},
+  restore: loadRestore(null),
   settings: { ...DEFAULT_SETTINGS }
 })
 
@@ -130,6 +145,8 @@ export function loadState(file: string): State {
       finishedTickets: stringList(o.finishedTickets),
       finishOptOutTickets: stringList(o.finishOptOutTickets),
       dock: loadDock(o.dock),
+      pane: isObject(o.pane) ? o.pane : {},
+      restore: loadRestore(o.restore),
       settings: {
         jiraBase: typeof s.jiraBase === 'string' ? s.jiraBase : DEFAULT_SETTINGS.jiraBase,
         jiraToken: typeof s.jiraToken === 'string' ? s.jiraToken : DEFAULT_SETTINGS.jiraToken,

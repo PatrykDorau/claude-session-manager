@@ -24,6 +24,9 @@ const version = ((): string => {
   }
 })()
 const diagCopied = ref(false)
+const vscodeProfiles = ref(window.api.getVscodeLayout())
+const isLayoutPreview = ref(false)
+const STATUS_TEXT = { configured: 'configured', missing: 'not configured', conflict: 'configured differently' }
 const syncing = ref(false)
 const synced = ref(false)
 
@@ -83,6 +86,10 @@ function selectSound(name: SoundName): void {
   soundName.value = name
   localStorage.setItem('alertSoundName', name)
   playSound(name)
+}
+function applyLayout(): void {
+  vscodeProfiles.value = window.api.applyVscodeLayout()
+  isLayoutPreview.value = false
 }
 function switchAccount(): void {
   window.api.switchAccount()
@@ -160,6 +167,25 @@ function copyDiag(): void {
       </select>
       <small class="hint">Right-click a session for all actions at once.</small>
     </label>
+
+    <div class="field">
+      <span class="flbl">VS Code layout</span>
+      <div v-for="p in vscodeProfiles" :key="p.profileDir" class="prof">
+        <span>{{ p.name }}</span>
+        <span :class="['pst', p.status]">{{ STATUS_TEXT[p.status] }}</span>
+      </div>
+      <div v-if="isLayoutPreview" class="preview">
+        <div>For each profile above (backup <code>*.bak-claude-sessions</code> first):</div>
+        <div><code>settings.json</code>: <code>terminal.integrated.enablePersistentSessions</code> → <code>false</code> (no empty terminal tabs after restart), <code>terminal.integrated.tabs.title</code> → <code>${sequence}</code> (tabs named after the ticket)</div>
+        <div><code>keybindings.json</code>: <code>Ctrl+Alt+F9</code> / <code>Ctrl+Alt+F10</code> → code with the dev-server terminal below it on the left, Claude sessions top/bottom on the right; <code>Ctrl+Alt+F8</code> opens a terminal under the code (dev server). Existing bindings on these keys are replaced.</div>
+        <div class="row">
+          <button class="btn" @click="applyLayout">Apply</button>
+          <button class="btn" @click="isLayoutPreview = false">Cancel</button>
+        </div>
+      </div>
+      <button v-else class="btn" @click="isLayoutPreview = true">Configure VS Code…</button>
+      <small class="hint">Press Ctrl+Alt+F8 in VS Code to open the dev-server terminal under the code.</small>
+    </div>
 
     <div class="toggle" @click="toggleDockReserve">
       <span>Docked bar reserves screen space (pushes windows)</span>
@@ -283,6 +309,35 @@ function copyDiag(): void {
 }
 .acct {
   margin-top: 16px;
+}
+.prof {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+}
+.pst {
+  color: #8b949e;
+}
+.pst.configured {
+  color: #56d364;
+}
+.pst.conflict {
+  color: #e3b341;
+}
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0;
+  padding: 8px;
+  font-size: 11px;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+}
+.preview .row {
+  display: flex;
+  gap: 6px;
 }
 .abt {
   color: #8b949e;

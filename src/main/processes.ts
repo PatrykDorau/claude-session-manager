@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { branchTicket } from './ticket'
+import type { ProcInfo } from './closing'
 
 const RESUME =
   /--resume\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/g
@@ -151,3 +152,30 @@ export async function runningResumeIds(): Promise<Set<string>> {
     p.on('close', () => resolve(new Set(extractResumeIds(out.split(/\r?\n/)))))
   })
 }
+
+export const listProcesses = (): Promise<ProcInfo[]> => {
+  const ps =
+    'ConvertTo-Json -Compress @(Get-CimInstance Win32_Process | ForEach-Object { @{ p = $_.ProcessId; pp = $_.ParentProcessId; n = $_.Name; s = $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) } })'
+  return new Promise((resolve) => {
+    let out = ''
+    const p = spawn('powershell.exe', ['-NoProfile', '-Command', ps], { windowsHide: true })
+    p.stdout.on('data', (d) => (out += d.toString()))
+    p.on('error', () => resolve([]))
+    p.on('close', () => {
+      try {
+        const rows: { p: number; pp: number; n: string | null; s: number }[] = JSON.parse(out)
+        resolve(rows.map((r) => ({ pid: r.p, parentPid: r.pp, name: r.n ?? '', startedAt: r.s })))
+      } catch {
+        resolve([])
+      }
+    })
+  })
+}
+
+export const killProcess = (pid: number, isTree: boolean): Promise<boolean> =>
+  new Promise((resolve) => {
+    const args = ['/PID', String(pid), ...(isTree ? ['/T'] : []), '/F']
+    const p = spawn('taskkill', args, { windowsHide: true })
+    p.on('error', () => resolve(false))
+    p.on('close', (codeNum) => resolve(codeNum === 0))
+  })

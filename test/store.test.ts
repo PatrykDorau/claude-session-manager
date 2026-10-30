@@ -26,6 +26,8 @@ const base: State = {
   finishedTickets: [],
   finishOptOutTickets: [],
   dock: { isDocked: false, edge: 'right', width: 320, displayId: null, floating: null },
+  pane: {},
+  restore: { snapshot: [], pendingRemoval: {}, lastScanAt: 0 },
   settings: {
     jiraBase: 'https://jira.redge.com/browse/',
     jiraToken: '',
@@ -62,6 +64,8 @@ describe('ticket-level state', () => {
     expect(s.dock).toEqual(base.dock)
     expect(s.settings.isDockReserving).toBe(false)
     expect(s.settings.ticketPrefixes).toBe('')
+    expect(s.pane).toEqual({})
+    expect(s.restore).toEqual({ snapshot: [], pendingRemoval: {}, lastScanAt: 0 })
     rmSync(dir, { recursive: true, force: true })
   })
 })
@@ -131,6 +135,8 @@ describe('store io', () => {
       finishedTickets: ['SOFKAN-2'],
       finishOptOutTickets: ['SOFKAN-3'],
       dock: { isDocked: true, edge: 'left', width: 300, displayId: 7, floating: { x: 1, y: 2, width: 3, height: 4 } },
+      pane: { x: { pane: 'bottom', folder: 'C:/P' } },
+      restore: { snapshot: [{ id: 'x', projectPath: 'C:/P', lastLiveAt: 5 }], pendingRemoval: { x: 4 }, lastScanAt: 5 },
       settings: {
         jiraBase: 'http://jira.local/',
         jiraToken: 'tok',
