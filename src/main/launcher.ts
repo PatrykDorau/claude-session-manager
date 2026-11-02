@@ -3,6 +3,8 @@ import { writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { RESUME_FILE_NAME } from './vscodeconfig'
+import { normalizePath } from './lock'
+import { liveFolders } from './scanner'
 
 export type ResumeKey = 'F9' | 'F10'
 
@@ -17,6 +19,9 @@ export function createSerialQueue(): <T>(job: () => Promise<T>) => Promise<T> {
 }
 
 const resumeQueue = createSerialQueue()
+
+export const isFolderOpen = (folder: string, openFolders: string[]): boolean =>
+  openFolders.some((f) => normalizePath(f) === normalizePath(folder))
 
 export function resumeCommand(id: string, ticket: string | null): string {
   return ticket ? `claude --resume ${id} --name ${ticket}` : `claude --resume ${id}`
@@ -79,7 +84,8 @@ function openInTerminal(
   needle: string,
   command: string,
   key: ResumeKey,
-  isLayoutConfigured: boolean
+  isLayoutConfigured: boolean,
+  isFresh: boolean
 ): Promise<boolean> {
   const resumeFile = join(homedir(), '.claude', RESUME_FILE_NAME)
   if (isLayoutConfigured) writeFileSync(resumeFile, command, 'utf8')
@@ -122,11 +128,10 @@ function Focus($proc){
 }
 $deadline=(Get-Date).AddSeconds(40)
 $p=$null
-$isFresh=$false
+$isFresh=$${isFresh ? 'true' : 'false'}
 while((Get-Date) -lt $deadline){
  $p=Get-Process | Where-Object { $_.MainWindowTitle -like "*$needle*" -and $_.MainWindowTitle -like '*Visual Studio Code*' } | Select-Object -First 1
  if($p){break}
- $isFresh=$true
  Start-Sleep -Milliseconds 400
 }
 if(-not $p){ Write-Host "no VS Code window matched $needle"; exit }
@@ -216,9 +221,10 @@ export async function reopenAndResume(
   isLayoutConfigured = false
 ): Promise<boolean> {
   const needle = basename(projectPath)
-  const openAndType = (): Promise<boolean> => {
+  const openAndType = async (): Promise<boolean> => {
+    const isFresh = !isFolderOpen(projectPath, await liveFolders())
     code([projectPath])
-    return openInTerminal(needle, resumeCommand(id, ticket), key, isLayoutConfigured)
+    return openInTerminal(needle, resumeCommand(id, ticket), key, isLayoutConfigured, isFresh)
   }
   return resumeQueue(openAndType)
 }

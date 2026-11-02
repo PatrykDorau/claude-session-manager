@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resumeCommand, createSerialQueue } from '../src/main/launcher'
+import { resumeCommand, createSerialQueue, isFolderOpen } from '../src/main/launcher'
 
 describe('resumeCommand', () => {
   it('names the session after its ticket', () => {
@@ -35,5 +35,14 @@ describe('createSerialQueue', () => {
     const next = enqueue(() => Promise.resolve('ok'))
     await expect(failed).rejects.toThrow('boom')
     await expect(next).resolves.toBe('ok')
+  })
+})
+
+describe('isFolderOpen', () => {
+  it('matches a folder open in any VS Code window regardless of case and slashes', () => {
+    expect(isFolderOpen('C:\\Projekty\\tigo', ['c:/projekty/tigo', 'C:\\Other'])).toBe(true)
+  })
+  it('is false when no window has the folder open', () => {
+    expect(isFolderOpen('C:\\Projekty\\tigo', ['C:\\Projekty\\tigo-web'])).toBe(false)
   })
 })

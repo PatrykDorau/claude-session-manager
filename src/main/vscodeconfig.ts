@@ -33,16 +33,23 @@ const RESUME_SHELL = {
   args: ['-NoLogo', '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', RESUME_SCRIPT]
 }
 
-const layoutBinding = (key: string, viewColumn: number, isResume: boolean): Binding => ({
+const ACTIVE_GROUP = -1
+
+const layoutBinding = (key: string, focusGroup: string, isResume: boolean): Binding => ({
   key,
   command: 'runCommands',
   args: {
     commands: [
       { command: 'vscode.setEditorLayout', args: LAYOUT },
+      focusGroup,
+      'workbench.action.unlockEditorGroup',
       {
         command: 'workbench.action.createTerminalEditor',
-        args: isResume ? { location: { viewColumn }, config: RESUME_SHELL } : { location: { viewColumn } }
+        args: isResume
+          ? { location: { viewColumn: ACTIVE_GROUP }, config: RESUME_SHELL }
+          : { location: { viewColumn: ACTIVE_GROUP } }
       },
+      'workbench.action.lockEditorGroup',
       'workbench.action.terminal.focus'
     ]
   },
@@ -50,9 +57,9 @@ const layoutBinding = (key: string, viewColumn: number, isResume: boolean): Bind
 })
 
 export const KEYBINDINGS: Binding[] = [
-  layoutBinding('ctrl+alt+f9', 2, true),
-  layoutBinding('ctrl+alt+f10', 3, true),
-  layoutBinding('ctrl+alt+f8', 1, false)
+  layoutBinding('ctrl+alt+f9', 'workbench.action.focusThirdEditorGroup', true),
+  layoutBinding('ctrl+alt+f10', 'workbench.action.focusFourthEditorGroup', true),
+  layoutBinding('ctrl+alt+f8', 'workbench.action.focusSecondEditorGroup', false)
 ]
 
 const OUR_KEYS = KEYBINDINGS.map((b) => b.key)
@@ -63,8 +70,12 @@ const sameBinding = (a: Binding, b: Binding): boolean =>
   JSON.stringify(a.args ?? null) === JSON.stringify(b.args ?? null) &&
   (a.when ?? null) === (b.when ?? null)
 
+const isEarlierLayout = (b: Binding): boolean =>
+  b.command === 'runCommands' && JSON.stringify(b.args ?? null).includes('"vscode.setEditorLayout"')
+
 const isOurs = (b: Binding): boolean =>
   (b.key === LEGACY.key && b.command === LEGACY.command) ||
+  isEarlierLayout(b) ||
   KEYBINDINGS.some((k) => sameBinding(b, k))
 
 const toBindings = (text: string | null): Binding[] => {

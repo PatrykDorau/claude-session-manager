@@ -41,6 +41,16 @@ describe('layoutStatus', () => {
     ])
     expect(layoutStatus(null, withWhen)).toBe('missing')
   })
+  it('treats an earlier version of our layout binding as ours', () => {
+    const kb = JSON.stringify([
+      {
+        key: 'ctrl+alt+f9',
+        command: 'runCommands',
+        args: { commands: [{ command: 'vscode.setEditorLayout', args: {} }, 'x'] }
+      }
+    ])
+    expect(layoutStatus(null, kb)).toBe('missing')
+  })
   it('reports a conflict for a different user binding', () => {
     const kb = JSON.stringify([{ key: 'ctrl+alt+f10', command: 'editor.action.foo' }])
     expect(layoutStatus(null, kb)).toBe('conflict')
@@ -70,18 +80,26 @@ describe('applyLayoutConfig', () => {
     expect(list.map((k) => k.key)).toEqual(['ctrl+k', 'ctrl+alt+f9', 'ctrl+alt+f10', 'ctrl+alt+f8'])
     expect(list.every((k) => k.key === 'ctrl+k' || k.command === 'runCommands')).toBe(true)
   })
-  it('targets the right-top, right-bottom and left-bottom groups and focuses the new terminal', () => {
+  it('focuses the target group, unlocks it, opens the terminal there and locks it again', () => {
     const list = parse(applyLayoutConfig(null, null).keybindings) as {
       key: string
       args: { commands: (string | { command: string; args?: { location?: { viewColumn: number } } })[] }
     }[]
-    const column = (key: string): number | undefined =>
-      list
-        .find((k) => k.key === key)
-        ?.args.commands.flatMap((c) => (typeof c === 'string' ? [] : [c.args?.location?.viewColumn]))
-        .find((v) => v !== undefined)
-    expect([column('ctrl+alt+f9'), column('ctrl+alt+f10'), column('ctrl+alt+f8')]).toEqual([2, 3, 1])
-    expect(list.every((k) => k.args.commands.at(-1) === 'workbench.action.terminal.focus')).toBe(true)
+    const steps = (key: string): (string | number | undefined)[] =>
+      (list.find((k) => k.key === key)?.args.commands ?? []).map((c) =>
+        typeof c === 'string' ? c : c.command === 'workbench.action.createTerminalEditor' ? c.args?.location?.viewColumn : c.command
+      )
+    const expected = (focus: string): (string | number)[] => [
+      'vscode.setEditorLayout',
+      focus,
+      'workbench.action.unlockEditorGroup',
+      -1,
+      'workbench.action.lockEditorGroup',
+      'workbench.action.terminal.focus'
+    ]
+    expect(steps('ctrl+alt+f9')).toEqual(expected('workbench.action.focusThirdEditorGroup'))
+    expect(steps('ctrl+alt+f10')).toEqual(expected('workbench.action.focusFourthEditorGroup'))
+    expect(steps('ctrl+alt+f8')).toEqual(expected('workbench.action.focusSecondEditorGroup'))
   })
   it('reports missing when only the old two-key setup is present', () => {
     const settings = JSON.stringify({ 'terminal.integrated.enablePersistentSessions': false })

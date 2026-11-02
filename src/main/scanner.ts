@@ -22,7 +22,7 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-async function liveFolders(): Promise<string[]> {
+export async function liveFolders(): Promise<string[]> {
   let entries: string[] = []
   try {
     entries = await readdir(ideDir())
