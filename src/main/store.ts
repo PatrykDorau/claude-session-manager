@@ -21,6 +21,23 @@ export interface Settings {
   ticketPrefixes: string
   isDockReserving: boolean
   isDockOnTop: boolean
+  taskJql: string
+  startPrompt: string
+  quickActions: QuickAction[]
+  gitlabBase: string
+  gitlabToken: string
+  mrProjects: string
+  startView: StartView
+  mrMention: string
+}
+
+export type StartView = 'ask' | 'sidebar' | 'dashboard'
+
+const START_VIEWS: StartView[] = ['ask', 'sidebar', 'dashboard']
+
+export interface QuickAction {
+  label: string
+  prompt: string
 }
 
 export type DockEdge = 'left' | 'right'
@@ -53,6 +70,13 @@ export interface State {
   dock: DockState
   pane: Record<string, Placement>
   restore: RestoreState
+  repoByPrefix: Record<string, string>
+  starred: string[]
+  dashboardBounds: Rect | null
+  reviewedMrs: Record<string, string>
+  mrSessions: Record<string, string>
+  serverCommands: Record<string, string>
+  chromePorts: Record<string, number>
   settings: Settings
 }
 
@@ -65,6 +89,13 @@ const CLICK_ACTIONS: ClickAction[] = [
   'focus'
 ]
 
+export const DEFAULT_QUICK_ACTIONS: QuickAction[] = [
+  { label: 'Repro in browser', prompt: "Zrób repro w przeglądarce (browser-verify repro) dla tego zadania. Serwer uruchom przez node C:/Users/ASSET-17300/.claude/skills/_shared/cockpit.js server --ticket <klucz zadania>, przeglądarkę przez node C:/Users/ASSET-17300/.claude/skills/_shared/cockpit.js chrome --ticket <klucz zadania> --url <adres serwera>. Nie uruchamiaj Chrome samodzielnie. Logowanie i dojście do ekranu zostaw mnie: poczekaj na moje „gotowe”." },
+  { label: 'Amend, push, draft notes', prompt: "To moja wyraźna prośba o commit i push: w worktree tej gałęzi zrób git commit --amend --no-edit z obecnymi zmianami i git push --force-with-lease. Potem przygotuj w MR draft notes (gitlab.js mr draft-note) z odpowiedziami na nierozwiązane wątki: najpierw pokaż mi listę odpowiedzi do potwierdzenia. Niczego nie publikuj." },
+  { label: 'TL;DR of the plan', prompt: "Napisz krótkie TL;DR obecnego planu i co zostało do zrobienia." },
+  { label: 'Write QA test cases', prompt: "Napisz test case'y dla testerów (browser-verify qa)." }
+]
+
 const DEFAULT_SETTINGS: Settings = {
   jiraBase: 'https://jira.redge.com/browse/',
   jiraToken: '',
@@ -74,7 +105,15 @@ const DEFAULT_SETTINGS: Settings = {
   launchOnStartup: false,
   ticketPrefixes: '',
   isDockReserving: false,
-  isDockOnTop: false
+  isDockOnTop: false,
+  taskJql: 'assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC',
+  startPrompt: 'Przeczytaj zadanie {ticket} z Jiry ({title}) i zacznij od /superpowers:brainstorming',
+  quickActions: DEFAULT_QUICK_ACTIONS,
+  gitlabBase: 'https://drm-gitlab.redlabs.pl',
+  gitlabToken: '',
+  mrProjects: 'tigo-fo-web, tigo-fo-smarttv',
+  startView: 'ask',
+  mrMention: '@telco-frontend'
 }
 
 const DEFAULT_DOCK: DockState = {
@@ -113,6 +152,29 @@ const stringList = (v: unknown): string[] =>
 
 const bool = (v: unknown, fallback: boolean): boolean => (typeof v === 'boolean' ? v : fallback)
 
+const stringMap = (v: unknown): Record<string, string> =>
+  isObject(v) ? Object.fromEntries(Object.entries(v).filter((e): e is [string, string] => typeof e[1] === 'string')) : {}
+
+const loadQuickActions = (v: unknown): QuickAction[] => {
+  const actions = Array.isArray(v)
+    ? v.filter((a): a is QuickAction => isObject(a) && typeof a.label === 'string' && typeof a.prompt === 'string')
+    : []
+  return actions.length && actions.length === (v as unknown[]).length ? actions.map(({ label, prompt }) => ({ label, prompt })) : DEFAULT_QUICK_ACTIONS
+}
+
+const MIN_VISIBLE = 100
+
+const overlap = (aStart: number, aSize: number, bStart: number, bSize: number): number =>
+  Math.min(aStart + aSize, bStart + bSize) - Math.max(aStart, bStart)
+
+export const visibleBounds = (bounds: Rect | null, displays: Rect[]): Rect | null =>
+  bounds &&
+  displays.some(
+    (d) => overlap(bounds.x, bounds.width, d.x, d.width) >= MIN_VISIBLE && overlap(bounds.y, bounds.height, d.y, d.height) >= MIN_VISIBLE
+  )
+    ? bounds
+    : null
+
 export const DEFAULT_STATE = (): State => ({
   watched: [],
   names: {},
@@ -126,6 +188,13 @@ export const DEFAULT_STATE = (): State => ({
   dock: { ...DEFAULT_DOCK },
   pane: {},
   restore: loadRestore(null),
+  repoByPrefix: {},
+  starred: [],
+  dashboardBounds: null,
+  reviewedMrs: {},
+  mrSessions: {},
+  serverCommands: {},
+  chromePorts: {},
   settings: { ...DEFAULT_SETTINGS }
 })
 
@@ -147,6 +216,21 @@ export function loadState(file: string): State {
       dock: loadDock(o.dock),
       pane: isObject(o.pane) ? o.pane : {},
       restore: loadRestore(o.restore),
+      repoByPrefix: isObject(o.repoByPrefix)
+        ? Object.fromEntries(
+            Object.entries(o.repoByPrefix).filter(
+              (e): e is [string, string] => typeof e[1] === 'string'
+            )
+          )
+        : {},
+      starred: stringList(o.starred),
+      dashboardBounds: isRect(o.dashboardBounds) ? o.dashboardBounds : null,
+      reviewedMrs: stringMap(o.reviewedMrs),
+      mrSessions: stringMap(o.mrSessions),
+      serverCommands: stringMap(o.serverCommands),
+      chromePorts: isObject(o.chromePorts)
+        ? Object.fromEntries(Object.entries(o.chromePorts).filter((e): e is [string, number] => typeof e[1] === 'number'))
+        : {},
       settings: {
         jiraBase: typeof s.jiraBase === 'string' ? s.jiraBase : DEFAULT_SETTINGS.jiraBase,
         jiraToken: typeof s.jiraToken === 'string' ? s.jiraToken : DEFAULT_SETTINGS.jiraToken,
@@ -166,7 +250,16 @@ export function loadState(file: string): State {
         ticketPrefixes:
           typeof s.ticketPrefixes === 'string' ? s.ticketPrefixes : DEFAULT_SETTINGS.ticketPrefixes,
         isDockReserving: bool(s.isDockReserving, DEFAULT_SETTINGS.isDockReserving),
-        isDockOnTop: bool(s.isDockOnTop, DEFAULT_SETTINGS.isDockOnTop)
+        isDockOnTop: bool(s.isDockOnTop, DEFAULT_SETTINGS.isDockOnTop),
+        taskJql: typeof s.taskJql === 'string' ? s.taskJql : DEFAULT_SETTINGS.taskJql,
+        startPrompt:
+          typeof s.startPrompt === 'string' ? s.startPrompt : DEFAULT_SETTINGS.startPrompt,
+        quickActions: loadQuickActions(s.quickActions),
+        gitlabBase: typeof s.gitlabBase === 'string' ? s.gitlabBase : DEFAULT_SETTINGS.gitlabBase,
+        gitlabToken: typeof s.gitlabToken === 'string' ? s.gitlabToken : DEFAULT_SETTINGS.gitlabToken,
+        mrProjects: typeof s.mrProjects === 'string' ? s.mrProjects : DEFAULT_SETTINGS.mrProjects,
+        startView: START_VIEWS.includes(s.startView) ? s.startView : DEFAULT_SETTINGS.startView,
+        mrMention: typeof s.mrMention === 'string' ? s.mrMention : DEFAULT_SETTINGS.mrMention
       }
     }
   } catch {

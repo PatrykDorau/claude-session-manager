@@ -130,7 +130,7 @@ export async function scanRaw(): Promise<ScanResult> {
         gitBranch: head.gitBranch ?? tail.gitBranch,
         firstPrompt: head.firstPrompt,
         mtimeMs: st.mtimeMs,
-        needsInput: (needsInput.get(id) ?? -1) >= st.mtimeMs,
+        needsInput: (needsInput.get(id) ?? -1) >= st.mtimeMs || tail.isQuestion,
         active: active.has(id),
         done: done.has(id),
         pendingToolUse: tail.pendingToolUse,

@@ -4,11 +4,106 @@ body {
   margin: 0;
   overflow: hidden;
   user-select: none;
-  background: #0d1117;
+  background: #1b1b1b;
 }
 
 #app {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #3a3a3a;
+  border: 3px solid transparent;
+  border-radius: 8px;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #555555;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-button {
+  display: none;
+}
+
+:root {
+  --bg-0: #141414;
+  --bg-1: #181818;
+  --bg-2: #1f1f1f;
+  --bg-3: #262626;
+  --bg-4: #2f2f2f;
+  --bg-editor: #1e1e1e;
+  --line: #2b2b2b;
+  --line-2: #363636;
+  --line-3: #454545;
+  --text: #e8e8e8;
+  --text-2: #cccccc;
+  --text-3: #9d9d9d;
+  --text-4: #6f6f6f;
+  --text-5: #4d4d4d;
+  --accent: #3dd68c;
+  --accent-hover: #5ae3a0;
+  --accent-soft: rgba(61, 214, 140, 0.12);
+  --on-accent: #05140c;
+  --info: #6aa9ff;
+  --info-soft: rgba(106, 169, 255, 0.12);
+  --warn: #e8b84a;
+  --warn-soft: rgba(232, 184, 74, 0.12);
+  --danger: #f2706a;
+  --danger-soft: rgba(242, 112, 106, 0.12);
+  --danger-line: #552a2a;
+  --ok: #3dd68c;
+  --ok-line: #24452f;
+  --font-ui: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'Cascadia Mono', Consolas, monospace;
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+.dash input[type='checkbox'],
+.launcher input[type='checkbox'] {
+  appearance: none;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  background: var(--bg-3);
+  border: 1px solid var(--line-3);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.dash input[type='checkbox']:hover,
+.launcher input[type='checkbox']:hover {
+  border-color: var(--text-4);
+}
+.dash input[type='checkbox']:checked,
+.launcher input[type='checkbox']:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.dash input[type='checkbox']:checked::after,
+.launcher input[type='checkbox']:checked::after {
+  content: '';
+  width: 4px;
+  height: 8px;
+  margin-top: -2px;
+  border: solid var(--on-accent);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.dash input[type='checkbox']:focus-visible,
+.launcher input[type='checkbox']:focus-visible {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 1px;
 }

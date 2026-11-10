@@ -1,5 +1,5 @@
 appId: com.electron.app
-productName: claude-session-switcher
+productName: Claude Cockpit
 directories:
   buildResources: build
 files:
@@ -14,8 +14,9 @@ asarUnpack:
   - resources/**
   - node_modules/koffi/**
   - node_modules/@koromix/**
+  - node_modules/node-pty/**
 win:
-  executableName: claude-session-switcher
+  executableName: claude-cockpit
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}

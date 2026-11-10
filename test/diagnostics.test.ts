@@ -18,7 +18,7 @@ describe('formatDiagnostics', () => {
 
   it('renders all fields with detection present', () => {
     const out = formatDiagnostics(base)
-    expect(out).toContain('Claude Session Switcher v1.1.1')
+    expect(out).toContain('Claude Cockpit v1.1.1')
     expect(out).toContain('OS: win32 10.0.26200')
     expect(out).toContain('claude: detected (1.2.3)')
     expect(out).toContain('VS Code: detected')

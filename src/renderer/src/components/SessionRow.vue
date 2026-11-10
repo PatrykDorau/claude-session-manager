@@ -66,7 +66,7 @@ function statusColor(): string {
     case 'idle':
       return cb ? '#f0e442' : '#d29922'
     default:
-      return '#8b949e'
+      return '#9a9a9a'
   }
 }
 function statusLabel(): string {
@@ -226,7 +226,7 @@ function ago(ms: number): string {
   gap: 9px;
   padding: 9px 11px;
   cursor: pointer;
-  border-bottom: 1px solid #161b22;
+  border-bottom: 1px solid #232323;
 }
 .row.waiting {
   animation: rowblink 1.1s ease-in-out infinite;
@@ -266,7 +266,7 @@ function ago(ms: number): string {
 .line.meta > * + *:not(.jira):not(.pin)::before {
   content: '·';
   margin-right: 6px;
-  color: #484f58;
+  color: #555555;
 }
 .pin {
   font-size: 9px;
@@ -284,7 +284,7 @@ function ago(ms: number): string {
   justify-content: end;
   gap: 4px;
   padding: 0 8px 0 26px;
-  background: linear-gradient(to left, rgba(13, 17, 23, 0.96) 58%, rgba(13, 17, 23, 0));
+  background: linear-gradient(to left, rgba(27, 27, 27, 0.96) 58%, rgba(27, 27, 27, 0));
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s;
@@ -308,7 +308,7 @@ function ago(ms: number): string {
   white-space: nowrap;
   font-weight: 600;
   font-size: 12px;
-  color: #e6edf3;
+  color: #ededed;
 }
 .status {
   flex: none;
@@ -320,8 +320,8 @@ function ago(ms: number): string {
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.3px;
-  color: #d2a8ff;
-  border: 1px solid #6e40c9;
+  color: #7dff95;
+  border: 1px solid #00b824;
   border-radius: 4px;
   padding: 0 4px;
   line-height: 1.4;
@@ -358,18 +358,18 @@ function ago(ms: number): string {
 }
 .metinfo {
   flex: none;
-  color: #6e7681;
+  color: #737373;
   font-size: 10px;
   white-space: nowrap;
 }
 .time {
   flex: none;
-  color: #6e7681;
+  color: #737373;
   font-size: 10px;
 }
 .ticket {
   flex: none;
-  color: #a371f7;
+  color: #f2f2f2;
   font-size: 10px;
   font-weight: 500;
   cursor: pointer;
@@ -378,8 +378,8 @@ function ago(ms: number): string {
   flex: none;
   font-size: 9px;
   font-weight: 600;
-  color: #c9d1d9;
-  background: #30363d;
+  color: #d4d4d4;
+  background: #3a3a3a;
   border-radius: 9px;
   padding: 1px 7px;
   line-height: 1.5;
@@ -394,16 +394,16 @@ function ago(ms: number): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #adbac7;
+  color: #bdbdbd;
   font-size: 11px;
 }
 .edit {
   flex: 1;
   min-width: 0;
   font: 11px system-ui;
-  background: #0d1117;
-  color: #e6edf3;
-  border: 1px solid #30363d;
+  background: #1b1b1b;
+  color: #ededed;
+  border: 1px solid #3a3a3a;
   border-radius: 4px;
   padding: 1px 5px;
 }
@@ -413,7 +413,7 @@ function ago(ms: number): string {
   cursor: pointer;
   padding: 3px;
   border-radius: 5px;
-  color: #b1bac4;
+  color: #c0c0c0;
   display: inline-flex;
 }
 .ic svg {
@@ -423,7 +423,7 @@ function ago(ms: number): string {
 }
 .ic:hover {
   color: #fff;
-  background: #21262d;
+  background: #2b2b2b;
 }
 .ic.star.on {
   color: #e3b341;

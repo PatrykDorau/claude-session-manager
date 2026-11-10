@@ -20,7 +20,7 @@ export const LAYOUT = {
   orientation: 0,
   groups: [
     { size: 0.5, groups: [{ size: 0.75 }, { size: 0.25 }] },
-    { size: 0.5, groups: [{ size: 0.5 }, { size: 0.5 }] }
+    { size: 0.5 }
   ]
 }
 
@@ -58,7 +58,6 @@ const layoutBinding = (key: string, focusGroup: string, isResume: boolean): Bind
 
 export const KEYBINDINGS: Binding[] = [
   layoutBinding('ctrl+alt+f9', 'workbench.action.focusThirdEditorGroup', true),
-  layoutBinding('ctrl+alt+f10', 'workbench.action.focusFourthEditorGroup', true),
   layoutBinding('ctrl+alt+f8', 'workbench.action.focusSecondEditorGroup', false)
 ]
 
@@ -72,6 +71,9 @@ const sameBinding = (a: Binding, b: Binding): boolean =>
 
 const isEarlierLayout = (b: Binding): boolean =>
   b.command === 'runCommands' && JSON.stringify(b.args ?? null).includes('"vscode.setEditorLayout"')
+
+const isStaleLayout = (b: Binding): boolean =>
+  !!b && !OUR_KEYS.includes(b.key) && isEarlierLayout(b)
 
 const isOurs = (b: Binding): boolean =>
   (b.key === LEGACY.key && b.command === LEGACY.command) ||
@@ -126,8 +128,10 @@ export function layoutStatus(
   settingsText: string | null,
   keybindingsText: string | null
 ): LayoutStatus {
-  const bindings = toBindings(keybindingsText).filter((b) => OUR_KEYS.includes(b?.key))
+  const all = toBindings(keybindingsText)
+  const bindings = all.filter((b) => OUR_KEYS.includes(b?.key))
   if (bindings.some((b) => !isOurs(b))) return 'conflict'
+  if (all.some(isStaleLayout)) return 'missing'
   const current = toSettings(settingsText)
   const isSettingsApplied = Object.entries(SETTINGS).every(([k, v]) => current[k] === v)
   const isBound = KEYBINDINGS.every((k) => bindings.some((b) => sameBinding(b, k)))
@@ -155,9 +159,10 @@ export function applyLayoutConfig(
   const list = toBindings(keybindings)
   const isBound =
     KEYBINDINGS.every((k) => list.some((b) => sameBinding(b, k))) &&
-    list.filter((b) => OUR_KEYS.includes(b?.key)).length === KEYBINDINGS.length
+    list.filter((b) => OUR_KEYS.includes(b?.key)).length === KEYBINDINGS.length &&
+    !list.some(isStaleLayout)
   if (!isBound) {
-    const stale = list.flatMap((b, i) => (OUR_KEYS.includes(b?.key) ? [i] : [])).reverse()
+    const stale = list.flatMap((b, i) => (OUR_KEYS.includes(b?.key) || isStaleLayout(b) ? [i] : [])).reverse()
     for (const i of stale) keybindings = edit(keybindings, [i], undefined)
     for (const k of KEYBINDINGS) keybindings = edit(keybindings, [-1], k)
   }

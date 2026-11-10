@@ -35,6 +35,20 @@ export async function gitDirty(folder: string): Promise<boolean> {
   })
 }
 
+export const runGit = (
+  cwd: string,
+  args: string[]
+): Promise<{ isOk: boolean; out: string; err: string }> =>
+  new Promise((resolve) => {
+    let out = ''
+    let err = ''
+    const p = spawn('git', ['-C', cwd, ...args], { windowsHide: true })
+    p.stdout.on('data', (d) => (out += d.toString()))
+    p.stderr.on('data', (d) => (err += d.toString()))
+    p.on('error', (e) => resolve({ isOk: false, out, err: e.message }))
+    p.on('close', (codeNum) => resolve({ isOk: codeNum === 0, out, err: err.trim() }))
+  })
+
 function git(repo: string, args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
     let out = ''
@@ -141,17 +155,48 @@ export async function listAgents(): Promise<AgentInfo[] | null> {
   })
 }
 
-export async function runningResumeIds(): Promise<Set<string>> {
+interface ClaudeProcess {
+  pid: number
+  commandLine: string
+}
+
+const claudeProcesses = (): Promise<ClaudeProcess[]> => {
   const ps =
-    "Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | ForEach-Object { $_.CommandLine }"
+    "ConvertTo-Json -Compress @(Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | ForEach-Object { @{ p = $_.ProcessId; c = [string]$_.CommandLine } })"
   return new Promise((resolve) => {
     let out = ''
     const p = spawn('powershell.exe', ['-NoProfile', '-Command', ps], { windowsHide: true })
     p.stdout.on('data', (d) => (out += d.toString()))
-    p.on('error', () => resolve(new Set()))
-    p.on('close', () => resolve(new Set(extractResumeIds(out.split(/\r?\n/)))))
+    p.on('error', () => resolve([]))
+    p.on('close', () => {
+      try {
+        const rows: { p: number; c: string | null }[] = JSON.parse(out)
+        resolve(rows.map((r) => ({ pid: r.p, commandLine: r.c ?? '' })))
+      } catch {
+        resolve([])
+      }
+    })
   })
 }
+
+export async function runningResumeIds(): Promise<Set<string>> {
+  return new Set(extractResumeIds((await claudeProcesses()).map((p) => p.commandLine)))
+}
+
+const ATTACH = /\battach\s+([0-9a-fA-F]{8})\b/
+
+export const extractAttachIds = (commandLines: string[]): string[] =>
+  commandLines.flatMap((line) => ATTACH.exec(line)?.[1] ?? [])
+
+export const extractAttachPids = (rows: ClaudeProcess[]): Map<string, number> =>
+  new Map(rows.flatMap((r) => {
+    const id = ATTACH.exec(r.commandLine)?.[1]
+    return id ? [[id, r.pid] as [string, number]] : []
+  }))
+
+export const runningAttaches = async (): Promise<Map<string, number>> => extractAttachPids(await claudeProcesses())
+
+export const runningAttachIds = async (): Promise<Set<string>> => new Set((await runningAttaches()).keys())
 
 export const listProcesses = (): Promise<ProcInfo[]> => {
   const ps =

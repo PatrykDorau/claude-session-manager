@@ -9,6 +9,8 @@ const jiraBase = ref(initial.jiraBase)
 const jiraToken = ref(initial.jiraToken)
 const jiraDoneStatuses = ref(initial.jiraDoneStatuses)
 const ticketPrefixes = ref(initial.ticketPrefixes)
+const taskJql = ref(initial.taskJql)
+const startPrompt = ref(initial.startPrompt)
 const alwaysOnTop = ref(initial.alwaysOnTop)
 const launchOnStartup = ref(initial.launchOnStartup)
 const isDockReserving = ref(initial.isDockReserving)
@@ -38,6 +40,31 @@ function saveJiraToken(): void {
 }
 function savePrefixes(): void {
   window.api.setSettings({ ticketPrefixes: ticketPrefixes.value })
+}
+const saveTaskJql = (): void => window.api.setSettings({ taskJql: taskJql.value })
+const saveStartPrompt = (): void => window.api.setSettings({ startPrompt: startPrompt.value })
+const gitlabBase = ref(initial.gitlabBase)
+const gitlabToken = ref(initial.gitlabToken)
+const mrProjects = ref(initial.mrProjects)
+const mrMention = ref(initial.mrMention)
+const saveGitlab = (): void =>
+  window.api.setSettings({
+    gitlabBase: gitlabBase.value.trim(),
+    gitlabToken: gitlabToken.value.trim(),
+    mrProjects: mrProjects.value,
+    mrMention: mrMention.value.trim()
+  })
+const startView = ref(initial.startView)
+const saveStartView = (): void => window.api.setSettings({ startView: startView.value })
+const quickActions = ref(initial.quickActions.map((a) => ({ ...a })))
+const saveQuickActions = (): void =>
+  window.api.setSettings({ quickActions: quickActions.value.map((a) => ({ label: a.label, prompt: a.prompt })) })
+const addQuickAction = (): void => {
+  quickActions.value = [...quickActions.value, { label: '', prompt: '' }]
+}
+const removeQuickAction = (index: number): void => {
+  quickActions.value = quickActions.value.filter((_a, i) => i !== index)
+  saveQuickActions()
 }
 function saveJiraStatuses(): void {
   window.api.setSettings({ jiraDoneStatuses: jiraDoneStatuses.value })
@@ -104,6 +131,16 @@ function copyDiag(): void {
 <template>
   <div class="settings">
     <label class="field">
+      <span class="flbl">Open on launch</span>
+      <select v-model="startView" class="inp" @change="saveStartView">
+        <option value="ask">Ask every time</option>
+        <option value="dashboard">Dashboard</option>
+        <option value="sidebar">Compact sidebar</option>
+      </select>
+      <small class="hint">Which window opens when the app starts. "Choose a window…" in the tray menu shows the picker again.</small>
+    </label>
+
+    <label class="field">
       <span class="flbl">Jira base URL</span>
       <input v-model="jiraBase" class="inp" spellcheck="false" @change="saveJira" @blur="saveJira" />
       <small class="hint">{{ jiraBase }}SOFKRS-1234</small>
@@ -147,6 +184,56 @@ function copyDiag(): void {
       />
       <small class="hint">The ticket is taken from the first prompt only. Comma-separated prefixes to accept; leave blank to accept any code (UTF-8, SHA-256… are ignored).</small>
     </label>
+
+    <label class="field">
+      <span class="flbl">Task view JQL</span>
+      <input v-model="taskJql" class="inp" spellcheck="false" @change="saveTaskJql" @blur="saveTaskJql" />
+      <small class="hint">Which Jira tickets the Tasks view lists.</small>
+    </label>
+
+    <label class="field">
+      <span class="flbl">Start session prompt</span>
+      <textarea
+        v-model="startPrompt"
+        class="inp"
+        rows="3"
+        spellcheck="false"
+        @change="saveStartPrompt"
+        @blur="saveStartPrompt"
+      />
+      <small class="hint">First message of a session started from the Tasks view. {ticket} and {title} are replaced.</small>
+    </label>
+
+    <label class="field">
+      <span class="flbl">GitLab address</span>
+      <input v-model="gitlabBase" class="inp" spellcheck="false" @change="saveGitlab" />
+    </label>
+    <label class="field">
+      <span class="flbl">GitLab token</span>
+      <input v-model="gitlabToken" class="inp" type="password" spellcheck="false" @change="saveGitlab" />
+      <small class="hint">Fine-grained token. User: Todo read, User read, Merge request read. Group and project (your groups): Merge request read, create, update, approve, merge; Markdown upload read (videos and images in descriptions). Approve, merge, rebase and comments run only after you confirm.</small>
+    </label>
+    <label class="field">
+      <span class="flbl">Review projects</span>
+      <input v-model="mrProjects" class="inp" spellcheck="false" @change="saveGitlab" />
+      <small class="hint">Comma-separated project names shown in "MRs to review". Empty shows all.</small>
+    </label>
+    <label class="field">
+      <span class="flbl">Review mention</span>
+      <input v-model="mrMention" class="inp" spellcheck="false" placeholder="@telco-frontend" @change="saveGitlab" />
+      <small class="hint">Open merge requests whose description mentions this group count as yours to review, together with your to-dos and MRs where you are a reviewer. Leave empty to skip.</small>
+    </label>
+
+    <div class="field">
+      <span class="flbl">Dashboard quick actions</span>
+      <div v-for="(a, i) in quickActions" :key="i" class="qa">
+        <input v-model="a.label" class="inp" placeholder="Button label" @change="saveQuickActions" />
+        <textarea v-model="a.prompt" class="inp" rows="2" placeholder="Prompt sent to Claude" @change="saveQuickActions" />
+        <button class="btn" @click="removeQuickAction(i)">Remove</button>
+      </div>
+      <button class="btn" @click="addQuickAction">Add quick action</button>
+      <small class="hint">Buttons next to the Claude terminal in the dashboard. Each sends its prompt to the session.</small>
+    </div>
 
     <div class="field">
       <button class="btn" :disabled="syncing" @click="syncJira">
@@ -233,7 +320,7 @@ function copyDiag(): void {
 
     <div class="field acct">
       <span class="flbl">About</span>
-      <div class="abt">Claude Session Switcher <span v-if="version">v{{ version }}</span></div>
+      <div class="abt">Claude Cockpit <span v-if="version">v{{ version }}</span></div>
       <button class="btn" @click="copyDiag">{{ diagCopied ? 'Copied ✓' : 'Copy diagnostics' }}</button>
       <small class="hint">Copies version, OS and detection info to your clipboard to share when reporting a problem.</small>
     </div>
@@ -243,7 +330,7 @@ function copyDiag(): void {
 <style scoped>
 .settings {
   padding: 14px;
-  color: #e6edf3;
+  color: #ededed;
   font-size: 12px;
 }
 .field {
@@ -259,19 +346,27 @@ function copyDiag(): void {
   width: 100%;
   box-sizing: border-box;
   font: 12px system-ui;
-  background: #0d1117;
-  color: #e6edf3;
-  border: 1px solid #30363d;
+  background: #1b1b1b;
+  color: #ededed;
+  border: 1px solid #3a3a3a;
   border-radius: 6px;
   padding: 6px 8px;
   outline: none;
 }
 .inp:focus {
-  border-color: #a371f7;
+  border-color: #2ef05a;
+}
+.qa {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #3a3a3a;
 }
 .hint {
   display: block;
-  color: #6e7681;
+  color: #737373;
   font-size: 10px;
   margin-top: 4px;
   word-break: break-all;
@@ -282,7 +377,7 @@ function copyDiag(): void {
   justify-content: space-between;
   padding: 10px 2px;
   cursor: pointer;
-  border-bottom: 1px solid #161b22;
+  border-bottom: 1px solid #232323;
 }
 .sounds {
   display: flex;
@@ -292,20 +387,20 @@ function copyDiag(): void {
 .sndbtn {
   flex: 1;
   font: 11px system-ui;
-  background: #0d1117;
-  color: #8b949e;
-  border: 1px solid #30363d;
+  background: #1b1b1b;
+  color: #9a9a9a;
+  border: 1px solid #3a3a3a;
   border-radius: 6px;
   padding: 5px 8px;
   cursor: pointer;
 }
 .sndbtn:hover {
-  color: #e6edf3;
+  color: #ededed;
 }
 .sndbtn.on {
-  color: #fff;
-  background: #8957e5;
-  border-color: #8957e5;
+  color: #111111;
+  background: #00e62e;
+  border-color: #00e62e;
 }
 .acct {
   margin-top: 16px;
@@ -316,7 +411,7 @@ function copyDiag(): void {
   padding: 3px 0;
 }
 .pst {
-  color: #8b949e;
+  color: #9a9a9a;
 }
 .pst.configured {
   color: #56d364;
@@ -331,8 +426,8 @@ function copyDiag(): void {
   margin: 6px 0;
   padding: 8px;
   font-size: 11px;
-  color: #c9d1d9;
-  border: 1px solid #30363d;
+  color: #d4d4d4;
+  border: 1px solid #3a3a3a;
   border-radius: 6px;
 }
 .preview .row {
@@ -340,33 +435,33 @@ function copyDiag(): void {
   gap: 6px;
 }
 .abt {
-  color: #8b949e;
+  color: #9a9a9a;
   margin-bottom: 8px;
 }
 .btn {
   font: 12px system-ui;
-  background: #21262d;
-  color: #e6edf3;
-  border: 1px solid #30363d;
+  background: #2b2b2b;
+  color: #ededed;
+  border: 1px solid #3a3a3a;
   border-radius: 6px;
   padding: 6px 12px;
   cursor: pointer;
 }
 .btn:hover {
-  border-color: #a371f7;
+  border-color: #2ef05a;
   color: #fff;
 }
 .btn:disabled {
   opacity: 0.6;
   cursor: default;
-  border-color: #30363d;
-  color: #e6edf3;
+  border-color: #3a3a3a;
+  color: #ededed;
 }
 .sw {
   width: 34px;
   height: 18px;
   border-radius: 10px;
-  background: #30363d;
+  background: #3a3a3a;
   position: relative;
   transition: background 0.15s;
   flex: none;
@@ -379,11 +474,11 @@ function copyDiag(): void {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #8b949e;
+  background: #9a9a9a;
   transition: transform 0.15s;
 }
 .sw.on {
-  background: #8957e5;
+  background: #00e62e;
 }
 .sw.on::after {
   transform: translateX(16px);

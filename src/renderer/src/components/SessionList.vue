@@ -31,16 +31,16 @@ ul {
   padding: 4px 11px;
   font-size: 10px;
   font-weight: 600;
-  color: #6e7681;
-  background: #0d1117;
-  border-bottom: 1px solid #161b22;
+  color: #737373;
+  background: #1b1b1b;
+  border-bottom: 1px solid #232323;
 }
 .gcount {
-  color: #484f58;
+  color: #555555;
   font-weight: 400;
 }
 .empty {
-  color: #8b949e;
+  color: #9a9a9a;
   padding: 7px 10px;
   text-align: center;
 }

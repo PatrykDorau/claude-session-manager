@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { join } from 'node:path'
 import { parse } from 'jsonc-parser'
-import { profileDirFor, profileName, layoutStatus, applyLayoutConfig, RESUME_FILE_NAME } from '../src/main/vscodeconfig'
+import { profileDirFor, profileName, layoutStatus, applyLayoutConfig, RESUME_FILE_NAME, LAYOUT } from '../src/main/vscodeconfig'
 
 const storage = (workspaces: Record<string, string>): string =>
   JSON.stringify({ profileAssociations: { workspaces } })
@@ -52,7 +52,7 @@ describe('layoutStatus', () => {
     expect(layoutStatus(null, kb)).toBe('missing')
   })
   it('reports a conflict for a different user binding', () => {
-    const kb = JSON.stringify([{ key: 'ctrl+alt+f10', command: 'editor.action.foo' }])
+    const kb = JSON.stringify([{ key: 'ctrl+alt+f9', command: 'editor.action.foo' }])
     expect(layoutStatus(null, kb)).toBe('conflict')
   })
 })
@@ -67,7 +67,7 @@ describe('applyLayoutConfig', () => {
     expect(settings['terminal.integrated.enablePersistentSessions']).toBe(false)
     expect(settings['terminal.integrated.tabs.title']).toBe('${sequence}')
     const keys = (parse(once.keybindings) as { key: string }[]).map((k) => k.key)
-    expect(keys.sort()).toEqual(['ctrl+alt+f10', 'ctrl+alt+f8', 'ctrl+alt+f9'])
+    expect(keys.sort()).toEqual(['ctrl+alt+f8', 'ctrl+alt+f9'])
     const twice = applyLayoutConfig(once.settings, once.keybindings)
     expect(twice).toEqual(once)
   })
@@ -77,7 +77,7 @@ describe('applyLayoutConfig', () => {
       { key: 'ctrl+k', command: 'x' }
     ])
     const list = parse(applyLayoutConfig(null, kb).keybindings) as { key: string; command: string }[]
-    expect(list.map((k) => k.key)).toEqual(['ctrl+k', 'ctrl+alt+f9', 'ctrl+alt+f10', 'ctrl+alt+f8'])
+    expect(list.map((k) => k.key)).toEqual(['ctrl+k', 'ctrl+alt+f9', 'ctrl+alt+f8'])
     expect(list.every((k) => k.key === 'ctrl+k' || k.command === 'runCommands')).toBe(true)
   })
   it('focuses the target group, unlocks it, opens the terminal there and locks it again', () => {
@@ -98,8 +98,22 @@ describe('applyLayoutConfig', () => {
       'workbench.action.terminal.focus'
     ]
     expect(steps('ctrl+alt+f9')).toEqual(expected('workbench.action.focusThirdEditorGroup'))
-    expect(steps('ctrl+alt+f10')).toEqual(expected('workbench.action.focusFourthEditorGroup'))
     expect(steps('ctrl+alt+f8')).toEqual(expected('workbench.action.focusSecondEditorGroup'))
+  })
+  it('keeps the right column as one group for the Claude terminals', () => {
+    expect(LAYOUT.groups[1]).toEqual({ size: 0.5 })
+    expect(LAYOUT.groups[0]).toEqual({ size: 0.5, groups: [{ size: 0.75 }, { size: 0.25 }] })
+  })
+  it('removes the old F10 binding that split the right column', () => {
+    const old = applyLayoutConfig(null, null).keybindings
+    const withF10 = JSON.stringify([
+      ...(parse(old) as unknown[]),
+      { key: 'ctrl+alt+f10', command: 'runCommands', args: { commands: [{ command: 'vscode.setEditorLayout', args: {} }] } }
+    ])
+    const settings = applyLayoutConfig(null, null).settings
+    expect(layoutStatus(settings, withF10)).toBe('missing')
+    const list = parse(applyLayoutConfig(settings, withF10).keybindings) as { key: string }[]
+    expect(list.map((k) => k.key)).toEqual(['ctrl+alt+f9', 'ctrl+alt+f8'])
   })
   it('reports missing when only the old two-key setup is present', () => {
     const settings = JSON.stringify({ 'terminal.integrated.enablePersistentSessions': false })
@@ -127,7 +141,7 @@ describe('resume terminal', () => {
         .find((k) => k.key === key)
         ?.args.commands.flatMap((c) => (typeof c === 'string' ? [] : [c.args?.config]))
         .find((v) => v !== undefined)
-    for (const key of ['ctrl+alt+f9', 'ctrl+alt+f10']) {
+    for (const key of ['ctrl+alt+f9']) {
       expect(config(key)?.executable).toBe('powershell.exe')
       expect(config(key)?.args.join(' ')).toContain(RESUME_FILE_NAME)
       expect(config(key)).not.toHaveProperty('name')

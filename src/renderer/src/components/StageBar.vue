@@ -46,7 +46,7 @@ const tooltip = computed(() =>
 .seg {
   height: 4px;
   border-radius: 2px;
-  background: #21262d;
+  background: #2b2b2b;
 }
 .lbl {
   flex: none;

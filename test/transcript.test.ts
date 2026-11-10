@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { parseTranscriptHead, parseTail } from '../src/main/transcript'
+import { parseTranscriptHead, parseTail, countTurns, lastMessages, createDetailCache } from '../src/main/transcript'
 
 describe('parseTranscriptHead', () => {
   const lines = readFileSync(join(__dirname, 'fixtures/session-sample.jsonl'), 'utf8')
@@ -68,6 +68,30 @@ describe('parseTail', () => {
   it('not pending when the last message is a user message', () => {
     expect(parseTail([asstToolUse, userResult]).pendingToolUse).toBe(false)
   })
+  it('treats a turn that ends with a question as a question to the user', () => {
+    const ask = '{"type":"assistant","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Which repo should I use?**\\n"}]}}'
+    expect(parseTail([userResult, ask, marker]).isQuestion).toBe(true)
+  })
+  it('treats a pending AskUserQuestion call as a question to the user', () => {
+    const ask = '{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"AskUserQuestion"}]}}'
+    expect(parseTail([userResult, ask]).isQuestion).toBe(true)
+  })
+  it('returns the last paragraph of a text question', () => {
+    const ask = '{"type":"assistant","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"I read the ticket.\\n\\nWhich repo should I use?"}]}}'
+    expect(parseTail([userResult, ask]).question).toBe('Which repo should I use?')
+  })
+  it('returns the first question of a pending AskUserQuestion call', () => {
+    const ask = '{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[{"question":"Pick a layout?"}]}}]}}'
+    expect(parseTail([userResult, ask]).question).toBe('Pick a layout?')
+  })
+  it('has no question text when the turn is not a question', () => {
+    expect(parseTail([asstToolUse, userResult, asstEndTurn]).question).toBeNull()
+  })
+  it('is not a question when the turn ends with a statement, a tool call or a user message', () => {
+    expect(parseTail([asstToolUse, userResult, asstEndTurn, marker]).isQuestion).toBe(false)
+    expect(parseTail([userResult, asstToolUse]).isQuestion).toBe(false)
+    expect(parseTail([asstEndTurn, userResult]).isQuestion).toBe(false)
+  })
   it('not pending for empty or garbage input', () => {
     expect(parseTail([]).pendingToolUse).toBe(false)
     expect(parseTail(['not json', '{bad']).pendingToolUse).toBe(false)
@@ -110,5 +134,68 @@ describe('parseTail', () => {
     expect(r.pendingToolUse).toBe(false)
     expect(r.model).toBe('claude-sonnet-4-6')
     expect(r.contextTokens).toBe(1010)
+  })
+})
+
+describe('countTurns', () => {
+  it('counts only real prompts', () => {
+    const l = [
+      '{"type":"user","cwd":"C:/x","isMeta":true,"message":{"content":"<local-command-caveat>Caveat</local-command-caveat>"}}',
+      '{"type":"user","message":{"content":"<command-name>/clear</command-name> <command-message>clear</command-message> <command-args></command-args>"}}',
+      '{"type":"user","message":{"content":"SOFKRS-77 napraw"}}',
+      '{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"tool_use"}]}}',
+      '{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}',
+      '{"type":"user","message":{"content":"<system-reminder>x</system-reminder>"}}',
+      '{"type":"user","message":{"content":[{"type":"text","text":"a teraz testy"}]}}'
+    ]
+    expect(countTurns(l)).toBe(2)
+  })
+  it('counts the fixture prompt', () => {
+    const lines = readFileSync(join(__dirname, 'fixtures/session-sample.jsonl'), 'utf8').split(/\r?\n/).filter(Boolean)
+    expect(countTurns(lines)).toBe(1)
+  })
+})
+
+describe('lastMessages', () => {
+  it('returns the last text messages in order, skipping tool results', () => {
+    const l = [
+      '{"type":"user","message":{"content":"a"}}',
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"b"}]}}',
+      '{"type":"user","message":{"content":[{"type":"tool_result","content":"x"}]}}',
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"c"}]}}'
+    ]
+    expect(lastMessages(l, 2)).toEqual([
+      { role: 'assistant', text: 'b' },
+      { role: 'assistant', text: 'c' }
+    ])
+  })
+})
+
+describe('createDetailCache', () => {
+  it('re-parses a transcript only when its size or mtime changed', () => {
+    let parses = 0
+    const cache = createDetailCache((lines) => {
+      parses += 1
+      return lines.length
+    })
+    expect(cache.get('f', 10, 1, () => ['a'])).toBe(1)
+    expect(cache.get('f', 10, 1, () => ['a', 'b'])).toBe(1)
+    expect(cache.get('f', 12, 1, () => ['a', 'b'])).toBe(2)
+    expect(parses).toBe(2)
+  })
+})
+
+describe('lastMessages filtering', () => {
+  it('skips skill bodies, reminders and local command lines on the user side', () => {
+    const l = [
+      '{"type":"user","message":{"content":"/review-mr 42"}}',
+      '{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"Base directory for this skill: C:/x"}]}}',
+      '{"type":"user","message":{"content":"<system-reminder>x</system-reminder>"}}',
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}'
+    ]
+    expect(lastMessages(l, 10)).toEqual([
+      { role: 'user', text: '/review-mr 42' },
+      { role: 'assistant', text: 'done' }
+    ])
   })
 })

@@ -188,7 +188,7 @@ const background = computed(() => {
 
 <style scoped>
 .card {
-  border-bottom: 1px solid #161b22;
+  border-bottom: 1px solid #232323;
 }
 .card.rejected .head {
   background: rgba(248, 81, 73, 0.12) !important;
@@ -244,7 +244,7 @@ const background = computed(() => {
 }
 .ticket {
   flex: none;
-  color: #a371f7;
+  color: #f2f2f2;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -256,8 +256,8 @@ const background = computed(() => {
   flex: none;
   font-size: 9px;
   font-weight: 600;
-  color: #c9d1d9;
-  background: #30363d;
+  color: #d4d4d4;
+  background: #3a3a3a;
   border-radius: 9px;
   padding: 1px 7px;
   line-height: 1.5;
@@ -269,26 +269,30 @@ const background = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #6e7681;
+  color: #737373;
   font-size: 10px;
 }
 .status {
   flex: none;
   font-size: 10px;
   font-weight: 600;
+  white-space: nowrap;
 }
 .time {
   flex: none;
-  color: #6e7681;
+  color: #737373;
   font-size: 10px;
 }
 .ttl {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #e6edf3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  color: #ededed;
   font-size: 11px;
 }
 .exp {
@@ -297,15 +301,15 @@ const background = computed(() => {
   bottom: 6px;
   background: none;
   border: none;
-  color: #6e7681;
+  color: #737373;
   font: 10px system-ui;
   cursor: pointer;
   padding: 2px 4px;
   border-radius: 4px;
 }
 .exp:hover {
-  color: #e6edf3;
-  background: #21262d;
+  color: #ededed;
+  background: #2b2b2b;
 }
 .actions {
   position: absolute;
@@ -316,7 +320,7 @@ const background = computed(() => {
   align-items: center;
   gap: 2px;
   padding: 0 8px 0 26px;
-  background: linear-gradient(to left, rgba(13, 17, 23, 0.96) 70%, rgba(13, 17, 23, 0));
+  background: linear-gradient(to left, rgba(27, 27, 27, 0.96) 70%, rgba(27, 27, 27, 0));
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s;
@@ -331,7 +335,7 @@ const background = computed(() => {
   cursor: pointer;
   padding: 4px;
   border-radius: 5px;
-  color: #b1bac4;
+  color: #c0c0c0;
   display: inline-flex;
 }
 .ic svg {
@@ -341,7 +345,7 @@ const background = computed(() => {
 }
 .ic:hover:not(:disabled) {
   color: #fff;
-  background: #21262d;
+  background: #2b2b2b;
 }
 .ic:disabled {
   opacity: 0.3;

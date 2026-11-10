@@ -86,7 +86,7 @@ const save = (value: string | null): void => {
 .modal {
   position: fixed;
   inset: 0;
-  background: rgba(1, 4, 9, 0.6);
+  background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -94,8 +94,8 @@ const save = (value: string | null): void => {
   z-index: 20;
 }
 .dialog {
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: #232323;
+  border: 1px solid #3a3a3a;
   border-radius: 10px;
   padding: 14px;
   width: 100%;
@@ -114,9 +114,9 @@ const save = (value: string | null): void => {
 }
 .db {
   font: 11px system-ui;
-  background: #8957e5;
-  color: #fff;
-  border: 1px solid #8957e5;
+  background: #00e62e;
+  color: #111111;
+  border: 1px solid #00e62e;
   border-radius: 6px;
   padding: 5px 12px;
   cursor: pointer;
@@ -127,19 +127,19 @@ const save = (value: string | null): void => {
 }
 .db.ghost {
   background: none;
-  color: #8b949e;
-  border-color: #30363d;
+  color: #9a9a9a;
+  border-color: #3a3a3a;
 }
 .db.ghost:hover {
-  color: #e6edf3;
+  color: #ededed;
 }
 .tinput {
   width: 100%;
   box-sizing: border-box;
-  background: #0d1117;
-  border: 1px solid #30363d;
+  background: #1b1b1b;
+  border: 1px solid #3a3a3a;
   border-radius: 6px;
-  color: #e6edf3;
+  color: #ededed;
   padding: 6px 8px;
   font: 12px system-ui;
 }
@@ -151,7 +151,7 @@ const save = (value: string | null): void => {
   color: #d29922;
 }
 .muted {
-  color: #7d8590;
+  color: #8c8c8c;
 }
 .cands {
   list-style: none;
@@ -169,13 +169,13 @@ const save = (value: string | null): void => {
   cursor: pointer;
 }
 .cands li:hover {
-  background: #21262d;
+  background: #2b2b2b;
 }
 .cands .empty {
   cursor: default;
 }
 .cb {
-  color: #7d8590;
+  color: #8c8c8c;
   font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;

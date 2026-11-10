@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, provide } from 'vue'
-import type { CloseCandidate, Session, TaskMeta, UsageResult } from './types'
+import type { CloseCandidate, MyTasks, Session, TaskMeta, UsageResult, WorktreeRow } from './types'
 import SessionList from './components/SessionList.vue'
 import StatsPanel from './components/StatsPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
@@ -8,6 +8,8 @@ import SetupGuide from './components/SetupGuide.vue'
 import TicketPicker from './components/TicketPicker.vue'
 import TaskCard from './components/TaskCard.vue'
 import CloseFinishedDialog from './components/CloseFinishedDialog.vue'
+import WorktreesDialog from './components/WorktreesDialog.vue'
+import TaskView from './components/TaskView.vue'
 import UsageBar from './components/UsageBar.vue'
 import { sortSessions, type SortMode } from './sort'
 import { buildCards, splitSections, sortCards, sortNoTask, cardMatches } from './cards'
@@ -54,6 +56,15 @@ const closeDialog = ref<CloseCandidate[] | null>(null)
 const openCloseDialog = (): void => {
   closeDialog.value = [...closeCandidates.value]
 }
+const worktrees = ref<WorktreeRow[]>([])
+const isWorktreesOpen = ref(false)
+const myTasks = ref<MyTasks>(window.api.getMyTasks())
+const viewMode = ref<'sessions' | 'tasks'>(localStorage.getItem('viewMode') === 'tasks' ? 'tasks' : 'sessions')
+const openDashboard = (): void => window.api.openDashboard()
+const setViewMode = (mode: 'sessions' | 'tasks'): void => {
+  viewMode.value = mode
+  localStorage.setItem('viewMode', mode)
+}
 
 const cliBanner = computed(() => {
   if (!cliStatus.value.claude) return 'Claude Code not detected on PATH — open Setup'
@@ -80,6 +91,8 @@ onMounted(() => {
   })
   window.api.onRestoreState((r) => (restoreCount.value = r.count))
   window.api.onCloseCandidates((list) => (closeCandidates.value = list))
+  window.api.onWorktrees((rows) => (worktrees.value = rows))
+  window.api.onMyTasks((result) => (myTasks.value = result))
   window.api.onPlayAlert(playChime)
   window.api.onMenuState((open) => (menuOpen.value = open))
   window.api.onOpenTicketPicker((s) => (ticketPicker.value = s))
@@ -120,6 +133,12 @@ const taskCards = computed(() => sortCards(sections.value.tasks, sortMode.value)
 const noTaskSorted = computed(() => sortNoTask(sections.value.noTask, sortMode.value))
 const finishedCards = computed(() => sortCards(sections.value.finishedCards, 'recency'))
 const finishedSorted = computed(() => sortSessions(sections.value.finishedSessions, 'recency'))
+const taskTitles = computed(() =>
+  Object.fromEntries(Object.values(tasks.value).map((t) => [t.ticket, t.title]))
+)
+const finishedKeys = computed(() =>
+  splitSections(buildCards(sessions.value, tasks.value), []).finishedCards.map((c) => c.ticket)
+)
 const finishedCount = computed(() => finishedCards.value.length + finishedSorted.value.length)
 const activeFilterCount = computed(
   () => (search.value.trim() ? 1 : 0) + (statusFilter.value !== 'all' ? 1 : 0)
@@ -152,7 +171,7 @@ function minimize(): void {
   <div class="wrap">
     <header>
       <span class="title" title="Back to sessions" @click="view = 'list'"
-        >Claude Sessions <span v-if="version" class="ver">v{{ version }}</span></span
+        >Claude Cockpit <span v-if="version" class="ver">v{{ version }}</span></span
       >
       <div class="hbtns">
         <button
@@ -261,16 +280,50 @@ function minimize(): void {
         </button>
       </div>
       <div class="scroll">
+        <div class="viewtoggle">
+          <button :class="{ on: viewMode === 'sessions' }" @click="setViewMode('sessions')">Sessions</button>
+          <button :class="{ on: viewMode === 'tasks' }" @click="setViewMode('tasks')">Tasks</button>
+          <button class="dash" title="Open the dashboard" @click="openDashboard">
+            <svg viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="5" /><rect x="9" y="2" width="5" height="5" /><rect x="2" y="9" width="5" height="5" /><rect x="9" y="9" width="5" height="5" /></svg>
+            Dashboard
+          </button>
+        </div>
         <div v-if="restoreCount" class="restore">
           <span>Restore {{ restoreCount }} {{ restoreCount === 1 ? 'session' : 'sessions' }} from last work</span>
           <button class="primary" @click="restoreSessions">Restore</button>
           <button @click="dismissRestore">Dismiss</button>
         </div>
+        <TaskView
+          v-if="viewMode === 'tasks'"
+          :tickets="myTasks.tickets"
+          :jira-error="myTasks.error"
+          :sessions="sessions"
+          :finished-keys="finishedKeys"
+          :titles="taskTitles"
+        />
+        <template v-else>
         <div class="shead" @click="tasksOpen = !tasksOpen">
           <span class="chev">{{ tasksOpen ? '▾' : '▸' }}</span>
           Tasks <span class="count">{{ taskCards.length }}</span>
-          <button v-if="closeCandidates.length" class="closefin" @click.stop="openCloseDialog">
-            Close finished sessions ({{ closeCandidates.length }})
+          <button
+            v-if="closeCandidates.length"
+            class="closefin"
+            title="Close the sessions of finished tickets"
+            @click.stop="openCloseDialog"
+          >
+            <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+            <span class="cflabel">Finished</span>
+            <span class="cfcount">{{ closeCandidates.length }}</span>
+          </button>
+          <button
+            v-if="worktrees.length"
+            class="closefin"
+            title="Open or delete worktrees"
+            @click.stop="isWorktreesOpen = true"
+          >
+            <svg viewBox="0 0 16 16"><path d="M5 3v10M5 8c4 0 6-1 6-5M11 3v0" /><circle cx="11" cy="3" r="1.5" /></svg>
+            <span class="cflabel">Worktrees</span>
+            <span class="cfcount">{{ worktrees.length }}</span>
           </button>
         </div>
         <ul v-show="tasksOpen">
@@ -302,6 +355,7 @@ function minimize(): void {
           :group-by="groupBy"
           empty-text=""
         />
+        </template>
       </div>
     </template>
 
@@ -328,14 +382,15 @@ function minimize(): void {
       :candidates="closeDialog"
       @close="closeDialog = null"
     />
+    <WorktreesDialog v-if="isWorktreesOpen" :rows="worktrees" @close="isWorktreesOpen = false" />
   </div>
 </template>
 
 <style scoped>
 .wrap {
   font: 12px system-ui;
-  color: #e6edf3;
-  background: #0d1117;
+  color: #ededed;
+  background: #1b1b1b;
   width: 100%;
   height: 100vh;
   display: flex;
@@ -349,7 +404,7 @@ header {
   gap: 8px;
   padding: 8px 10px;
   font-weight: 600;
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid #2b2b2b;
   -webkit-app-region: drag;
 }
 .title {
@@ -361,10 +416,10 @@ header {
   -webkit-app-region: no-drag;
 }
 .title:hover {
-  color: #a371f7;
+  color: #2ef05a;
 }
 .ver {
-  color: #6e7681;
+  color: #737373;
   font-size: 10px;
   font-weight: 400;
 }
@@ -374,9 +429,9 @@ header {
   font-size: 11px;
   font-weight: 500;
   cursor: pointer;
-  color: #c9d1d9;
-  background: #21262d;
-  border-bottom: 1px solid #30363d;
+  color: #d4d4d4;
+  background: #2b2b2b;
+  border-bottom: 1px solid #3a3a3a;
 }
 .banner.warn {
   color: #f0e3c2;
@@ -393,9 +448,9 @@ header {
   margin: 6px 8px;
   padding: 6px 8px;
   font-size: 11px;
-  color: #c9d1d9;
+  color: #d4d4d4;
   background: #1c1530;
-  border: 1px solid #8957e5;
+  border: 1px solid #00e62e;
   border-radius: 6px;
 }
 .restore span {
@@ -404,27 +459,100 @@ header {
 .restore button {
   font-size: 11px;
   padding: 2px 8px;
-  color: #c9d1d9;
-  background: #21262d;
-  border: 1px solid #30363d;
+  color: #d4d4d4;
+  background: #2b2b2b;
+  border: 1px solid #3a3a3a;
   border-radius: 4px;
   cursor: pointer;
 }
 .restore button.primary {
-  background: #8957e5;
-  border-color: #8957e5;
-  color: #fff;
+  background: #00e62e;
+  border-color: #00e62e;
+  color: #111111;
 }
-.closefin {
-  margin-left: auto;
-  font-size: 10px;
-  font-weight: 400;
-  padding: 1px 8px;
-  color: #fff;
-  background: #8957e5;
-  border: 1px solid #8957e5;
+.viewtoggle {
+  display: flex;
+  gap: 4px;
+  margin: 6px 8px 0;
+}
+.viewtoggle button {
+  flex: 1;
+  font-size: 11px;
+  padding: 3px 0;
+  color: #9a9a9a;
+  background: #1b1b1b;
+  border: 1px solid #3a3a3a;
   border-radius: 4px;
   cursor: pointer;
+}
+.viewtoggle button.on {
+  color: #111111;
+  background: #00e62e;
+  border-color: #00e62e;
+}
+.viewtoggle button.dash {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+}
+.viewtoggle button.dash:hover {
+  color: #ededed;
+  border-color: #00e62e;
+}
+.viewtoggle button.dash svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+}
+.closefin {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 20px;
+  padding: 0 4px 0 6px;
+  font-size: 10px;
+  font-weight: 500;
+  color: #d4d4d4;
+  background: #232323;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.closefin:hover {
+  color: #ededed;
+  border-color: #00e62e;
+}
+.closefin svg {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+.cflabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cfcount {
+  flex: none;
+  min-width: 14px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-weight: 700;
+  text-align: center;
+  color: #111111;
+  background: #00e62e;
+}
+.closefin:first-of-type {
+  margin-left: auto;
 }
 .signin {
   flex: none;
@@ -432,7 +560,7 @@ header {
   font-size: 10px;
   color: #e69f00;
   cursor: pointer;
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid #2b2b2b;
 }
 .signin:hover {
   text-decoration: underline;
@@ -446,8 +574,8 @@ header {
 .spinner {
   width: 26px;
   height: 26px;
-  border: 3px solid #21262d;
-  border-top-color: #a371f7;
+  border: 3px solid #2b2b2b;
+  border-top-color: #2ef05a;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -464,8 +592,8 @@ header {
 }
 .hb {
   background: none;
-  border: 1px solid #30363d;
-  color: #8b949e;
+  border: 1px solid #3a3a3a;
+  color: #9a9a9a;
   border-radius: 5px;
   cursor: pointer;
   line-height: 1;
@@ -479,11 +607,11 @@ header {
   display: block;
 }
 .hb:hover {
-  color: #e6edf3;
+  color: #ededed;
 }
 .hb.on {
-  color: #a371f7;
-  border-color: #a371f7;
+  color: #2ef05a;
+  border-color: #2ef05a;
 }
 .hb.active {
   color: #f0883e;
@@ -504,15 +632,15 @@ header {
   width: 10px;
 }
 .scroll::-webkit-scrollbar-track {
-  background: #0d1117;
+  background: #1b1b1b;
 }
 .scroll::-webkit-scrollbar-thumb {
-  background: #30363d;
-  border: 2px solid #0d1117;
+  background: #3a3a3a;
+  border: 2px solid #1b1b1b;
   border-radius: 6px;
 }
 .scroll::-webkit-scrollbar-thumb:hover {
-  background: #484f58;
+  background: #555555;
 }
 .shead {
   display: flex;
@@ -521,8 +649,8 @@ header {
   padding: 6px 10px;
   font-size: 11px;
   font-weight: 600;
-  color: #8b949e;
-  background: #0d1117;
+  color: #9a9a9a;
+  background: #1b1b1b;
   cursor: pointer;
   position: sticky;
   top: 0;
@@ -532,12 +660,12 @@ header {
   width: 10px;
 }
 .count {
-  color: #6e7681;
+  color: #737373;
   font-weight: 400;
 }
 .filterbar {
   padding: 6px 8px;
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid #2b2b2b;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -549,34 +677,34 @@ header {
 }
 .chips button {
   background: none;
-  border: 1px solid #30363d;
-  color: #8b949e;
+  border: 1px solid #3a3a3a;
+  color: #9a9a9a;
   border-radius: 12px;
   cursor: pointer;
   font: 10px system-ui;
   padding: 3px 9px;
 }
 .chips button:hover {
-  color: #e6edf3;
+  color: #ededed;
 }
 .chips button.on {
-  color: #fff;
-  background: #8957e5;
-  border-color: #8957e5;
+  color: #111111;
+  background: #00e62e;
+  border-color: #00e62e;
 }
 .search {
   width: 100%;
   box-sizing: border-box;
   font: 11px system-ui;
-  background: #0d1117;
-  color: #e6edf3;
-  border: 1px solid #30363d;
+  background: #1b1b1b;
+  color: #ededed;
+  border: 1px solid #3a3a3a;
   border-radius: 5px;
   padding: 4px 7px;
   outline: none;
 }
 .search:focus {
-  border-color: #a371f7;
+  border-color: #2ef05a;
 }
 .toolbar {
   display: flex;
@@ -584,7 +712,7 @@ header {
   justify-content: space-between;
   gap: 6px;
   padding: 5px 8px;
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid #2b2b2b;
 }
 .sortbtns {
   display: flex;
@@ -593,8 +721,8 @@ header {
 .sortbtns button,
 .grp {
   background: none;
-  border: 1px solid #30363d;
-  color: #8b949e;
+  border: 1px solid #3a3a3a;
+  color: #9a9a9a;
   border-radius: 5px;
   cursor: pointer;
   font: 10px system-ui;
@@ -602,12 +730,12 @@ header {
 }
 .sortbtns button:hover,
 .grp:hover {
-  color: #e6edf3;
+  color: #ededed;
 }
 .sortbtns button.on,
 .grp.on {
-  color: #a371f7;
-  border-color: #a371f7;
+  color: #2ef05a;
+  border-color: #2ef05a;
 }
 ul {
   list-style: none;
@@ -615,7 +743,7 @@ ul {
   padding: 0;
 }
 .empty {
-  color: #8b949e;
+  color: #9a9a9a;
   padding: 7px 10px;
   text-align: center;
 }
@@ -628,7 +756,7 @@ ul {
 .modal {
   position: fixed;
   inset: 0;
-  background: rgba(1, 4, 9, 0.6);
+  background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -636,8 +764,8 @@ ul {
   z-index: 10;
 }
 .dialog {
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: #232323;
+  border: 1px solid #3a3a3a;
   border-radius: 10px;
   padding: 14px;
   width: 100%;
@@ -649,18 +777,18 @@ ul {
 }
 .dmsg {
   margin: 0 0 8px;
-  color: #8b949e;
+  color: #9a9a9a;
   font-size: 11px;
   line-height: 1.4;
 }
 .cmd {
   display: block;
-  background: #0d1117;
-  border: 1px solid #30363d;
+  background: #1b1b1b;
+  border: 1px solid #3a3a3a;
   border-radius: 6px;
   padding: 7px 9px;
   font: 11px ui-monospace, monospace;
-  color: #e6edf3;
+  color: #ededed;
   word-break: break-all;
   user-select: all;
 }
@@ -672,19 +800,19 @@ ul {
 }
 .db {
   font: 11px system-ui;
-  background: #8957e5;
-  color: #fff;
-  border: 1px solid #8957e5;
+  background: #00e62e;
+  color: #111111;
+  border: 1px solid #00e62e;
   border-radius: 6px;
   padding: 5px 12px;
   cursor: pointer;
 }
 .db.ghost {
   background: none;
-  color: #8b949e;
-  border-color: #30363d;
+  color: #9a9a9a;
+  border-color: #3a3a3a;
 }
 .db.ghost:hover {
-  color: #e6edf3;
+  color: #ededed;
 }
 </style>

@@ -59,7 +59,7 @@ const confirmClose = async (): Promise<void> => {
 .modal {
   position: fixed;
   inset: 0;
-  background: rgba(1, 4, 9, 0.6);
+  background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -67,8 +67,8 @@ const confirmClose = async (): Promise<void> => {
   z-index: 20;
 }
 .dialog {
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: #232323;
+  border: 1px solid #3a3a3a;
   border-radius: 10px;
   padding: 14px;
   width: 100%;
@@ -91,7 +91,7 @@ const confirmClose = async (): Promise<void> => {
   font-size: 12px;
 }
 .rows li:hover {
-  background: #21262d;
+  background: #2b2b2b;
 }
 .rows label {
   display: flex;
@@ -103,12 +103,12 @@ const confirmClose = async (): Promise<void> => {
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
-  color: #c9d1d9;
+  color: #d4d4d4;
 }
 .rp {
   margin-left: 20px;
   font-size: 10px;
-  color: #7d8590;
+  color: #8c8c8c;
 }
 .badge {
   flex: none;
@@ -131,9 +131,9 @@ const confirmClose = async (): Promise<void> => {
 }
 .db {
   font: 11px system-ui;
-  background: #8957e5;
-  color: #fff;
-  border: 1px solid #8957e5;
+  background: #00e62e;
+  color: #111111;
+  border: 1px solid #00e62e;
   border-radius: 6px;
   padding: 5px 12px;
   cursor: pointer;
@@ -144,10 +144,10 @@ const confirmClose = async (): Promise<void> => {
 }
 .db.ghost {
   background: none;
-  color: #8b949e;
-  border-color: #30363d;
+  color: #9a9a9a;
+  border-color: #3a3a3a;
 }
 .db.ghost:hover {
-  color: #e6edf3;
+  color: #ededed;
 }
 </style>

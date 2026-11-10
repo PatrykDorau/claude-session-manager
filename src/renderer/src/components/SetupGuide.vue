@@ -70,7 +70,7 @@ function copyKeybind(): void {
 <style scoped>
 .guide {
   padding: 14px;
-  color: #e6edf3;
+  color: #ededed;
   font-size: 12px;
   line-height: 1.5;
 }
@@ -81,24 +81,24 @@ h2 {
 h3 {
   font-size: 12px;
   font-weight: 600;
-  color: #a371f7;
+  color: #2ef05a;
   margin: 16px 0 4px;
 }
 .lead {
-  color: #8b949e;
+  color: #9a9a9a;
   margin: 0 0 4px;
 }
 p {
   margin: 0 0 4px;
-  color: #c9d1d9;
+  color: #d4d4d4;
 }
 code {
-  background: #0d1117;
-  border: 1px solid #30363d;
+  background: #1b1b1b;
+  border: 1px solid #3a3a3a;
   border-radius: 4px;
   padding: 1px 5px;
   font: 11px ui-monospace, monospace;
-  color: #e6edf3;
+  color: #ededed;
 }
 code.block {
   display: block;
@@ -115,9 +115,9 @@ code.block {
 }
 .btn {
   font: 12px system-ui;
-  background: #8957e5;
-  color: #fff;
-  border: 1px solid #8957e5;
+  background: #00e62e;
+  color: #111111;
+  border: 1px solid #00e62e;
   border-radius: 6px;
   padding: 6px 12px;
   cursor: pointer;
@@ -129,12 +129,12 @@ code.block {
 }
 .btn.ghost {
   background: none;
-  color: #8b949e;
-  border-color: #30363d;
+  color: #9a9a9a;
+  border-color: #3a3a3a;
   margin-top: 4px;
 }
 .btn.ghost:hover {
-  color: #e6edf3;
+  color: #ededed;
 }
 .err {
   color: #f85149;

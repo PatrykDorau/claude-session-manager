@@ -199,7 +199,8 @@ export function switchAccount(): void {
 }
 
 export function openAgentView(cwd: string): void {
-  spawn('cmd.exe', ['/c', 'start', 'Claude agents', 'cmd', '/k', `claude agents --cwd "${cwd}"`], {
+  spawn('cmd.exe', ['/c', 'start', 'Claude agents', 'cmd', '/k', 'claude agents'], {
+    cwd: cwd || undefined,
     detached: true,
     stdio: 'ignore'
   }).unref()
@@ -213,6 +214,20 @@ export function resumeStandalone(cwd: string, id: string, ticket: string | null)
   }).unref()
 }
 
+export const reopenAndRun = (
+  projectPath: string,
+  command: string,
+  key: ResumeKey = 'F9',
+  isLayoutConfigured = false
+): Promise<boolean> => {
+  const openAndType = async (): Promise<boolean> => {
+    const isFresh = !isFolderOpen(projectPath, await liveFolders())
+    code([projectPath])
+    return openInTerminal(basename(projectPath), command, key, isLayoutConfigured, isFresh)
+  }
+  return resumeQueue(openAndType)
+}
+
 export async function reopenAndResume(
   projectPath: string,
   id: string,
@@ -220,13 +235,7 @@ export async function reopenAndResume(
   key: ResumeKey = 'F9',
   isLayoutConfigured = false
 ): Promise<boolean> {
-  const needle = basename(projectPath)
-  const openAndType = async (): Promise<boolean> => {
-    const isFresh = !isFolderOpen(projectPath, await liveFolders())
-    code([projectPath])
-    return openInTerminal(needle, resumeCommand(id, ticket), key, isLayoutConfigured, isFresh)
-  }
-  return resumeQueue(openAndType)
+  return reopenAndRun(projectPath, resumeCommand(id, ticket), key, isLayoutConfigured)
 }
 
 export async function focusOrOpen(session: {

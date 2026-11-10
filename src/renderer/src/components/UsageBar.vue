@@ -39,7 +39,7 @@ onUnmounted(() => {
 <style scoped>
 .ubar {
   padding: 6px 10px;
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid #2b2b2b;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -48,7 +48,7 @@ onUnmounted(() => {
 }
 .unavail {
   display: block;
-  color: #6e7681;
+  color: #737373;
 }
 .g {
   display: inline-flex;
@@ -57,12 +57,12 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .gt {
-  color: #8b949e;
+  color: #9a9a9a;
 }
 .gp {
   font-weight: 600;
 }
 .gr {
-  color: #6e7681;
+  color: #737373;
 }
 </style>

@@ -14,7 +14,7 @@ export interface Diagnostics {
 
 export function formatDiagnostics(d: Diagnostics): string {
   return [
-    `Claude Session Switcher v${d.version}`,
+    `Claude Cockpit v${d.version}`,
     `OS: ${d.platform} ${d.release}`,
     `Electron: ${d.electron}  Node: ${d.node}`,
     `claude: ${d.claude ? `detected (${d.claude})` : 'NOT FOUND on PATH'}`,

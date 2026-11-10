@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractResumeIds, probeCommand, mergedListHas, branchTickets } from '../src/main/processes'
+import { extractResumeIds, extractAttachIds, extractAttachPids, probeCommand, mergedListHas, branchTickets } from '../src/main/processes'
 
 describe('extractResumeIds', () => {
   it('pulls a single resume id', () => {
@@ -26,6 +26,18 @@ describe('extractResumeIds', () => {
   })
   it('ignores lines without a resume id', () => {
     expect(extractResumeIds(['claude', 'node foo.js', ''])).toEqual([])
+  })
+})
+
+describe('extractAttachIds', () => {
+  it('returns the short agent ids of running claude attach processes', () => {
+    expect(
+      extractAttachIds([
+        '"C:\\npm\\claude.exe" attach 01edb0c6',
+        '"C:\\npm\\claude.exe" --resume 344dee8f-fd59-47c8-8f4f-155dacb26815',
+        'C:\\npm\\claude.exe'
+      ])
+    ).toEqual(['01edb0c6'])
   })
 })
 
@@ -61,5 +73,16 @@ describe('branchTickets', () => {
   })
   it('is empty when no branch carries a ticket', () => {
     expect(branchTickets('main\ndevelop\n')).toEqual([])
+  })
+})
+
+describe('extractAttachPids', () => {
+  it('maps the short agent id of each claude attach process to its pid', () => {
+    expect(
+      extractAttachPids([
+        { pid: 7, commandLine: '"C:/x/claude.exe" attach 01edb0c6' },
+        { pid: 8, commandLine: 'claude.exe --resume 1c4cdc80-4419-4cfe-863c-5767abd2762f' }
+      ])
+    ).toEqual(new Map([['01edb0c6', 7]]))
   })
 })

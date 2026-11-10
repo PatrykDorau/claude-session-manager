@@ -104,7 +104,7 @@ function tokens(n: number): string {
 <style scoped>
 .stats {
   padding: 12px;
-  color: #e6edf3;
+  color: #ededed;
   font-size: 12px;
 }
 .cards {
@@ -113,8 +113,8 @@ function tokens(n: number): string {
   gap: 8px;
 }
 .card {
-  background: #161b22;
-  border: 1px solid #21262d;
+  background: #232323;
+  border: 1px solid #2b2b2b;
   border-radius: 8px;
   padding: 10px;
   text-align: center;
@@ -122,17 +122,17 @@ function tokens(n: number): string {
 .big {
   font-size: 22px;
   font-weight: 700;
-  color: #a371f7;
+  color: #2ef05a;
 }
 .lbl {
   font-size: 10px;
-  color: #8b949e;
+  color: #9a9a9a;
   margin-top: 2px;
 }
 h3 {
   font-size: 11px;
   font-weight: 600;
-  color: #8b949e;
+  color: #9a9a9a;
   margin: 16px 0 6px;
 }
 .chart {
@@ -157,12 +157,12 @@ h3 {
 .fill {
   width: 100%;
   min-height: 2px;
-  background: #a371f7;
+  background: #2ef05a;
   border-radius: 3px 3px 0 0;
 }
 .barlbl {
   font-size: 9px;
-  color: #6e7681;
+  color: #737373;
   margin-top: 3px;
 }
 .rows {
@@ -174,7 +174,7 @@ h3 {
   display: flex;
   justify-content: space-between;
   padding: 4px 6px;
-  border-bottom: 1px solid #161b22;
+  border-bottom: 1px solid #232323;
 }
 .proj {
   overflow: hidden;
@@ -182,7 +182,7 @@ h3 {
   white-space: nowrap;
 }
 .num {
-  color: #8b949e;
+  color: #9a9a9a;
   font-weight: 600;
 }
 .sright {
@@ -192,7 +192,7 @@ h3 {
   flex: none;
 }
 .model {
-  color: #6e7681;
+  color: #737373;
   font-size: 10px;
 }
 h3.first {
@@ -215,7 +215,7 @@ h3.first {
 }
 .gtrack {
   height: 6px;
-  background: #21262d;
+  background: #2b2b2b;
   border-radius: 3px;
   overflow: hidden;
 }
@@ -225,10 +225,10 @@ h3.first {
 }
 .greset {
   font-size: 10px;
-  color: #6e7681;
+  color: #737373;
 }
 .unavail {
-  color: #6e7681;
+  color: #737373;
   font-size: 11px;
   padding: 2px 0 6px;
 }

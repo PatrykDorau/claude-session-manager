@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseWorktreeRepo } from '../src/main/worktree'
+import { parseWorktreeRepo, parseWorktreeRoot } from '../src/main/worktree'
 
 describe('parseWorktreeRepo', () => {
   it('extracts the parent repo name from a worktree .git file', () => {
@@ -19,5 +19,15 @@ describe('parseWorktreeRepo', () => {
   it('returns null when there is no gitdir line', () => {
     expect(parseWorktreeRepo('ref: refs/heads/main')).toBe(null)
     expect(parseWorktreeRepo('')).toBe(null)
+  })
+})
+
+describe('parseWorktreeRoot', () => {
+  it('returns the main checkout folder of a linked worktree', () => {
+    expect(parseWorktreeRoot('gitdir: C:/P/telco/tigo-fo-smarttv/.git/worktrees/SOFRMPT-3361\n')).toBe('C:/P/telco/tigo-fo-smarttv')
+  })
+  it('returns null for a .git file that is not a linked worktree', () => {
+    expect(parseWorktreeRoot('gitdir: C:/P/x/.git/modules/sub')).toBeNull()
+    expect(parseWorktreeRoot('nonsense')).toBeNull()
   })
 })
