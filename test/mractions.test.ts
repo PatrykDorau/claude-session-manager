@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseMrState, parseApprovals, parseDiscussions, parseMrOverview, snippetAround, snippetFromDiff, diffRows } from '../src/main/mractions'
+import { pickTicketMr, parseMrState, parseApprovals, parseDiscussions, parseMrOverview, snippetAround, snippetFromDiff, diffRows } from '../src/main/mractions'
 
 describe('parseMrState', () => {
   it('reads merge readiness, pipeline, conflicts and how far behind it is', () => {
@@ -34,7 +34,7 @@ describe('parseDiscussions', () => {
   it('keeps system notes as one-line events', () => {
     const json = [{ id: 'd3', individual_note: true, notes: [{ id: 4, body: 'assigned to @pd', author: { name: 'Patryk' }, created_at: 't', system: true }] }]
     expect(parseDiscussions(json)).toEqual([
-      { id: 'd3', isSystem: true, isResolved: false, isResolvable: false, where: null, anchor: null, snippet: null, notes: [{ id: 4, author: 'Patryk', body: 'assigned to @pd', createdAt: 't' }] }
+      { id: 'd3', isSystem: true, isResolved: false, isResolvable: false, where: null, anchor: null, snippet: null, notes: [{ id: 4, author: 'Patryk', body: 'assigned to @pd', createdAt: 't', isMine: false }] }
     ])
   })
   it('keeps human notes and drops empty threads', () => {
@@ -58,11 +58,18 @@ describe('parseDiscussions', () => {
         anchor: { path: 'a.ts', line: 4, sha: 'h1', side: 'new' },
         snippet: null,
         notes: [
-          { id: 1, author: 'Anna', body: 'Looks good', createdAt: '2026-11-10T10:00:00Z' },
-          { id: 2, author: 'Jan', body: 'Thanks', createdAt: '2026-11-10T10:05:00Z' }
+          { id: 1, author: 'Anna', body: 'Looks good', createdAt: '2026-11-10T10:00:00Z', isMine: false },
+          { id: 2, author: 'Jan', body: 'Thanks', createdAt: '2026-11-10T10:05:00Z', isMine: false }
         ]
       }
     ])
+  })
+})
+
+describe('parseDiscussions with my id', () => {
+  it('marks only my notes as mine', () => {
+    const json = [{ id: 'd1', notes: [{ id: 1, body: 'a', author: { id: 5, name: 'Me' } }, { id: 2, body: 'b', author: { id: 6, name: 'Anna' } }] }]
+    expect(parseDiscussions(json, 5)[0].notes.map((n) => n.isMine)).toEqual([true, false])
   })
 })
 
@@ -163,5 +170,33 @@ describe('diffRows', () => {
       { kind: '+', old: null, new: 4, text: 'c' },
       { kind: '+', old: null, new: 5, text: 'd' }
     ])
+  })
+})
+
+describe('parseDiscussions system notes', () => {
+  it('never marks a system note as mine, since GitLab cannot edit it', () => {
+    const json = [{ id: 'd1', notes: [{ id: 1, body: 'x', author: { id: 5 } }, { id: 2, body: 'changed this line', system: true, author: { id: 5 } }] }]
+    expect(parseDiscussions(json, 5)[0].notes.map((n) => n.isMine)).toEqual([true, false])
+  })
+})
+
+describe('pickTicketMr', () => {
+  const mr = (iid: number, state: string, title: string, branch: string): unknown => ({
+    iid,
+    project_id: 7,
+    state,
+    title,
+    source_branch: branch,
+    web_url: `https://gl/x/-/merge_requests/${iid}`,
+    description: `d${iid}`
+  })
+  it('prefers an open MR of the ticket, then a merged one, and ignores other tickets', () => {
+    const json = [mr(1, 'merged', 'feat(SOFX-10): a', 'feat/SOFX-10-a'), mr(2, 'opened', 'feat(SOFX-10): b', 'feat/SOFX-10-b'), mr(3, 'opened', 'feat(SOFX-100): c', 'feat/SOFX-100-c')]
+    expect(pickTicketMr(json, 'SOFX-10')).toEqual({ iid: 2, projectId: 7, state: 'opened', title: 'feat(SOFX-10): b', url: 'https://gl/x/-/merge_requests/2', description: 'd2' })
+    expect(pickTicketMr([json[0]], 'SOFX-10')?.state).toBe('merged')
+  })
+  it('skips closed MRs and returns null when nothing matches', () => {
+    expect(pickTicketMr([mr(4, 'closed', 'SOFX-10', 'feat/SOFX-10')], 'SOFX-10')).toBeNull()
+    expect(pickTicketMr(null, 'SOFX-10')).toBeNull()
   })
 })

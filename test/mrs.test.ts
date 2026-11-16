@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { filterMrs, reviewLabel, findReviewSession, findWorkSession, mergeHint, groupMrs } from '../src/renderer/src/dashboard/mrs'
+import { filterMrs, reviewLabel, findReviewSession, findWorkSession, findAddressSession, findMineSession, mergeHint, groupMrs } from '../src/renderer/src/dashboard/mrs'
 import type { MrRow, Session } from '../src/renderer/src/types'
 
 const mr = (over: Partial<MrRow>): MrRow => ({
@@ -120,7 +120,35 @@ describe('findWorkSession', () => {
     ]
     expect(findWorkSession(sessions, 'SOFRMPT-3954')?.id).toBe('new')
   })
+  it('skips the session that addresses MR comments', () => {
+    const sessions = [s('work', 'SOFRMPT-3954', 'SOFRMPT-3954', 1), s('cr', 'SOFRMPT-3954', 'SOFRMPT-3954-cr', 9)]
+    expect(findWorkSession(sessions, 'SOFRMPT-3954')?.id).toBe('work')
+  })
   it('finds nothing without a ticket', () => {
     expect(findWorkSession([s('a', null, null, 1)], null)).toBeUndefined()
+  })
+})
+
+describe('findAddressSession and findMineSession', () => {
+  const s = (id: string, name: string, lastActive: number, isLive: boolean, status = 'idle'): Session =>
+    ({ id, ticket: 'SOFRMPT-3954', name, lastActive, isLive, status, projectPath: `C:/wt/${id}` }) as Session
+  const row = { ticket: 'SOFRMPT-3954', iid: 527 }
+
+  it('finds the newest comments session by name', () => {
+    const sessions = [s('a', 'SOFRMPT-3954-cr', 1, false), s('b', 'SOFRMPT-3954-cr', 5, false), s('w', 'SOFRMPT-3954', 9, true)]
+    expect(findAddressSession(sessions, row)?.id).toBe('b')
+  })
+
+  it('names the comments session after the MR when there is no ticket', () => {
+    const sessions = [{ ...s('m', 'MR-527-cr', 1, true), ticket: null } as Session]
+    expect(findAddressSession(sessions, { ticket: null, iid: 527 })?.id).toBe('m')
+  })
+
+  it('prefers a waiting session, then a live comments session, then the work session', () => {
+    const work = s('w', 'SOFRMPT-3954', 5, true, 'working')
+    const cr = s('c', 'SOFRMPT-3954-cr', 9, true, 'working')
+    expect(findMineSession([work, cr], row)?.id).toBe('c')
+    expect(findMineSession([{ ...work, status: 'waiting' } as Session, cr], row)?.id).toBe('w')
+    expect(findMineSession([work, { ...cr, isLive: false } as Session], row)?.id).toBe('w')
   })
 })

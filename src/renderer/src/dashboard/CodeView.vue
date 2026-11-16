@@ -2,7 +2,7 @@
 import { ref, computed, shallowRef, watch, onMounted, onBeforeUnmount, onActivated, nextTick } from 'vue'
 import { EditorView, basicSetup } from 'codemirror'
 import { EditorState, Compartment, RangeSet, type Extension } from '@codemirror/state'
-import { keymap, gutter, GutterMarker, Decoration, WidgetType } from '@codemirror/view'
+import { keymap, gutter, GutterMarker, Decoration, WidgetType, BlockType } from '@codemirror/view'
 import { darkPlus } from './darkplus'
 import { javascript } from '@codemirror/lang-javascript'
 import { vue } from '@codemirror/lang-vue'
@@ -10,8 +10,8 @@ import { json } from '@codemirror/lang-json'
 import { css } from '@codemirror/lang-css'
 import { sass } from '@codemirror/lang-sass'
 import { html } from '@codemirror/lang-html'
-import { unifiedMergeView } from '@codemirror/merge'
-import type { BranchChanges, ChangedFile, CodeComment, ExplainFile } from '../types'
+import { unifiedMergeView, uncollapseUnchanged } from '@codemirror/merge'
+import type { BranchChanges, ChangedFile, CodeComment, ExplainFile, MrCommentable, MrReviewAction } from '../types'
 import { buildTree, languageOf, type Language, type TreeNode } from './code'
 import Splitter from './Splitter.vue'
 import Icon from './Icon.vue'
@@ -31,8 +31,15 @@ const props = defineProps<{
   sourceSessionId: string | null
   comments?: CodeComment[]
   branchRef?: { source: string; target: string } | null
+  commentable?: MrCommentable | null
+  review?: (action: MrReviewAction) => Promise<boolean>
 }>()
-const emit = defineEmits<{ ask: [text: string]; explain: [sessionId: string]; version: [href: string, path: string | null] }>()
+const emit = defineEmits<{
+  ask: [text: string]
+  explain: [sessionId: string]
+  version: [href: string, path: string | null, line: number | null]
+  fileShown: [path: string, folder: string | null, isReadOnly: boolean]
+}>()
 
 const EXPLAIN_POLL_MS = 4000
 const EXPLAIN_WAIT_MS = 20 * 60 * 1000
@@ -245,6 +252,45 @@ const whyExtension = (): Extension => {
 const commentSlot = new Compartment()
 const openComments = ref<Set<string>>(new Set())
 const fileComments = computed(() => (props.comments ?? []).filter((c) => c.path === openPath.value))
+const activeComments = computed(() =>
+  (props.comments ?? []).filter((c) => !c.isResolved).sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line)
+)
+const commentIndex = ref(-1)
+const goToFileLine = async (path: string, line: number): Promise<void> => {
+  if (openPath.value !== path) await open(path)
+  const v = editor.value
+  if (!v || openPath.value !== path) return
+  const at = lineStart(v, line)
+  const block = v.lineBlockAt(at)
+  if (block.type === BlockType.WidgetRange) v.dispatch({ effects: uncollapseUnchanged.of(block.from) })
+  const here = (props.comments ?? []).filter((c) => c.path === path && c.line === line && !c.isDraft)
+  if (here.length) {
+    const next = new Set(openComments.value)
+    here.forEach((c) => next.add(c.id))
+    openComments.value = next
+    v.dispatch({ effects: commentSlot.reconfigure(commentExtension()) })
+  }
+  v.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: 'center' }) })
+  v.focus()
+}
+const stepComment = (delta: number): void => {
+  const list = activeComments.value
+  if (!list.length) return
+  const current = commentIndex.value
+  const fromCursor = (): number => {
+    const line = editor.value ? editor.value.state.doc.lineAt(editor.value.state.selection.main.head).number : 0
+    const here = openPath.value ?? ''
+    const after = list.findIndex((c) => c.path > here || (c.path === here && c.line > line))
+    if (delta > 0) return after === -1 ? 0 : after
+    const before = after === -1 ? list.length - 1 : after - 1
+    return before < 0 ? list.length - 1 : before
+  }
+  const isOnCurrent = current >= 0 && current < list.length && list[current].path === openPath.value
+  const next = isOnCurrent ? (current + delta + list.length) % list.length : fromCursor()
+  commentIndex.value = next
+  void goToFileLine(list[next].path, list[next].line)
+}
+defineExpose({ goToFileLine })
 const commentCount = (path: string): number => (props.comments ?? []).filter((c) => c.path === path && !c.isResolved).length
 const lineStart = (v: EditorView, line: number): number => v.state.doc.line(Math.min(Math.max(line, 1), v.state.doc.lines)).from
 const lineEnd = (v: EditorView, line: number): number => v.state.doc.line(Math.min(Math.max(line, 1), v.state.doc.lines)).to
@@ -282,15 +328,29 @@ class CommentMarker extends GutterMarker {
 }
 
 class CommentWidget extends WidgetType {
-  constructor(readonly comment: CodeComment) {
+  constructor(
+    readonly comment: CodeComment,
+    readonly tick: number
+  ) {
     super()
   }
   eq(other: CommentWidget): boolean {
-    return other.comment.id === this.comment.id
+    return (
+      other.tick === this.tick &&
+      other.comment.id === this.comment.id &&
+      other.comment.isResolved === this.comment.isResolved &&
+      other.comment.notes.map((n) => n.body).join('|') === this.comment.notes.map((n) => n.body).join('|')
+    )
   }
   toDOM(): HTMLElement {
     const box = document.createElement('div')
-    box.className = this.comment.isResolved ? 'cmt-box done' : 'cmt-box'
+    box.className = this.comment.isDraft ? 'cmt-box pending' : this.comment.isResolved ? 'cmt-box done' : 'cmt-box'
+    if (this.comment.isDraft) {
+      const tag = document.createElement('span')
+      tag.className = 'cmt-pending'
+      tag.textContent = 'Pending, publish with Submit review'
+      box.append(tag)
+    }
     for (const n of this.comment.notes) {
       const note = document.createElement('div')
       note.className = 'cmt-note'
@@ -311,11 +371,13 @@ class CommentWidget extends WidgetType {
       toggleComment(this.comment.id)
     })
     box.append(close)
+    const actions = commentActions(this.comment, box)
+    if (actions) box.append(actions)
     box.addEventListener('click', (e) => {
       const a = (e.target as HTMLElement).closest('a')
       if (!a || !parseVersionLink(a.href)) return
       e.preventDefault()
-      emit('version', a.href, this.comment.path)
+      emit('version', a.href, this.comment.path, this.comment.line)
     })
     return box
   }
@@ -324,12 +386,189 @@ class CommentWidget extends WidgetType {
   }
 }
 
+const isCommenting = computed(
+  () => !!props.review && !!props.commentable?.isAllowed && !!props.commentable.headSha && props.commentable.path === openPath.value && !isDirty.value
+)
+let isSending = false
+let renderTick = 0
+const redrawComments = (): void => {
+  renderTick += 1
+  editor.value?.dispatch({ effects: commentSlot.reconfigure(commentExtension()) })
+}
+const composer = ref<{ path: string; line: number } | null>(null)
+let composerText = ''
+
+const sendReview = async (action: MrReviewAction): Promise<boolean> => (props.review ? props.review(action) : false)
+
+const button = (label: string, className: string, run: () => void): HTMLButtonElement => {
+  const b = document.createElement('button')
+  b.className = className
+  b.textContent = label
+  b.addEventListener('mousedown', (e) => {
+    e.preventDefault()
+    run()
+  })
+  return b
+}
+
+const commentActions = (c: CodeComment, box: HTMLElement): HTMLElement | null => {
+  if (!props.review) return null
+  const row = document.createElement('div')
+  row.className = 'cmt-actions'
+  if (c.isDraft && c.draftId !== undefined) {
+    const id = c.draftId
+    row.append(
+      button('Edit', 'cmt-link', () => {
+        const area = document.createElement('textarea')
+        area.className = 'cmt-input'
+        area.value = c.notes[0]?.body ?? ''
+        const save = button('Save', 'cmt-btn primary', () => {
+          void sendReview({ kind: 'draft-edit', id, body: area.value }).then((isDone) => {
+            if (isDone) redrawComments()
+          })
+        })
+        const cancel = button('Cancel', 'cmt-btn', redrawComments)
+        const bar = document.createElement('div')
+        bar.className = 'cmt-actions'
+        bar.append(cancel, save)
+        box.replaceChildren(area, bar)
+        area.focus()
+      }),
+      button('Delete', 'cmt-link danger', () => void sendReview({ kind: 'draft-delete', id }))
+    )
+    return row
+  }
+  if (!c.discussionId) return null
+  const discussionId = c.discussionId
+  row.append(
+    button('Reply', 'cmt-btn', () => {
+      const area = document.createElement('textarea')
+      area.className = 'cmt-input'
+      area.rows = 3
+      area.placeholder = 'Reply… Ctrl+Enter adds it to your review.'
+      const bar = document.createElement('div')
+      bar.className = 'cmt-actions'
+      const send = (kind: 'draft-add' | 'reply'): void => {
+        if (!area.value.trim()) return
+        const action: MrReviewAction = kind === 'reply' ? { kind, discussionId, body: area.value } : { kind, body: area.value, replyTo: discussionId }
+        void sendReview(action).then((isDone) => {
+          if (isDone) redrawComments()
+        })
+      }
+      area.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && e.ctrlKey) {
+          e.preventDefault()
+          send('draft-add')
+        }
+        if (e.key === 'Escape') redrawComments()
+      })
+      bar.append(
+        button('Cancel', 'cmt-btn', redrawComments),
+        button('Reply now', 'cmt-btn', () => send('reply')),
+        button('Add to review', 'cmt-btn primary', () => send('draft-add'))
+      )
+      row.replaceWith(area, bar)
+      area.focus()
+    })
+  )
+  if (c.isResolvable) row.append(button(c.isResolved ? 'Unresolve' : 'Resolve', 'cmt-btn', () => void sendReview({ kind: 'resolve', discussionId, isResolved: !c.isResolved })))
+  return row
+}
+
+const closeComposer = (): void => {
+  composer.value = null
+  composerText = ''
+  editor.value?.dispatch({ effects: commentSlot.reconfigure(commentExtension()) })
+}
+
+const submitComposer = async (kind: 'draft-add' | 'line-comment'): Promise<void> => {
+  const at = composer.value
+  const sha = props.commentable?.headSha
+  if (!at || !sha || !composerText.trim() || isSending) return
+  isSending = true
+  try {
+    if (await sendReview({ kind, body: composerText, anchor: { path: at.path, line: at.line, side: 'new', sha } })) closeComposer()
+  } finally {
+    isSending = false
+  }
+}
+
+class ComposerWidget extends WidgetType {
+  constructor(readonly line: number) {
+    super()
+  }
+  eq(other: ComposerWidget): boolean {
+    return other.line === this.line
+  }
+  toDOM(): HTMLElement {
+    const box = document.createElement('div')
+    box.className = 'cmt-box composer'
+    const area = document.createElement('textarea')
+    area.className = 'cmt-input'
+    area.rows = 4
+    area.placeholder = `Comment on line ${this.line}. Markdown works. Ctrl+Enter adds it to your review.`
+    area.value = composerText
+    area.addEventListener('input', () => (composerText = area.value))
+    area.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.ctrlKey) {
+        e.preventDefault()
+        void submitComposer('draft-add')
+      }
+      if (e.key === 'Escape') closeComposer()
+    })
+    const bar = document.createElement('div')
+    bar.className = 'cmt-actions'
+    bar.append(
+      button('Cancel', 'cmt-btn', closeComposer),
+      button('Comment now', 'cmt-btn', () => void submitComposer('line-comment')),
+      button('Add to review', 'cmt-btn primary', () => void submitComposer('draft-add'))
+    )
+    box.append(area, bar)
+    setTimeout(() => area.focus(), 0)
+    return box
+  }
+  ignoreEvent(): boolean {
+    return true
+  }
+}
+
+class AddMarker extends GutterMarker {
+  constructor(readonly line: number) {
+    super()
+  }
+  eq(other: AddMarker): boolean {
+    return other.line === this.line
+  }
+  toDOM(): Node {
+    const el = document.createElement('span')
+    el.className = 'cmt-add'
+    el.title = 'Comment on this line'
+    el.textContent = '+'
+    el.addEventListener('mousedown', (e) => {
+      e.preventDefault()
+      if (!openPath.value) return
+      composer.value = { path: openPath.value, line: this.line }
+      composerText = ''
+      editor.value?.dispatch({ effects: commentSlot.reconfigure(commentExtension()) })
+    })
+    return el
+  }
+}
+
 const commentExtension = (): Extension => {
   const entries = fileComments.value
-  if (!entries.length) return []
+  const isAdding = isCommenting.value
+  const draftAt = composer.value?.path === openPath.value ? composer.value : null
+  if (!entries.length && !isAdding) return []
+  const commentLines = new Set(entries.map((c) => c.line))
   return [
     gutter({
       class: 'cm-comment-gutter',
+      lineMarker: (v, block) => {
+        if (!isAdding) return null
+        const line = v.state.doc.lineAt(block.from).number
+        return commentLines.has(line) ? null : new AddMarker(line)
+      },
       markers: (v) =>
         RangeSet.of(
           [...entries]
@@ -342,19 +581,18 @@ const commentExtension = (): Extension => {
     }),
     EditorView.decorations.compute(['doc'], (state) => {
       const v = { state } as EditorView
-      const open = entries.filter((c) => openComments.value.has(c.id))
+      const open = entries.filter((c) => c.isDraft || openComments.value.has(c.id))
+      const widgets = open.map((c) => ({ at: lineEnd(v, c.line), w: new CommentWidget(c, renderTick) as WidgetType }))
+      if (draftAt) widgets.push({ at: lineEnd(v, draftAt.line), w: new ComposerWidget(draftAt.line) })
       return Decoration.set(
-        open
-          .map((c) => ({ at: lineEnd(v, c.line), c }))
-          .sort((a, b) => a.at - b.at)
-          .map((m) => Decoration.widget({ widget: new CommentWidget(m.c), block: true, side: 1 }).range(m.at)),
+        widgets.sort((a, b) => a.at - b.at).map((m) => Decoration.widget({ widget: m.w, block: true, side: 1 }).range(m.at)),
         true
       )
     })
   ]
 }
 watch(
-  () => props.comments,
+  () => [props.comments, props.commentable, isDirty.value],
   () => editor.value?.dispatch({ effects: commentSlot.reconfigure(commentExtension()) })
 )
 
@@ -381,6 +619,7 @@ const save = async (): Promise<void> => {
   if (!result.error) {
     isDirty.value = false
     void refresh()
+    emit('fileShown', openPath.value, branch.value?.folder ?? null, !!branch.value?.isReadOnly)
   }
 }
 
@@ -426,6 +665,7 @@ const open = async (path: string): Promise<void> => {
   await nextTick()
   if (editor.value) editor.value.setState(state)
   else editor.value = new EditorView({ state, parent: host.value as HTMLDivElement })
+  emit('fileShown', path, branch.value?.folder ?? null, !!branch.value?.isReadOnly)
 }
 
 const setDiffMode = async (mode: 'off' | 'target' | 'commit'): Promise<void> => {
@@ -674,11 +914,18 @@ onBeforeUnmount(() => {
         <span class="path"><Icon name="file" :size="13" /><span class="pdir">{{ openPath.split('/').slice(0, -1).join('/') }}{{ openPath.includes('/') ? '/' : '' }}</span><b>{{ openPath.split('/').pop() }}</b><i v-if="isDirty" class="dirty" title="Unsaved changes" /></span>
         <span class="grow" />
         <span v-if="error" class="warn">{{ error }}</span>
+        <span v-else-if="review && commentable && !commentable.isAllowed" class="nocmt" :title="`Commenting is off: ${commentable.reason ?? ''}`"><Icon name="message" :size="14" /><i class="off" /></span>
+        <span v-else-if="review && commentable?.isAllowed" class="nocmt on" title="Hover the narrow column left of the code and click + to comment on a line"><Icon name="message" :size="14" /><i /></span>
+        <span v-if="activeComments.length" class="cnav" title="Jump between unresolved comments and your pending drafts">
+          <button class="tb icon" title="Previous comment" @click="stepComment(-1)"><Icon name="chevronRight" :size="14" class="flip" /></button>
+          <span class="cpos">{{ commentIndex >= 0 ? commentIndex + 1 : '–' }}/{{ activeComments.length }}</span>
+          <button class="tb icon" title="Next comment" @click="stepComment(1)"><Icon name="chevronRight" :size="14" /></button>
+        </span>
         <button class="tb" :disabled="!canAsk" :title="canAsk ? 'Paste the selected lines into the Claude session, then type your question' : 'Open the Claude session in the dashboard first'" @click="askAboutSelection">
-          <Icon name="message" :size="14" />Ask Claude
+          <Icon name="message" :size="14" /><span class="lbl">Ask Claude</span>
         </button>
         <MenuButton :label="diffLabel" icon="diff" title="What to highlight in the file" :items="diffItems" />
-        <button v-if="!branch?.isReadOnly" class="tb primary" :disabled="!isDirty || isSaving" title="Save (Ctrl+S)" @click="save"><Icon name="save" :size="14" />{{ isSaving ? 'Saving…' : 'Save' }}</button>
+        <button v-if="!branch?.isReadOnly" class="tb primary" :disabled="!isDirty || isSaving" title="Save (Ctrl+S)" @click="save"><Icon name="save" :size="14" /><span class="lbl">{{ isSaving ? 'Saving…' : 'Save' }}</span></button>
       </div>
       <div v-if="openPath && fileWhys.length" class="whys" :style="isWhyOpen ? { maxHeight: `${whyHeight}px` } : undefined">
         <button class="whyhead" @click="isWhyOpen = !isWhyOpen">
@@ -1170,6 +1417,140 @@ onBeforeUnmount(() => {
   padding: 6px 8px;
   background: var(--bg-editor);
   border-radius: 6px;
+}
+.nocmt {
+  position: relative;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--text-4);
+  cursor: help;
+}
+.nocmt i {
+  position: absolute;
+  right: 2px;
+  bottom: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.nocmt i.off {
+  background: var(--text-5);
+}
+.nocmt.on {
+  color: var(--accent);
+}
+.cnav {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.cpos {
+  min-width: 30px;
+  font: 500 12px var(--font-ui);
+  text-align: center;
+  color: var(--text-3);
+}
+.tb.icon {
+  width: 26px;
+  padding: 0;
+  justify-content: center;
+}
+.flip {
+  transform: rotate(180deg);
+}
+.tabbar {
+  container-type: inline-size;
+}
+@container (max-width: 620px) {
+  .tb .lbl {
+    display: none;
+  }
+}
+.editor :deep(.cmt-add) {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  font: 600 13px/1 var(--font-ui);
+  color: #fff;
+  background: var(--accent);
+  border-radius: 4px;
+  opacity: 0;
+  cursor: pointer;
+}
+.editor :deep(.cm-comment-gutter .cm-gutterElement:hover .cmt-add) {
+  opacity: 1;
+}
+.editor :deep(.cmt-box.pending) {
+  border-left: 3px dashed var(--accent);
+}
+.editor :deep(.cmt-box.composer) {
+  border-left-color: var(--accent);
+}
+.editor :deep(.cmt-pending) {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px dashed var(--accent);
+  border-radius: 4px;
+}
+.editor :deep(.cmt-input) {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 7px 9px;
+  font: 13px/1.5 var(--font-ui);
+  color: var(--text);
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  outline: none;
+  resize: vertical;
+}
+.editor :deep(.cmt-input:focus) {
+  border-color: var(--accent);
+}
+.editor :deep(.cmt-actions) {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+.editor :deep(.cmt-btn) {
+  height: 26px;
+  padding: 0 10px;
+  font: 500 12px var(--font-ui);
+  color: var(--text-2);
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.editor :deep(.cmt-btn.primary) {
+  color: #0d1a12;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.editor :deep(.cmt-link) {
+  padding: 0;
+  font: 12px var(--font-ui);
+  color: var(--text-4);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.editor :deep(.cmt-link:hover) {
+  color: var(--text);
+}
+.editor :deep(.cmt-link.danger:hover) {
+  color: #f2706a;
 }
 .editor :deep(.cmt-close) {
   position: absolute;

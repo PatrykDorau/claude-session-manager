@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { safeRelPath, parseStatus, isNoisePath, parseNameStatus, isSafeRef, worktreeForBranch, parseStatusPaths } from '../src/main/ide'
+import { safeRelPath, parseStatus, isNoisePath, parseNameStatus, isSafeRef, worktreeForBranch, parseStatusPaths, countChanges } from '../src/main/ide'
 import { languageOf, buildTree } from '../src/renderer/src/dashboard/code'
 
 describe('safeRelPath', () => {
@@ -49,6 +49,16 @@ describe('buildTree', () => {
       },
       { name: 'README.md', path: 'README.md', children: null }
     ])
+  })
+})
+
+describe('countChanges', () => {
+  it('counts changed code files and skips docs, dot folders and markdown', () => {
+    const out = [' M src/a.ts', '?? src/b.vue', 'R  src/old.ts -> src/new.ts', '?? .playwright-mcp/x.png', ' M docs/plan.md', '?? notes.md'].join('\n')
+    expect(countChanges(out)).toBe(3)
+  })
+  it('is zero for a clean tree', () => {
+    expect(countChanges('')).toBe(0)
   })
 })
 

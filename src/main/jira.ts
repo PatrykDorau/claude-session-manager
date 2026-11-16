@@ -194,3 +194,8 @@ export const fetchPriority = async (browseBase: string, token: string, key: stri
     return undefined
   }
 }
+
+const RELEASE_STATUS = /waiting\s+for\s+internal\s+release/i
+
+export const releaseTransition = (list: JiraTransition[]): JiraTransition | null =>
+  list.find((t) => RELEASE_STATUS.test(t.to)) ?? list.find((t) => RELEASE_STATUS.test(t.name)) ?? null

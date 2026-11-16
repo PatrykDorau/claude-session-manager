@@ -1,7 +1,12 @@
 import type { TaskRow } from '../taskview'
-import type { Status } from '../types'
+import type { Session, Status } from '../types'
 
-export type DashboardPage = 'tickets' | 'mrs' | 'starred' | 'tree' | 'hosts'
+export const uncommittedCount = (sessions: Session[]): number => {
+  const byFolder = new Map(sessions.filter((s) => s.projectPath).map((s) => [s.projectPath.replace(/\\/g, '/').toLowerCase(), s.changes ?? 0]))
+  return [...byFolder.values()].reduce((sum, n) => sum + n, 0)
+}
+
+export type DashboardPage = 'tickets' | 'mrs' | 'starred' | 'tree' | 'hosts' | 'factory' | 'flow'
 
 export const filterRows = (rows: TaskRow[], query: string, starred: string[], isStarredOnly: boolean): TaskRow[] => {
   const needle = query.trim().toLowerCase()

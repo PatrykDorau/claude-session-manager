@@ -11,6 +11,8 @@ import type {
   ChangedFile,
   DevServer,
   ExplainFile,
+  FactoryReport,
+  FlowState,
   JiraTransition,
   ServerProfile,
   ServerSpec,
@@ -188,6 +190,9 @@ const api = {
     ipcRenderer.on('resume-failed', (_e, info) => cb(info))
   },
   installHooks: (): { ok: boolean; error?: string } => ipcRenderer.sendSync('install-hooks'),
+  onFocusSession: (cb: (target: { ticket: string | null; sessionId: string }) => void): void => {
+    ipcRenderer.on('focus-session', (_e, target) => cb(target))
+  },
   onPlayAlert: (cb: () => void): void => {
     ipcRenderer.on('play-alert', () => cb())
   },
@@ -210,6 +215,9 @@ const api = {
   sendPrompt: (id: string, text: string): Promise<{ error: string | null }> =>
     ipcRenderer.invoke('terminal-send-prompt', id, text),
   stopTurn: (id: string): void => ipcRenderer.send('terminal-stop-turn', id),
+  closeSession: (id: string): Promise<{ error: string | null }> => ipcRenderer.invoke('session-close', id),
+  takeOverInteractive: (id: string, cols: number, rows: number): Promise<{ error: string | null }> =>
+    ipcRenderer.invoke('terminal-take-over-interactive', id, cols, rows),
   takeOver: (id: string, cols: number, rows: number): Promise<{ error: string | null }> =>
     ipcRenderer.invoke('terminal-take-over', id, cols, rows),
   openInVscode: (id: string): Promise<void> => ipcRenderer.invoke('terminal-open-vscode', id),
@@ -285,6 +293,18 @@ const api = {
   getMrRepo: (key: string): Promise<string | null> => ipcRenderer.invoke('mr-repo', key),
   refreshLists: (): Promise<boolean> => ipcRenderer.invoke('refresh-lists'),
   getLocalHosts: (): Promise<LocalHost[]> => ipcRenderer.invoke('local-hosts'),
+  getFactoryReport: (): Promise<FactoryReport> => ipcRenderer.invoke('factory-report'),
+  getFlow: (keys: string[]): Promise<FlowState> => ipcRenderer.invoke('flow-state', keys),
+  openFlowSkill: (): void => ipcRenderer.send('flow-open-skill'),
+  runFactoryNow: (): Promise<{ error: string | null }> => ipcRenderer.invoke('factory-run-now'),
+  applyFactoryProposal: (id: string): Promise<{ error: string | null }> => ipcRenderer.invoke('factory-apply', id),
+  dismissFactoryProposal: (id: string): Promise<{ error: string | null }> => ipcRenderer.invoke('factory-dismiss', id),
+  testFactoryProposal: (id: string): Promise<{ error: string | null; sessionId?: string }> => ipcRenderer.invoke('factory-test', id),
+  onFactoryChanged: (cb: () => void): (() => void) => {
+    const onChanged = (): void => cb()
+    ipcRenderer.on('factory-changed', onChanged)
+    return () => ipcRenderer.removeListener('factory-changed', onChanged)
+  },
   closeChrome: (key: string | null): Promise<{ error: string | null }> => ipcRenderer.invoke('close-chrome', key),
   startTicketServer: (key: string, cwd: string | null): Promise<{ error?: string; url?: string }> => ipcRenderer.invoke('ticket-server', key, cwd),
   getMrBranchFolder: (key: string): Promise<{ repo: string | null; folder: string | null }> => ipcRenderer.invoke('mr-branch-folder', key),
@@ -294,12 +314,20 @@ const api = {
     key: string,
     action: 'approve' | 'unapprove' | 'merge' | 'rebase',
     options?: { isSquash: boolean; isSourceRemoved: boolean }
-  ): Promise<{ error: string | null; isCancelled: boolean }> => ipcRenderer.invoke('mr-action', key, action, options ?? null),
+  ): Promise<{ error: string | null; isCancelled: boolean; notice?: string | null }> => ipcRenderer.invoke('mr-action', key, action, options ?? null),
   postMrReply: (key: string, discussionId: string, body: string): Promise<{ error: string | null; isCancelled: boolean }> =>
     ipcRenderer.invoke('mr-reply', key, discussionId, body),
   postMrComment: (key: string, body: string): Promise<{ error: string | null; isCancelled: boolean }> =>
     ipcRenderer.invoke('mr-comment', key, body),
+  signInGitlab: (): Promise<boolean> => ipcRenderer.invoke('gitlab-sign-in'),
+  getMrExplanations: (key: string): Promise<Record<string, string>> => ipcRenderer.invoke('mr-explanations', key),
+  getTicketMr: (ticket: string): Promise<import('../renderer/src/types').TicketMr | null> => ipcRenderer.invoke('ticket-mr', ticket),
+  mrReview: (key: string, action: import('../renderer/src/types').MrReviewAction): Promise<{ error: string | null; isCancelled: boolean }> =>
+    ipcRenderer.invoke('mr-review', key, action),
+  mrCommentable: (key: string, folder: string | null, isReadOnly: boolean, path: string | null): Promise<import('../renderer/src/types').MrCommentable> =>
+    ipcRenderer.invoke('mr-commentable', key, folder, isReadOnly, path),
   startReview: (key: string): Promise<{ error: string | null; sessionId?: string }> => ipcRenderer.invoke('start-review', key),
+  startAddress: (key: string): Promise<{ error: string | null; sessionId?: string }> => ipcRenderer.invoke('mr-start-address', key),
   setAllProjects: (isAll: boolean): void => ipcRenderer.send('set-mr-projects-all', isAll),
   getStarred: (): string[] => ipcRenderer.sendSync('get-starred'),
   setStarred: (key: string, isOn: boolean): void => ipcRenderer.send('set-starred', key, isOn),

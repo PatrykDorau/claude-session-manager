@@ -20,7 +20,7 @@ import chokidar from 'chokidar'
 import icon from '../../resources/icon.png?asset'
 import attentionPng from '../../resources/attention.png?asset'
 import { STAGES, type Session, type TaskMeta } from '../renderer/src/types'
-import { rmSync, readdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, openSync, readSync, closeSync, fstatSync, statSync, symlinkSync } from 'node:fs'
+import { rmSync, readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, openSync, readSync, closeSync, fstatSync, statSync, symlinkSync } from 'node:fs'
 import { parseTail, countTurns, lastMessages, createDetailCache } from './transcript'
 import { createPtyHost } from './ptyhost'
 import { pickPort, serverCommand, bashCandidates, isPortFree, DEFAULT_SERVER_COMMAND } from './devserver'
@@ -29,7 +29,7 @@ import type { LocalHost, BranchChanges, ChangedFile, ExplainFile, ServerProfile,
 import { terminalMode, attachArgs, resumeBackgroundArgs, pasteInput, STOP_TURN, createOpenGuard, isHandedOff, type TerminalMode } from './terminal'
 import { readdir } from 'node:fs/promises'
 import { join as joinPath, dirname } from 'node:path'
-import { spawn, execFileSync } from 'node:child_process'
+import { spawn, execFile, execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { release } from 'node:os'
 import { scanRaw } from './scanner'
@@ -39,6 +39,7 @@ import {
   runningResumeIds,
   runningAttachIds,
   runningAttaches,
+  runningResumePids,
   listAgents,
   gitDirty,
   probeCommand,
@@ -64,6 +65,11 @@ import {
   isTestingStatus
 } from './taskmeta'
 import { formatDiagnostics } from './diagnostics'
+import { contextAlerts, idleAlerts } from './contextalert'
+import { parseHandoffSize, type HandoffSize } from './handoffsize'
+import { parseWorkflow, parseHandoffStage, parseAgentFile, parseBoosters } from './flow'
+import { collectDigests, ensureRubric, dayStamp, parseProposals, applyProposal, isFactoryDue, tokenTrend, dismissedList, withDismissed, isDismissedBy, latestDay, splitScoreOutput, type Digest, type Proposal } from './factory'
+import type { FactoryReport, FlowAgent, FlowState, FlowTicket } from '../renderer/src/types'
 import { ideDir, projectsDir, doneDir, activeDir, needsInputDir, sessionsDir } from './paths'
 import {
   focusOrOpen,
@@ -95,9 +101,9 @@ import {
   type SessionFile
 } from './closing'
 import { worktreeRows, parseCount, isLinkedWorktreeGitFile, branchToDelete, nodeModulesAction } from './worktrees'
-import { taskContext, startPrompt, parseBgId, ticketPrefix, repoRoots, startArgs, claudeExeCandidates, attachCommand, repoForProject, reviewArgs } from './tasks'
-import { searchIssues, fetchDescription, postComment, fetchTransitions, doTransition, fetchTicketDetail, fetchPriority } from './jira'
-import { isSafeRef, worktreeForBranch, parseStatusPaths, safeRelPath, parseStatus, isNoisePath, parseNameStatus } from './ide'
+import { taskContext, startPrompt, parseBgId, ticketPrefix, repoRoots, startArgs, claudeExeCandidates, attachCommand, repoForProject, reviewArgs, addressArgs, scoreArgs, factoryTestArgs } from './tasks'
+import { searchIssues, fetchDescription, postComment, fetchTransitions, doTransition, fetchTicketDetail, fetchPriority, releaseTransition } from './jira'
+import { isSafeRef, worktreeForBranch, parseStatusPaths, safeRelPath, parseStatus, isNoisePath, parseNameStatus, countChanges } from './ide'
 import { parseExplainDoc, explainArgs } from './explaindoc'
 import { fetchMrsToReview, enrichMrs, forgetApprovals, fetchDiffStats, fetchMrSha, isInProjects, reviewState, sortMrs } from './gitlab'
 import type { JiraTicket, MrFile, MrItem, MyMrs } from '../renderer/src/types'
@@ -121,7 +127,29 @@ import { migrateUserData } from './migrate'
 import { listAgentGroups, readAgentRun } from './agents'
 import { startBridge, ticketFromPath } from './bridge'
 import { pickChromePort, taskChromeProfile, writeTaskMcp, seedProfile } from './taskbrowser'
-import { fetchMrStatus, runMrAction, postMrComment, postMrReply, fetchVersionDiff, type MrAction, type MergeOptions } from './mractions'
+import {
+  fetchMrStatus,
+  runMrAction,
+  postMrComment,
+  postMrReply,
+  fetchVersionDiff,
+  fetchMrHead,
+  findTicketMr,
+  fetchMrDiffFile,
+  createDraftNote,
+  updateDraftNote,
+  deleteDraftNote,
+  publishDraftNotes,
+  postLineComment,
+  setDiscussionResolved,
+  updateNote,
+  deleteNote,
+  updateMr,
+  type MrAction,
+  type MergeOptions
+} from './mractions'
+import { anchorPosition, withDraftTitle, commentableState, reviewConfirm, explanationFiles } from './mrreview'
+import type { MrCommentable, MrLineAnchor, MrLinePosition, MrReviewAction } from '../renderer/src/types'
 import { clearInheritedSessionMarker } from './env'
 import { nearestEdge, dockBounds, pickDisplay } from './dock'
 import { registerAppBar, unregisterAppBar } from './appbar'
@@ -137,8 +165,10 @@ let agentStatus = new Map<string, string>()
 let cachedRunningIds: string[] = []
 let attentionIcon: NativeImage | null = null
 let dirtyMap: Record<string, boolean> = {}
+let changeMap: Record<string, number> = {}
 let lastUsage: UsageResult | null = null
 let bgAgents = new Map<string, { status: string; name: string | null }>()
+let clearedIds = new Map<string, string>()
 let claudeOk = true
 let editorOk = true
 let claudeVersion: string | null = null
@@ -160,6 +190,8 @@ const branchDone = new Map<string, boolean>()
 const knownFolders = new Map<string, string>()
 const worktreeRepo = new Map<string, string | null>()
 const notifiedWaiting = new Set<string>()
+let alertedContext = new Set<string>()
+let alertedIdle = new Set<string>()
 const shownNotifications = new Set<Notification>()
 let lastTasks: Record<string, TaskMeta> = {}
 let opisEntries: { month: string; names: string[] }[] = []
@@ -257,6 +289,7 @@ function decorate(sessions: Session[]): Session[] {
       watched: appState.watched.includes(s.id),
       name: appState.names[s.id] ?? bgAgents.get(s.id)?.name ?? null,
       dirty: dirtyMap[key] ?? false,
+      changes: changeMap[key] ?? 0,
       bg: bgAgents.has(s.id),
       finished: fin.finished,
       jiraStatus: fin.jiraStatus,
@@ -270,8 +303,9 @@ async function refreshRunning(): Promise<void> {
 }
 
 async function refreshAgents(): Promise<void> {
-  const list = await listAgents()
-  if (!list) return
+  const found = await listAgents()
+  if (!found) return
+  const list = found.map((a) => ({ ...a, sessionId: clearedIds.get(a.sessionId) ?? a.sessionId }))
   liveAgentIds = new Set(list.map((a) => a.sessionId))
   agentStatus = new Map(list.map((a) => [a.sessionId, a.status]))
   bgAgents = new Map(
@@ -282,13 +316,22 @@ async function refreshAgents(): Promise<void> {
 async function refreshDirty(): Promise<void> {
   const entries = [...knownFolders.entries()]
   const next: Record<string, boolean> = {}
-  await Promise.all(entries.map(async ([key, path]) => (next[key] = await gitDirty(path))))
+  const counts: Record<string, number> = {}
+  await Promise.all(
+    entries.map(async ([key, path]) => {
+      const status = await runGit(path, ['status', '--porcelain'])
+      next[key] = status.isOk ? status.out.trim().length > 0 : await gitDirty(path)
+      counts[key] = status.isOk ? countChanges(status.out) : 0
+    })
+  )
   dirtyMap = next
+  changeMap = counts
 }
 
 async function pushSessions(): Promise<void> {
   if (!mainWindow) return
-  const { raw, lockedFolders } = await scanRaw()
+  const { raw, lockedFolders, cleared } = await scanRaw()
+  clearedIds = cleared
   for (const r of raw)
     if (r.cwd) {
       const key = normalizePath(r.cwd)
@@ -319,6 +362,18 @@ async function pushSessions(): Promise<void> {
   }
   mainWindow.webContents.send('worktrees', rows)
   updateAttention(sessions)
+  const contextCheck = contextAlerts(sessions.filter((s) => s.isLive), alertedContext)
+  alertedContext = contextCheck.alerted
+  for (const id of contextCheck.toNotify) {
+    const s = sessions.find((x) => x.id === id)
+    if (s) notifyContext(s)
+  }
+  const idleCheck = idleAlerts(sessions.filter((s) => s.isLive), alertedIdle, Date.now())
+  alertedIdle = idleCheck.alerted
+  for (const id of idleCheck.toNotify) {
+    const s = sessions.find((x) => x.id === id)
+    if (s) notifyIdle(s)
+  }
   void fetchUnseenTickets(decorated)
 }
 
@@ -1292,6 +1347,322 @@ const startExplain = async (
   }
 }
 
+const FACTORY_DIR = joinPath(homedir(), '.claude', 'factory')
+const FACTORY_WINDOW = 24 * 3_600_000
+const FACTORY_TIMEOUT = 15 * 60_000
+const FACTORY_CHECK = 3_600_000
+const FACTORY_TREND_DAYS = 14
+const DAY_DIR = /^\d{4}-\d{2}-\d{2}$/
+let isFactoryRunning = false
+let factoryError: string | null = null
+
+const factoryPath = (...parts: string[]): string => joinPath(FACTORY_DIR, ...parts)
+
+const readJson = (path: string): unknown => {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+const pushFactory = (): void => sendToDashboard('factory-changed')
+
+const runScoring = (exe: string, day: string): Promise<{ error: string | null }> =>
+  new Promise((resolve) => {
+    const env = { ...process.env }
+    delete env.NO_COLOR
+    let errorText = ''
+    let output = ''
+    let isTimedOut = false
+    const p = spawn(exe, scoreArgs(day, homedir().replace(/\\/g, '/')), {
+      cwd: FACTORY_DIR,
+      shell: false,
+      windowsHide: true,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    p.stdout?.on('data', (d: Buffer) => {
+      output += d.toString()
+    })
+    const timer = setTimeout(() => {
+      isTimedOut = true
+      if (p.pid) void killProcess(p.pid, true)
+      else p.kill()
+    }, FACTORY_TIMEOUT)
+    p.stderr?.on('data', (d: Buffer) => {
+      errorText = (errorText + d.toString()).slice(-2000)
+    })
+    p.on('error', (e) => {
+      clearTimeout(timer)
+      resolve({ error: e.message })
+    })
+    p.on('close', (code) => {
+      clearTimeout(timer)
+      if (isTimedOut) return resolve({ error: 'The scoring run did not finish within 15 min' })
+      if (code === 0 && output.trim()) {
+        const { report, proposals } = splitScoreOutput(output)
+        writeFileSync(factoryPath('reports', `${day}.md`), `${report}\n`, 'utf8')
+        writeFileSync(factoryPath('proposals', `${day}.json`), JSON.stringify(proposals, null, 2), 'utf8')
+      }
+      resolve({ error: code === 0 ? null : errorText.trim().split(/\r?\n/).pop() || `claude exited with code ${code}` })
+    })
+  })
+
+const runFactory = async (): Promise<{ error: string | null }> => {
+  if (isFactoryRunning) return { error: 'The factory is already running' }
+  const exe = resolveClaudeExe()
+  if (!exe) return { error: 'claude.exe not found' }
+  isFactoryRunning = true
+  pushFactory()
+  const now = Date.now()
+  const day = dayStamp(new Date(now))
+  let result: { error: string | null } = { error: null }
+  try {
+    ensureRubric(factoryPath('rubric.md'))
+    for (const dir of ['reports', 'proposals']) mkdirSync(factoryPath(dir), { recursive: true })
+    if (!existsSync(factoryPath('dismissed.json'))) writeFileSync(factoryPath('dismissed.json'), '[]', 'utf8')
+    const sizeOf = (ticket: string): HandoffSize | null => {
+      const handoff = findHandoff(ticket)
+      return handoff ? handoffSizeOf(handoff) : null
+    }
+    const count = await collectDigests(projectsDir(), now - FACTORY_WINDOW, factoryPath('digests', day), sizeOf)
+    if (count) result = await runScoring(exe, day)
+  } catch (e) {
+    result = { error: e instanceof Error ? e.message : String(e) }
+  } finally {
+    appState = { ...appState, factoryLastRun: now }
+    saveState(statePath, appState)
+    factoryError = result.error
+    isFactoryRunning = false
+    pushFactory()
+  }
+  return result
+}
+
+const checkFactory = (): void => {
+  if (isFactoryDue(appState.factoryLastRun, Date.now())) void runFactory()
+}
+
+const factoryDay = (): string | null => latestDay([...listDir(factoryPath('reports')), ...listDir(factoryPath('proposals'))])
+
+const factoryProposals = (day: string | null): Proposal[] => {
+  if (!day) return []
+  const json = readJson(factoryPath('proposals', `${day}.json`))
+  const list = json && typeof json === 'object' && !Array.isArray(json) ? (json as { proposals?: unknown }).proposals : json
+  return parseProposals(list, homedir())
+}
+
+const factoryProposal = (id: string): Proposal | null => factoryProposals(factoryDay()).find((p) => p.id === id) ?? null
+
+const factoryDismissed = (): ReturnType<typeof dismissedList> => dismissedList(readJson(factoryPath('dismissed.json')))
+
+const dayDigests = (date: string): Digest[] =>
+  listDir(factoryPath('digests', date))
+    .filter((name) => name.endsWith('.json'))
+    .flatMap((name) => {
+      const digest = readJson(factoryPath('digests', date, name)) as Digest | null
+      return digest && typeof digest.tokensRead === 'number' ? [digest] : []
+    })
+
+const factoryReport = (): FactoryReport => {
+  const day = factoryDay()
+  const dismissed = factoryDismissed()
+  const reportPath = day ? factoryPath('reports', `${day}.md`) : null
+  const dates = listDir(factoryPath('digests')).filter((name) => DAY_DIR.test(name)).sort().slice(-FACTORY_TREND_DAYS)
+  return {
+    day,
+    report: reportPath && existsSync(reportPath) ? readText(reportPath) : null,
+    proposals: factoryProposals(day).map((p) => ({ ...p, isDismissed: isDismissedBy(dismissed, p) })),
+    trend: tokenTrend(Object.fromEntries(dates.map((date) => [date, dayDigests(date)]))),
+    isRunning: isFactoryRunning,
+    lastRun: appState.factoryLastRun,
+    lastError: factoryError
+  }
+}
+
+const confirmFactory = async (p: Proposal): Promise<boolean> => {
+  const options = {
+    type: 'question' as const,
+    buttons: ['Cancel', 'Apply'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Claude Cockpit',
+    message: `Apply "${p.title}"?`,
+    detail: `${p.target}\n\n- ${p.find}\n\n+ ${p.replace}`
+  }
+  const parent = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow : null
+  const answer = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options)
+  return answer.response === 1
+}
+
+const applyFactoryProposal = async (id: string): Promise<{ error: string | null }> => {
+  const p = factoryProposal(id)
+  if (!p) return { error: 'Proposal not found' }
+  if (!(await confirmFactory(p))) return { error: 'cancelled' }
+  const text = readText(p.target)
+  if (text === null) return { error: `Cannot read ${p.target}` }
+  const result = applyProposal(text, p)
+  if ('error' in result) return { error: result.error }
+  try {
+    writeFileSync(p.target, result.text, 'utf8')
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) }
+  }
+  pushFactory()
+  return { error: null }
+}
+
+const dismissFactoryProposal = (id: string): { error: string | null } => {
+  const p = factoryProposal(id)
+  if (!p) return { error: 'Proposal not found' }
+  try {
+    mkdirSync(FACTORY_DIR, { recursive: true })
+    writeFileSync(factoryPath('dismissed.json'), JSON.stringify(withDismissed(factoryDismissed(), p), null, 2), 'utf8')
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) }
+  }
+  pushFactory()
+  return { error: null }
+}
+
+const testFactoryProposal = async (id: string): Promise<{ error: string | null; sessionId?: string }> => {
+  const p = factoryProposal(id)
+  if (!p) return { error: 'Proposal not found' }
+  const exe = resolveClaudeExe()
+  if (!exe) return { error: 'claude.exe not found' }
+  const out = await spawnBackground(exe, joinPath(homedir(), '.claude'), factoryTestArgs(p))
+  const shortId = parseBgId(out)
+  if (!shortId) return { error: out.trim().split(/\r?\n/).pop() || 'claude did not start' }
+  const sessionId = (await waitForSessionId(shortId, 10000)) ?? shortId
+  void refreshAgents().then(() => pushSessions())
+  return { error: null, sessionId }
+}
+
+const branchFolder = async (repo: string, branch: string): Promise<string | null> => {
+  const list = await runGit(repo, ['worktree', 'list', '--porcelain'])
+  const folder = list.isOk ? worktreeForBranch(list.out, branch) : null
+  return folder ? folder.replace(/\//g, '\\') : null
+}
+
+const addBranchWorktree = async (repo: string, key: string, branch: string): Promise<string | null> => {
+  const worktree = taskWorktree(repo, key)
+  if (existsSync(worktree)) return null
+  await runGit(repo, ['fetch', 'origin', branch])
+  const added = await runGit(repo, ['worktree', 'add', worktree, branch])
+  if (!added.isOk) return null
+  linkNodeModules(worktree, repo)
+  return worktree
+}
+
+const findHandoff = (ticket: string): string | null => {
+  const candidates = listDir(opisDir()).flatMap((month) => {
+    const path = joinPath(opisDir(), month, ticket, 'handoff.md')
+    try {
+      return [{ path, updatedAt: statSync(path).mtimeMs }]
+    } catch {
+      return []
+    }
+  })
+  return candidates.sort((a, b) => b.updatedAt - a.updatedAt)[0]?.path ?? null
+}
+
+const handoffSizeOf = (path: string): HandoffSize | null => {
+  try {
+    return parseHandoffSize(readFileSync(path, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+const FLOW_SKILL = joinPath(homedir(), '.claude', 'skills', 'task-workflow', 'SKILL.md')
+
+const flowTicket = (key: string): FlowTicket => {
+  const path = findHandoff(key)
+  const text = path ? readText(path) : null
+  if (!text) return { key, n: null, stage: '', next: '', firstStep: '', size: null, risk: null }
+  const size = parseHandoffSize(text)
+  return { key, ...parseHandoffStage(text), size: size?.size ?? null, risk: size?.risk ?? null }
+}
+
+const FLOW_AGENTS = joinPath(homedir(), '.claude', 'agents')
+const FLOW_SETTINGS = joinPath(homedir(), '.claude', 'settings.json')
+
+const flowAgents = (): FlowAgent[] =>
+  listDir(FLOW_AGENTS)
+    .filter((file) => file.endsWith('.md'))
+    .flatMap((file) => parseAgentFile(readText(joinPath(FLOW_AGENTS, file)) ?? '') ?? [])
+
+const flowState = (keys: string[]): FlowState => {
+  const raw = readText(FLOW_SKILL)
+  const agents = flowAgents()
+  const names = agents.map((a) => a.name)
+  const skill = raw === null ? { stages: [], sizes: [], risk: [], error: 'SKILL.md not found' } : parseWorkflow(raw, names)
+  const updatedAt = raw === null ? 0 : (statSync(FLOW_SKILL, { throwIfNoEntry: false })?.mtimeMs ?? 0)
+  const boosters = parseBoosters(readText(FLOW_SETTINGS) ?? '')
+  return { skill, raw: raw ?? '', skillPath: FLOW_SKILL, updatedAt, tickets: keys.map(flowTicket), agents, boosters }
+}
+
+const readExplanations = (ticket: string): Record<string, string> => {
+  const folders = listDir(opisDir())
+    .map((month) => joinPath(opisDir(), month, ticket, 'odpowiedzi-cr'))
+    .flatMap((dir) => {
+      try {
+        return [{ dir, updatedAt: statSync(joinPath(dir, 'index.json')).mtimeMs }]
+      } catch {
+        return []
+      }
+    })
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+  const dir = folders[0]?.dir
+  if (!dir) return {}
+  try {
+    const files = explanationFiles(JSON.parse(readFileSync(joinPath(dir, 'index.json'), 'utf8').replace(/^﻿/, '')))
+    return Object.fromEntries(
+      Object.entries(files).flatMap(([id, file]) => {
+        const text = readText(joinPath(dir, file))
+        return text ? [[id, text.slice(0, 20000)]] : []
+      })
+    )
+  } catch {
+    return {}
+  }
+}
+
+const startingAddress = new Set<string>()
+
+const startAddress = async (key: string): Promise<{ error: string | null; sessionId?: string }> => {
+  const mr = mrItems.find((m) => m.key === key)
+  if (!mr) return { error: 'merge request not found' }
+  if (startingAddress.has(key)) return { error: 'Addressing comments is already starting' }
+  const repo = repoForProject(mr.projectPath, repoRoots(lastSessions))
+  if (!repo) return { error: `No local repo for ${mr.projectName}` }
+  const exe = resolveClaudeExe()
+  if (!exe) return { error: 'claude.exe not found' }
+  startingAddress.add(key)
+  let isStarted = false
+  try {
+    const ticket = mr.ticket ?? `MR-${mr.iid}`
+    const folder = (await branchFolder(repo, mr.sourceBranch)) ?? (await addBranchWorktree(repo, ticket, mr.sourceBranch))
+    if (folder) prepareTaskBrowser(ticket.toUpperCase(), folder)
+    const handoff = findHandoff(ticket)
+    const model = handoff && handoffSizeOf(handoff)?.risk === 'critical' ? 'opus' : 'sonnet'
+    const args = addressArgs({ iid: mr.iid, url: mr.url, ticket, folder, repo, branch: mr.sourceBranch, handoff, model })
+    const out = await spawnBackground(exe, folder ?? repo, args)
+    const shortId = parseBgId(out)
+    if (!shortId) return { error: out.trim().split(/\r?\n/).pop() || 'claude did not start' }
+    isStarted = true
+    const id = (await waitForSessionId(shortId, 10000)) ?? shortId
+    appState = applyTicketOverride(appState, id, ticket)
+    saveState(statePath, appState)
+    void refreshAgents().then(() => pushSessions())
+    return { error: null, sessionId: id }
+  } finally {
+    if (isStarted) setTimeout(() => startingAddress.delete(key), 30000)
+    else startingAddress.delete(key)
+  }
+}
+
 const findExplainFile = (key: string): ExplainFile | null => {
   const candidates = listDir(EXPLAIN_ROOT).flatMap((month) => {
     const json = joinPath(EXPLAIN_ROOT, month, key, 'wyjasnienie-zmian.json')
@@ -1563,6 +1934,62 @@ const takeOver = async (id: string, cols: number, rows: number): Promise<{ error
   return openTerminal(id, cols, rows)
 }
 
+const takeOverInteractive = async (id: string, cols: number, rows: number): Promise<{ error: string | null }> => {
+  const s = sessionById(id)
+  if (!s) return { error: 'session not found' }
+  const options = {
+    type: 'question' as const,
+    buttons: ['Cancel', 'Take over here'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Claude Cockpit',
+    message: 'Take this session over in the dashboard?',
+    detail: `${s.name ?? s.ticket ?? s.projectName}\n\nThe Claude process that keeps it open (a VS Code terminal, or one left over after VS Code closed) is stopped, and the session continues here with its whole conversation. If Claude is in the middle of a turn, that turn stops.`
+  }
+  const parent = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow : null
+  const answer = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options)
+  if (answer.response !== 1) return { error: 'cancelled' }
+  handedToVscode.delete(id)
+  for (const pid of await runningResumePids(id)) await killProcess(pid, true)
+  await new Promise((r) => setTimeout(r, 800))
+  await Promise.all([refreshRunning(), refreshAgents()])
+  await pushSessions()
+  return openTerminal(id, cols, rows)
+}
+
+const stopBackground = (exe: string, id: string): Promise<boolean> =>
+  new Promise((resolve) => {
+    execFile(exe, ['stop', id.slice(0, 8)], { windowsHide: true, timeout: 20000 }, (error) => resolve(!error))
+  })
+
+const closeSessionTab = async (id: string): Promise<{ error: string | null }> => {
+  const s = sessionById(id)
+  if (!s) return { error: 'session not found' }
+  const options = {
+    type: 'question' as const,
+    buttons: ['Cancel', 'Close session'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Claude Cockpit',
+    message: 'Close this Claude session?',
+    detail: `${s.name ?? s.ticket ?? s.projectName}\n\nThe Claude process is stopped wherever it runs (here, a VS Code terminal or another window). If Claude is in the middle of a turn, that turn stops. The conversation stays and can be resumed later.`
+  }
+  const parent = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow : null
+  const answer = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options)
+  if (answer.response !== 1) return { error: 'cancelled' }
+  openGuard.cancel(id)
+  ptyHost.close(id)
+  handedToVscode.delete(id)
+  const exe = resolveClaudeExe()
+  if (exe && bgAgents.has(id)) await stopBackground(exe, id)
+  await killSessions([id])
+  for (const pid of await runningResumePids(id)) await killProcess(pid, true)
+  await new Promise((r) => setTimeout(r, 800))
+  await Promise.all([refreshRunning(), refreshAgents()])
+  await pushSessions()
+  return (await runningResumePids(id)).length ? { error: 'The Claude process is still running' } : { error: null }
+}
+
 const openTerminalInVscode = async (id: string): Promise<void> => {
   const s = sessionById(id)
   openGuard.cancel(id)
@@ -1590,14 +2017,44 @@ function notifyNeedsYou(s: Session): void {
   n.on('close', () => shownNotifications.delete(n))
   n.on('click', () => {
     shownNotifications.delete(n)
-    if (mainWindow) {
-      mainWindow.show()
-      mainWindow.focus()
-    }
-    openSession(s)
+    focusInDashboard({ ticket: s.ticket ?? null, sessionId: s.id })
   })
   n.show()
   mainWindow?.webContents.send('play-alert')
+}
+
+function notifyIdle(s: Session): void {
+  if (!Notification.isSupported()) return
+  const n = new Notification({
+    title: clip(`Idle with a large context: ${s.ticket ?? s.name ?? s.projectName}`, 120),
+    body: `${Math.round((s.contextTokens ?? 0) / 1000)}k tokens — the cache has expired, so the next turn re-reads everything. Hand off and /clear before resuming.`,
+    icon,
+    silent: true
+  })
+  shownNotifications.add(n)
+  n.on('close', () => shownNotifications.delete(n))
+  n.on('click', () => {
+    shownNotifications.delete(n)
+    focusInDashboard({ ticket: s.ticket ?? null, sessionId: s.id })
+  })
+  n.show()
+}
+
+function notifyContext(s: Session): void {
+  if (!Notification.isSupported()) return
+  const n = new Notification({
+    title: clip(`Context is large: ${s.ticket ?? s.name ?? s.projectName}`, 120),
+    body: `${Math.round((s.contextTokens ?? 0) / 1000)}k tokens are re-read on every turn. Compact it or hand off to a fresh session.`,
+    icon,
+    silent: true
+  })
+  shownNotifications.add(n)
+  n.on('close', () => shownNotifications.delete(n))
+  n.on('click', () => {
+    shownNotifications.delete(n)
+    focusInDashboard({ ticket: s.ticket ?? null, sessionId: s.id })
+  })
+  n.show()
 }
 
 function updateAttention(sessions: Session[]): void {
@@ -1780,6 +2237,8 @@ const openDashboard = (): void => {
     win.webContents.send('my-tasks', myTasks)
     win.webContents.send('usage-update', lastUsage)
     void pushSessions()
+    if (pendingFocus) win.webContents.send('focus-session', pendingFocus)
+    pendingFocus = null
   })
   win.on('close', () => {
     appState = { ...appState, dashboardBounds: win.getBounds() }
@@ -1796,6 +2255,16 @@ const openDashboard = (): void => {
   })
   dashboardWindow = win
   loadRenderer(win, 'dashboard')
+}
+
+type FocusTarget = { ticket: string | null; sessionId: string }
+let pendingFocus: FocusTarget | null = null
+
+const focusInDashboard = (target: FocusTarget): void => {
+  const isOpen = !!dashboardWindow && !dashboardWindow.isDestroyed()
+  if (!isOpen) pendingFocus = target
+  openDashboard()
+  if (isOpen) dashboardWindow?.webContents.send('focus-session', target)
 }
 
 let launcherWindow: BrowserWindow | null = null
@@ -1965,6 +2434,43 @@ if (!app.requestSingleInstanceLock()) {
     }
   })
 
+  const gitlabOrigin = (): string | null => {
+    try {
+      return new URL(appState.settings.gitlabBase).origin
+    } catch {
+      return null
+    }
+  }
+  const withGitlabCookies = async (origin: string, headers: Record<string, string>): Promise<Record<string, string>> => {
+    if (headers.Cookie) return headers
+    const cookies = await session.defaultSession.cookies.get({ url: origin }).catch(() => [])
+    return cookies.length ? { ...headers, Cookie: cookies.map((c) => `${c.name}=${c.value}`).join('; ') } : headers
+  }
+  const SIGN_IN_PATH = /^\/users\/(sign_in|auth|password|two_factor|sign_up)|^\/oauth\//
+  const signInGitlab = (parent: BrowserWindow | null): Promise<boolean> =>
+    new Promise((resolve) => {
+      const origin = gitlabOrigin()
+      if (!origin) {
+        resolve(false)
+        return
+      }
+      const win = new BrowserWindow({ width: 560, height: 760, parent: parent ?? undefined, autoHideMenuBar: true, title: 'Sign in to GitLab' })
+      let isDone = false
+      const finish = (isSignedIn: boolean): void => {
+        if (isDone) return
+        isDone = true
+        resolve(isSignedIn)
+        if (!win.isDestroyed()) win.close()
+      }
+      const onNavigate = (_e: unknown, url: string): void => {
+        const isOrigin = url.startsWith(`${origin}/`)
+        if (isOrigin && !SIGN_IN_PATH.test(new URL(url).pathname)) finish(true)
+      }
+      win.webContents.on('did-navigate', onNavigate)
+      win.on('closed', () => finish(false))
+      void win.loadURL(`${origin}/users/sign_in`)
+    })
+
   app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.electron.app')
 
@@ -1973,18 +2479,16 @@ if (!app.requestSingleInstanceLock()) {
   statePath = join(app.getPath('userData'), 'state.json')
   appState = loadState(statePath)
   session.defaultSession.webRequest.onBeforeSendHeaders(
-    { urls: ['https://*/api/v4/projects/*/uploads/*', 'http://*/api/v4/projects/*/uploads/*'] },
+    { urls: ['https://*/api/v4/projects/*/uploads/*', 'http://*/api/v4/projects/*/uploads/*', 'https://*/-/project/*/uploads/*', 'http://*/-/project/*/uploads/*'] },
     (details, callback) => {
       const token = appState.settings.gitlabToken.trim()
-      const origin = ((): string | null => {
-        try {
-          return new URL(appState.settings.gitlabBase).origin
-        } catch {
-          return null
-        }
-      })()
-      const isOurs = !!token && !!origin && details.url.startsWith(`${origin}/`)
-      callback({ requestHeaders: isOurs ? { ...details.requestHeaders, 'PRIVATE-TOKEN': token } : details.requestHeaders })
+      const origin = gitlabOrigin()
+      const isOurs = !!origin && details.url.startsWith(`${origin}/`)
+      if (isOurs && !details.url.includes('/api/v4/')) {
+        void withGitlabCookies(origin, details.requestHeaders).then((requestHeaders) => callback({ requestHeaders }))
+        return
+      }
+      callback({ requestHeaders: isOurs && token ? { ...details.requestHeaders, 'PRIVATE-TOKEN': token } : details.requestHeaders })
     }
   )
   applyLaunchOnStartup(appState.settings.launchOnStartup)
@@ -2238,6 +2742,13 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle('explain-start', (_e, key: string, cwd: string, sourceSessionId: string | null) =>
     startExplain(key, cwd, sourceSessionId)
   )
+  ipcMain.handle('factory-report', () => factoryReport())
+  ipcMain.handle('flow-state', (_e, keys: string[]) => flowState(keys))
+  ipcMain.on('flow-open-skill', () => void shell.openPath(FLOW_SKILL))
+  ipcMain.handle('factory-run-now', () => runFactory())
+  ipcMain.handle('factory-apply', (_e, id: string) => applyFactoryProposal(id))
+  ipcMain.handle('factory-dismiss', (_e, id: string) => dismissFactoryProposal(id))
+  ipcMain.handle('factory-test', (_e, id: string) => testFactoryProposal(id))
   ipcMain.handle('explain-md-text', (_e, key: string) => {
     const found = findExplainFile(key)
     return found && existsSync(found.mdPath) ? readText(found.mdPath) : null
@@ -2311,10 +2822,9 @@ if (!app.requestSingleInstanceLock()) {
     const mr = mrItems.find((m) => m.key === key)
     const repo = mr ? repoForProject(mr.projectPath, repoRoots(lastSessions)) : null
     if (!mr || !repo) return { repo: null, folder: null }
-    const list = await runGit(repo, ['worktree', 'list', '--porcelain'])
-    const folder = list.isOk ? worktreeForBranch(list.out, mr.sourceBranch) : null
-    return { repo, folder: folder ? folder.replace(/\//g, '\\') : null }
+    return { repo, folder: await branchFolder(repo, mr.sourceBranch) }
   })
+  ipcMain.handle('mr-start-address', (_e, key: string) => startAddress(key))
   ipcMain.handle('local-hosts', () => listLocalHosts())
   ipcMain.handle('close-chrome', async (_e, key: string | null) => ({ error: await closeChrome(typeof key === 'string' ? key : null) }))
   ipcMain.handle('ticket-server', async (_e, key: string, cwd: string | null) => bridgeRoutes['/server']({ ticket: key, cwd: cwd ?? '' }))
@@ -2329,9 +2839,25 @@ if (!app.requestSingleInstanceLock()) {
   })
   ipcMain.handle('mr-status', async (_e, key: string) => {
     const found = mrForAction(key)
-    if (!found) return { state: null, overview: null, approvals: null, discussions: null, problem: 'This merge request is no longer in your list' }
+    if (!found) return { state: null, overview: null, approvals: null, discussions: null, drafts: null, diffRefs: null, problem: 'This merge request is no longer in your list' }
     return fetchMrStatus(appState.settings.gitlabBase, found.token, found.mr.projectId, found.mr.iid)
   })
+  const offerReleaseStatus = async (ticket: string | null): Promise<string | null> => {
+    const token = appState.settings.jiraToken.trim()
+    if (!ticket || !token) return null
+    const list = await fetchTransitions(appState.settings.jiraBase, token, ticket)
+    const step = list ? releaseTransition(list) : null
+    if (!step) return `${ticket} cannot move to Waiting for internal release from its current status, so it stays where it is.`
+    const isConfirmed = await confirmMr(
+      `Move ${ticket} to ${step.to}?`,
+      `Move to ${step.to}`,
+      `The merge request is merged, so ${ticket} no longer needs to be in code review.`
+    )
+    if (!isConfirmed) return null
+    if (!(await doTransition(appState.settings.jiraBase, token, ticket, step.id))) return `Jira did not accept moving ${ticket} to ${step.to}.`
+    void refreshMyTasks()
+    return `${ticket} moved to ${step.to}.`
+  }
   ipcMain.handle('mr-action', async (_e, key: string, action: MrAction, options: MergeOptions | null) => {
     const found = mrForAction(key)
     const text = MR_ACTION_TEXT[action]
@@ -2342,7 +2868,8 @@ if (!app.requestSingleInstanceLock()) {
     const error = await runMrAction(appState.settings.gitlabBase, found.token, found.mr.projectId, found.mr.iid, action, options ?? null)
     forgetApprovals(key)
     if (!error) void refreshMyMrs()
-    return { error, isCancelled: false }
+    const notice = action === 'merge' && !error ? await offerReleaseStatus(found.mr.ticket) : null
+    return { error, isCancelled: false, notice }
   })
   ipcMain.handle('mr-reply', async (_e, key: string, discussionId: string, body: string) => {
     const found = mrForAction(key)
@@ -2359,6 +2886,99 @@ if (!app.requestSingleInstanceLock()) {
     const preview = body.length > 600 ? `${body.slice(0, 600)}…` : body
     if (!(await confirmMr(`Post this comment on !${found.mr.iid}?`, 'Post comment', preview))) return { error: null, isCancelled: true }
     return { error: await postMrComment(appState.settings.gitlabBase, found.token, found.mr.projectId, found.mr.iid, body), isCancelled: false }
+  })
+  const linePosition = async (found: { mr: MrItem; token: string }, anchor: MrLineAnchor): Promise<{ position: MrLinePosition } | { error: string }> => {
+    const base = appState.settings.gitlabBase
+    const [head, file] = await Promise.all([
+      fetchMrHead(base, found.token, found.mr.projectId, found.mr.iid),
+      fetchMrDiffFile(base, found.token, found.mr.projectId, found.mr.iid, anchor.path)
+    ])
+    return anchorPosition(head.diffRefs, file, anchor)
+  }
+  const runReview = async (found: { mr: MrItem; token: string }, action: MrReviewAction): Promise<string | null> => {
+    const base = appState.settings.gitlabBase
+    const { projectId, iid } = found.mr
+    const token = found.token
+    switch (action.kind) {
+      case 'draft-add': {
+        const placed = action.anchor ? await linePosition(found, action.anchor) : null
+        if (placed && 'error' in placed) return placed.error
+        return createDraftNote(base, token, projectId, iid, { body: action.body, position: placed?.position, replyTo: action.replyTo })
+      }
+      case 'draft-edit':
+        return updateDraftNote(base, token, projectId, iid, action.id, action.body)
+      case 'draft-delete':
+        return deleteDraftNote(base, token, projectId, iid, action.id)
+      case 'submit-review':
+        return publishDraftNotes(base, token, projectId, iid)
+      case 'line-comment': {
+        const placed = await linePosition(found, action.anchor)
+        return 'error' in placed ? placed.error : postLineComment(base, token, projectId, iid, action.body, placed.position)
+      }
+      case 'reply':
+        return postMrReply(base, token, projectId, iid, action.discussionId, action.body)
+      case 'resolve':
+        return setDiscussionResolved(base, token, projectId, iid, action.discussionId, action.isResolved)
+      case 'note-edit':
+        return updateNote(base, token, projectId, iid, action.discussionId, action.noteId, action.body)
+      case 'note-delete':
+        return deleteNote(base, token, projectId, iid, action.discussionId, action.noteId)
+      case 'set-draft': {
+        const head = await fetchMrHead(base, token, projectId, iid)
+        if (head.problem) return head.problem
+        return updateMr(base, token, projectId, iid, { title: withDraftTitle(head.title || action.title, action.isDraft) })
+      }
+      case 'edit-text': {
+        const head = await fetchMrHead(base, token, projectId, iid)
+        if (head.problem) return head.problem
+        return updateMr(base, token, projectId, iid, {
+          ...(action.title !== undefined ? { title: withDraftTitle(action.title, head.isDraft) } : {}),
+          ...(action.description !== undefined ? { description: action.description } : {})
+        })
+      }
+    }
+  }
+  const reviewDetail = (mr: MrItem, action: MrReviewAction): string => {
+    const where = 'anchor' in action && action.anchor ? `On ${action.anchor.path}:${action.anchor.line}
+` : ''
+    const text = where + ('body' in action ? action.body : action.kind === 'edit-text' ? (action.description ?? action.title ?? '') : '')
+    const line = `!${mr.iid} ${mr.title}
+${mr.projectPath} · ${mr.sourceBranch} → ${mr.targetBranch}`
+    return text ? `${line}
+
+${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
+  }
+  ipcMain.handle('ticket-mr', async (_e, ticket: string) => {
+    const token = appState.settings.gitlabToken.trim()
+    if (!token || !/^[A-Z][A-Z0-9]*-\d+$/i.test(ticket ?? '')) return null
+    return findTicketMr(appState.settings.gitlabBase, token, ticket.toUpperCase())
+  })
+  ipcMain.handle('mr-review', async (_e, key: string, action: MrReviewAction) => {
+    const found = mrForAction(key)
+    if (!found || !action?.kind) return { error: 'This merge request is no longer in your list', isCancelled: false }
+    if ('body' in action && !action.body.trim()) return { error: 'The comment is empty', isCancelled: false }
+    const ask = reviewConfirm(action, found.mr.iid)
+    if (ask && !(await confirmMr(ask.question, ask.button, reviewDetail(found.mr, action)))) return { error: null, isCancelled: true }
+    const error = await runReview(found, action)
+    if (!error && (action.kind === 'set-draft' || action.kind === 'edit-text')) void refreshMyMrs()
+    return { error, isCancelled: false }
+  })
+  ipcMain.handle('mr-explanations', (_e, key: string) => {
+    const mr = mrItems.find((m) => m.key === key)
+    return readExplanations(mr?.ticket ?? `MR-${mr?.iid ?? ''}`)
+  })
+  ipcMain.handle('gitlab-sign-in',(e) => signInGitlab(BrowserWindow.fromWebContents(e.sender)))
+  ipcMain.handle('mr-commentable',async (_e, key: string, folder: string | null, isReadOnly: boolean, path: string | null): Promise<MrCommentable> => {
+    const found = mrForAction(key)
+    if (!found) return { isAllowed: false, reason: 'This merge request is no longer in your list' }
+    const head = await fetchMrHead(appState.settings.gitlabBase, found.token, found.mr.projectId, found.mr.iid)
+    const repo = isReadOnly ? repoForProject(found.mr.projectPath, repoRoots(lastSessions)) : folder
+    if (!repo) return { isAllowed: false, reason: 'No local folder for this repository.' }
+    const shown = await runGit(repo, ['rev-parse', isReadOnly ? `origin/${found.mr.sourceBranch}` : 'HEAD'])
+    const dirty = !isReadOnly && path ? await runGit(repo, ['status', '--porcelain', '--', path]) : null
+    const headSha = head.diffRefs?.headSha ?? null
+    const state = commentableState({ headSha, shownSha: shown.isOk ? shown.out.trim() : null, isFileDirty: !!dirty?.out.trim(), isLatestVersion: true })
+    return { ...state, headSha, path: path ?? undefined }
   })
   ipcMain.on('set-mr-projects-all', (_e, isAll: boolean) => {
     isAllProjects = isAll
@@ -2384,7 +3004,9 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle('terminal-send-prompt', (_e, id: string, text: string) => sendPrompt(id, text))
   ipcMain.on('terminal-stop-turn', (_e, id: string) => ptyHost.write(id, STOP_TURN))
   ipcMain.handle('terminal-take-over', (_e, id: string, cols: number, rows: number) => takeOver(id, cols, rows))
+  ipcMain.handle('terminal-take-over-interactive', (_e, id: string, cols: number, rows: number) => takeOverInteractive(id, cols, rows))
   ipcMain.handle('terminal-open-vscode', (_e, id: string) => openTerminalInVscode(id))
+  ipcMain.handle('session-close', (_e, id: string) => closeSessionTab(id))
   ipcMain.handle('session-detail', (_e, id: string) => sessionDetail(id))
   ipcMain.handle('ticket-description', (_e, key: string) =>
     appState.settings.jiraToken ? fetchDescription(appState.settings.jiraBase, appState.settings.jiraToken, key) : null
@@ -2486,6 +3108,8 @@ if (!app.requestSingleInstanceLock()) {
   wireSessions(mainWindow)
   buildTray(mainWindow)
   wireDock(mainWindow)
+  checkFactory()
+  setInterval(checkFactory, FACTORY_CHECK)
 
   mainWindow.on('close', (e) => {
     console.log('[diag] window close event, isQuiting=', (app as never as { isQuiting?: boolean }).isQuiting)

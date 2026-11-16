@@ -1,4 +1,4 @@
-import type { DiffRow, MrApprovals, MrDiscussion, MrOverview, MrSnippet, MrState, MrStatus, MrVersionDiff } from '../renderer/src/types'
+import type { DiffRow, MrApprovals, MrDiffRefs, MrDiscussion, MrDraftNote, MrLinePosition, MrOverview, MrSnippet, MrState, MrStatus, MrVersionDiff, TicketMr } from '../renderer/src/types'
 
 const REQUEST_TIMEOUT_MS = 15000
 
@@ -94,7 +94,7 @@ export const snippetFromDiff = (diff: string, line: number, side: 'new' | 'old')
   return hit >= 0 ? around(hunk, hit) : null
 }
 
-const anchorOf = (position: any): MrDiscussion['anchor'] => {
+export const anchorOf = (position: any): MrDiscussion['anchor'] => {
   if (!position) return null
   const isNew = typeof position.new_line === 'number'
   const path = isNew ? asText(position.new_path) : asText(position.old_path)
@@ -103,7 +103,7 @@ const anchorOf = (position: any): MrDiscussion['anchor'] => {
   return path && typeof line === 'number' && sha ? { path, line, sha, side: isNew ? 'new' : 'old' } : null
 }
 
-export const parseDiscussions = (json: unknown): MrDiscussion[] =>
+export const parseDiscussions = (json: unknown, myId: number | null = null): MrDiscussion[] =>
   Array.isArray(json)
     ? json.flatMap((d: any): MrDiscussion[] => {
         const raw = Array.isArray(d?.notes) ? d.notes.filter(Boolean) : []
@@ -120,19 +120,31 @@ export const parseDiscussions = (json: unknown): MrDiscussion[] =>
             where: path ? `${path}${typeof line === 'number' ? `:${line}` : ''}` : null,
             anchor: anchorOf(first.position),
             snippet: null,
-            notes: raw.map((n: any) => ({ id: n.id, author: asText(n.author?.name), body: asText(n.body), createdAt: asText(n.created_at) }))
+            notes: raw.map((n: any) => ({ id: n.id, author: asText(n.author?.name), body: asText(n.body), createdAt: asText(n.created_at), isMine: myId !== null && n.author?.id === myId && n.system !== true }))
           }
         ]
       })
     : []
 
+export const parseDraftNotes = (json: unknown): MrDraftNote[] =>
+  Array.isArray(json)
+    ? json
+        .filter((d: any) => typeof d?.id === 'number')
+        .map((d: any) => ({
+          id: d.id,
+          body: typeof d.note === 'string' ? d.note : '',
+          replyTo: typeof d.discussion_id === 'string' && d.discussion_id ? d.discussion_id : null,
+          anchor: anchorOf(d.position)
+        }))
+    : []
+
 const request = async (
   base: string,
   token: string,
-  method: 'GET' | 'POST' | 'PUT',
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   body?: unknown
-): Promise<{ json: any; problem: string | null }> => {
+): Promise<{ json: any; problem: string | null; nextPage?: string | null }> => {
   try {
     const res = await fetch(`${new URL(base).origin}/api/v4${path}`, {
       method,
@@ -141,7 +153,7 @@ const request = async (
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     })
     const json = await res.json().catch(() => null)
-    if (res.ok) return { json, problem: null }
+    if (res.ok) return { json, problem: null, nextPage: res.headers.get('x-next-page') || null }
     const message = asText(json?.message) || asText(json?.error) || (json?.message ? JSON.stringify(json.message) : '')
     return { json: null, problem: `HTTP ${res.status}${message ? `: ${message}` : ''}` }
   } catch (err) {
@@ -202,18 +214,21 @@ export const fetchMrStatus = async (base: string, token: string, projectId: numb
     const me = await request(base, token, 'GET', '/user')
     myIdCache = typeof me.json?.id === 'number' ? me.json.id : null
   }
-  const [mr, approvals, discussions, diffs] = await Promise.all([
+  const [mr, approvals, discussions, drafts, diffs] = await Promise.all([
     request(base, token, 'GET', `${mrPath(projectId, iid)}?include_diverged_commits_count=true&render_html=true`),
     request(base, token, 'GET', `${mrPath(projectId, iid)}/approvals`),
-    request(base, token, 'GET', `${mrPath(projectId, iid)}/discussions?per_page=100`),
+    fetchAllPages(base, token, `${mrPath(projectId, iid)}/discussions`),
+    fetchAllPages(base, token, `${mrPath(projectId, iid)}/draft_notes`),
     request(base, token, 'GET', `${mrPath(projectId, iid)}/diffs?per_page=100`)
   ])
   return {
     state: mr.json ? parseMrState(mr.json) : null,
     overview: mr.json ? parseMrOverview(mr.json) : null,
     approvals: approvals.json ? parseApprovals(approvals.json, myIdCache) : null,
-    discussions: discussions.json ? await withSnippets(base, token, projectId, parseDiscussions(discussions.json), diffsByPath(diffs.json)) : null,
-    problem: mr.problem ?? approvals.problem ?? discussions.problem
+    discussions: discussions.json ? await withSnippets(base, token, projectId, parseDiscussions(discussions.json, myIdCache), diffsByPath(diffs.json)) : null,
+    drafts: drafts.json ? parseDraftNotes(drafts.json) : null,
+    diffRefs: parseDiffRefs(mr.json),
+    problem: mr.problem ?? approvals.problem ?? discussions.problem ?? drafts.problem
   }
 }
 
@@ -255,12 +270,15 @@ export const fetchVersionDiff = async (
     'GET',
     `/projects/${projectId}/repository/compare?from=${encodeURIComponent(startSha)}&to=${encodeURIComponent(head)}&straight=true`
   )
-  const all = (Array.isArray(compare.json?.diffs) ? compare.json.diffs : []).map((d: any) => ({
+  const isFallback = !!compare.problem && Array.isArray(version.json?.diffs)
+  const source = isFallback ? version.json.diffs : compare.json?.diffs
+  const all = (Array.isArray(source) ? source : []).map((d: any) => ({
     path: asText(d?.new_path) || asText(d?.old_path),
     rows: diffRows(asText(d?.diff))
   }))
   const matching = path ? all.filter((f: { path: string }) => f.path === path) : []
-  return { files: matching.length ? matching : all, problem: compare.problem }
+  const problem = isFallback ? 'Showing this whole version against the target branch, because the token cannot compare commits.' : compare.problem
+  return { files: matching.length ? matching : all, problem }
 }
 
 export type MrAction = 'approve' | 'unapprove' | 'merge' | 'rebase'
@@ -300,3 +318,127 @@ export const postMrReply = async (base: string, token: string, projectId: number
 
 export const postMrComment = async (base: string, token: string, projectId: number, iid: number, body: string): Promise<string | null> =>
   (await request(base, token, 'POST', `${mrPath(projectId, iid)}/discussions`, { body })).problem
+
+export const fetchAllPages = async (base: string, token: string, path: string): Promise<{ json: unknown[] | null; problem: string | null }> => {
+  const all: unknown[] = []
+  let page: string | null = '1'
+  while (page) {
+    const glue = path.includes('?') ? '&' : '?'
+    const res = await request(base, token, 'GET', `${path}${glue}per_page=100&page=${page}`)
+    if (res.problem) return { json: null, problem: res.problem }
+    if (Array.isArray(res.json)) all.push(...res.json)
+    page = res.nextPage ?? null
+  }
+  return { json: all, problem: null }
+}
+
+export const createDraftNote = async (
+  base: string,
+  token: string,
+  projectId: number,
+  iid: number,
+  input: { body: string; position?: MrLinePosition; replyTo?: string }
+): Promise<string | null> =>
+  (
+    await request(base, token, 'POST', `${mrPath(projectId, iid)}/draft_notes`, {
+      note: input.body,
+      ...(input.position ? { position: input.position } : {}),
+      ...(input.replyTo ? { in_reply_to_discussion_id: input.replyTo } : {})
+    })
+  ).problem
+
+export const updateDraftNote = async (base: string, token: string, projectId: number, iid: number, draftId: number, body: string): Promise<string | null> =>
+  (await request(base, token, 'PUT', `${mrPath(projectId, iid)}/draft_notes/${draftId}`, { note: body })).problem
+
+export const deleteDraftNote = async (base: string, token: string, projectId: number, iid: number, draftId: number): Promise<string | null> =>
+  (await request(base, token, 'DELETE', `${mrPath(projectId, iid)}/draft_notes/${draftId}`)).problem
+
+export const publishDraftNotes = async (base: string, token: string, projectId: number, iid: number): Promise<string | null> =>
+  (await request(base, token, 'POST', `${mrPath(projectId, iid)}/draft_notes/bulk_publish`)).problem
+
+export const postLineComment = async (base: string, token: string, projectId: number, iid: number, body: string, position: MrLinePosition): Promise<string | null> =>
+  (await request(base, token, 'POST', `${mrPath(projectId, iid)}/discussions`, { body, position })).problem
+
+export const setDiscussionResolved = async (
+  base: string,
+  token: string,
+  projectId: number,
+  iid: number,
+  discussionId: string,
+  isResolved: boolean
+): Promise<string | null> =>
+  (await request(base, token, 'PUT', `${mrPath(projectId, iid)}/discussions/${encodeURIComponent(discussionId)}?resolved=${isResolved}`)).problem
+
+const notePath = (projectId: number, iid: number, discussionId: string, noteId: number): string =>
+  `${mrPath(projectId, iid)}/discussions/${encodeURIComponent(discussionId)}/notes/${noteId}`
+
+export const updateNote = async (base: string, token: string, projectId: number, iid: number, discussionId: string, noteId: number, body: string): Promise<string | null> =>
+  (await request(base, token, 'PUT', notePath(projectId, iid, discussionId, noteId), { body })).problem
+
+export const deleteNote = async (base: string, token: string, projectId: number, iid: number, discussionId: string, noteId: number): Promise<string | null> =>
+  (await request(base, token, 'DELETE', notePath(projectId, iid, discussionId, noteId))).problem
+
+export const updateMr = async (
+  base: string,
+  token: string,
+  projectId: number,
+  iid: number,
+  fields: { title?: string; description?: string }
+): Promise<string | null> => (await request(base, token, 'PUT', mrPath(projectId, iid), fields)).problem
+
+export const fetchMrHead = async (
+  base: string,
+  token: string,
+  projectId: number,
+  iid: number
+): Promise<{ diffRefs: MrDiffRefs | null; title: string; isDraft: boolean; problem: string | null }> => {
+  const mr = await request(base, token, 'GET', mrPath(projectId, iid))
+  return { diffRefs: parseDiffRefs(mr.json), title: asText(mr.json?.title), isDraft: mr.json?.draft === true, problem: mr.problem }
+}
+
+export const parseDiffRefs = (json: any): MrDiffRefs | null => {
+  const refs = json?.diff_refs
+  const baseSha = asText(refs?.base_sha)
+  const startSha = asText(refs?.start_sha)
+  const headSha = asText(refs?.head_sha)
+  return baseSha && startSha && headSha ? { baseSha, startSha, headSha } : null
+}
+
+export const fetchMrDiffFile = async (
+  base: string,
+  token: string,
+  projectId: number,
+  iid: number,
+  path: string
+): Promise<{ oldPath: string; newPath: string; diff: string; isTruncated: boolean } | null> => {
+  const pages = await fetchAllPages(base, token, `${mrPath(projectId, iid)}/diffs`)
+  if (!pages.json) return null
+  const list = pages.json as any[]
+  const hit = list.find((d) => asText(d?.new_path) === path) ?? list.find((d) => asText(d?.old_path) === path)
+  if (!hit) return { oldPath: path, newPath: path, diff: '', isTruncated: false }
+  return { oldPath: asText(hit.old_path), newPath: asText(hit.new_path), diff: asText(hit.diff), isTruncated: hit.too_large === true || hit.collapsed === true }
+}
+
+const mentionsTicket = (text: string, ticket: string): boolean => new RegExp(`(^|[^A-Z0-9-])${ticket}(?![0-9])`, 'i').test(text)
+
+const STATE_RANK: Record<string, number> = { opened: 0, merged: 1 }
+
+export const pickTicketMr = (json: unknown, ticket: string): TicketMr | null => {
+  const list = (Array.isArray(json) ? json : [])
+    .filter((m: any) => m?.state in STATE_RANK && (mentionsTicket(asText(m.title), ticket) || mentionsTicket(asText(m.source_branch), ticket)))
+    .sort((a: any, b: any) => STATE_RANK[a.state] - STATE_RANK[b.state])
+  const m: any = list[0]
+  return m
+    ? { iid: m.iid, projectId: m.project_id, state: asText(m.state), title: asText(m.title), url: asText(m.web_url), description: asText(m.description) }
+    : null
+}
+
+export const findTicketMr = async (base: string, token: string, ticket: string): Promise<TicketMr | null> => {
+  const res = await request(
+    base,
+    token,
+    'GET',
+    `/merge_requests?scope=created_by_me&state=all&search=${encodeURIComponent(ticket)}&in=title&order_by=updated_at&per_page=20`
+  )
+  return pickTicketMr(res.json, ticket)
+}

@@ -77,6 +77,7 @@ export interface State {
   mrSessions: Record<string, string>
   serverCommands: Record<string, string>
   chromePorts: Record<string, number>
+  factoryLastRun: number | null
   settings: Settings
 }
 
@@ -195,6 +196,7 @@ export const DEFAULT_STATE = (): State => ({
   mrSessions: {},
   serverCommands: {},
   chromePorts: {},
+  factoryLastRun: null,
   settings: { ...DEFAULT_SETTINGS }
 })
 
@@ -231,6 +233,7 @@ export function loadState(file: string): State {
       chromePorts: isObject(o.chromePorts)
         ? Object.fromEntries(Object.entries(o.chromePorts).filter((e): e is [string, number] => typeof e[1] === 'number'))
         : {},
+      factoryLastRun: typeof o.factoryLastRun === 'number' ? o.factoryLastRun : null,
       settings: {
         jiraBase: typeof s.jiraBase === 'string' ? s.jiraBase : DEFAULT_SETTINGS.jiraBase,
         jiraToken: typeof s.jiraToken === 'string' ? s.jiraToken : DEFAULT_SETTINGS.jiraToken,

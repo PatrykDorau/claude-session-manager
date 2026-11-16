@@ -35,6 +35,8 @@ export const isNoisePath = (path: string): boolean =>
   NOISE_DIRS.some((dir) => path.startsWith(dir)) ||
   path.toLowerCase().endsWith('.md')
 
+export const countChanges = (porcelain: string): number => parseStatus(porcelain).filter((f) => !isNoisePath(f.path)).length
+
 const NAME_STATES: Record<string, ChangedFile['state']> = { M: 'modified', A: 'added', D: 'deleted', R: 'renamed', C: 'added', T: 'modified' }
 
 export const parseNameStatus = (out: string): ChangedFile[] =>

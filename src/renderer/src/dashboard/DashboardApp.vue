@@ -15,6 +15,8 @@ import SettingsPanel from '../components/SettingsPanel.vue'
 import AgentList from './AgentList.vue'
 import AgentView from './AgentView.vue'
 import HostsView from './HostsView.vue'
+import FactoryView from './FactoryView.vue'
+import FlowView from './FlowView.vue'
 import { treeCounts, filterGroups } from './agenttree'
 import { clampSize, readSize, writeSize, readFlag } from './dashboard'
 
@@ -34,7 +36,7 @@ const selectedSupervisor = ref<string | null>(null)
 const isMovingOnly = ref(false)
 const isFinishedHidden = ref(false)
 const isTreePage = computed(() => page.value === 'tree')
-const isHostsPage = computed(() => page.value === 'hosts')
+const isHostsPage = computed(() => page.value === 'hosts' || page.value === 'factory' || page.value === 'flow')
 const visibleGroups = computed(() =>
   filterGroups(agentGroups.value, { isMovingOnly: isMovingOnly.value, isFinishedHidden: isFinishedHidden.value })
 )
@@ -62,6 +64,20 @@ const openTicket = (key: string): void => {
   selectedKey.value = key
 }
 
+const focusSession = (target: { ticket: string | null; sessionId: string }): void => {
+  if (target.ticket) {
+    openTicket(target.ticket)
+    return
+  }
+  const mr = myMrs.value.items.find((m) => m.sessionId === target.sessionId)
+  if (mr) {
+    openMr(mr.key)
+    return
+  }
+  page.value = 'tree'
+  selectedSupervisor.value = target.sessionId
+}
+
 const titles = computed(() => Object.fromEntries(Object.values(tasks.value).map((t) => [t.ticket, t.title])))
 const finishedKeys = computed(() =>
   splitSections(buildCards(sessions.value, tasks.value), []).finishedCards.map((c) => c.ticket)
@@ -84,7 +100,9 @@ const counts = computed<Record<DashboardPage, number>>(() => ({
     rows.value.filter((r) => starred.value.includes(r.key)).length +
     myMrs.value.items.filter((m) => starred.value.includes(m.key)).length,
   tree: agentGroups.value.length,
-  hosts: servers.value.length
+  hosts: servers.value.length,
+  factory: 0,
+  flow: 0
 }))
 
 const alerts = computed(() => ({
@@ -107,7 +125,9 @@ const PAGE_TITLES: Record<DashboardPage, string> = {
   mrs: 'Merge requests',
   starred: 'Starred',
   tree: 'Agent tree',
-  hosts: 'Local servers'
+  hosts: 'Local servers',
+  factory: 'Factory',
+  flow: 'Flow'
 }
 const listWidth = ref(clampSize(readSize('dash.listWidth', 320), 220, 640))
 const toggleList = (): void => {
@@ -143,6 +163,7 @@ onMounted(() => {
   window.api.onStarred((keys) => (starred.value = keys))
   window.api.onMyMrs((mrs) => (myMrs.value = mrs))
   window.api.onServers((list) => (servers.value = list))
+  window.api.onFocusSession(focusSession)
   void loadTree()
 })
 onBeforeUnmount(() => {
@@ -213,7 +234,9 @@ onBeforeUnmount(() => {
       />
     </div>
     <Splitter v-if="!isListHidden && !isHostsPage" @resize="resizeList" @done="saveListWidth" />
-    <HostsView v-if="isHostsPage" :sessions="sessions" @open-ticket="openTicket" />
+    <FlowView v-if="page === 'flow'" :rows="rows" @open-ticket="openTicket" />
+    <FactoryView v-else-if="page === 'factory'" />
+    <HostsView v-else-if="isHostsPage" :sessions="sessions" @open-ticket="openTicket" />
     <AgentView
       v-else-if="isTreePage && selectedGroup"
       :group="selectedGroup"

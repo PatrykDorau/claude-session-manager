@@ -2,10 +2,12 @@
 import { ref, computed } from 'vue'
 import type { MrRow, Session } from '../types'
 import { ago } from '../display'
-import { filterMrs, reviewLabel, groupMrs, findWorkSession, findReviewSession } from './mrs'
+import { filterMrs, reviewLabel, groupMrs, findMineSession, findReviewSession } from './mrs'
 import { readFlag, writeSize } from './dashboard'
 import Icon from './Icon.vue'
 import PriorityIcon from './PriorityIcon.vue'
+import { useManualOrder } from './useOrder'
+import SessionBadge from './SessionBadge.vue'
 
 const props = defineProps<{
   rows: MrRow[]
@@ -39,7 +41,7 @@ const mineCount = computed(() => (props.myName ? props.rows.filter((r) => r.auth
 const isToAddress = (r: MrRow): boolean => r.openThreads > 0
 const sessionOf = (r: MrRow): Session | undefined => {
   const list = props.sessions ?? []
-  return props.myName && r.author === props.myName ? findWorkSession(list, r.ticket) : findReviewSession(list, r.sessionId)
+  return props.myName && r.author === props.myName ? findMineSession(list, r) : findReviewSession(list, r.sessionId)
 }
 const isLive = (r: MrRow): boolean => !!sessionOf(r)?.isLive
 const isWaiting = (r: MrRow): boolean => isLive(r) && sessionOf(r)?.status === 'waiting'
@@ -71,13 +73,16 @@ const visible = computed(() =>
     isMineOnly: isMineMode.value
   })
 )
+const order = useManualOrder('dash.order.mrs')
+const rankMr = (r: MrRow): { isActive: boolean; priority: string | undefined } => ({ isActive: isLive(r), priority: r.priority })
 const groups = computed(() =>
-  isMineMode.value
+  (isMineMode.value
     ? [
         { key: 'address', title: 'Threads to address', color: '#e8b84a', rows: visible.value.filter(isToAddress) },
         { key: 'quiet', title: 'No open threads', color: '#3dd68c', rows: visible.value.filter((r) => !isToAddress(r)) }
       ].filter((g) => g.rows.length)
     : groupMrs(visible.value).map((g) => ({ key: g.state, title: GROUP_TITLE[g.state], color: reviewLabel(g.state).color, rows: g.rows }))
+  ).map((g) => ({ ...g, rows: order.ordered(g.key, g.rows, rankMr) }))
 )
 
 const isStarred = (row: MrRow): boolean => props.starred.includes(row.key)
@@ -127,16 +132,31 @@ const updatedAgo = (row: MrRow): string => {
     <div v-else-if="!visible.length" class="note">{{ isStarredOnly ? 'Star a merge request to see it here' : 'No merge requests to review' }}</div>
 
     <div v-for="g in groups" :key="g.key" class="group">
-      <h3 class="ghead"><i :style="{ background: g.color }" />{{ g.title }}<span>{{ g.rows.length }}</span></h3>
+      <h3 class="ghead">
+        <i :style="{ background: g.color }" />{{ g.title }}<span>{{ g.rows.length }}</span>
+        <button v-if="order.isManual(g.key)" class="autoorder" title="Drop your order and sort by running sessions, then priority" @click="order.resetOrder(g.key)">Auto order</button>
+      </h3>
       <article
         v-for="r in g.rows"
         :key="r.key"
         class="tile"
-        :class="{ sel: selectedKey === r.key, 'has-session': isLive(r), 'needs-input': isWaiting(r) }"
+        :class="{
+          sel: selectedKey === r.key,
+          'has-session': isLive(r),
+          'needs-input': isWaiting(r),
+          'drop-before': order.dropTarget.value?.key === r.key && !order.dropTarget.value.isAfter,
+          'drop-after': order.dropTarget.value?.key === r.key && order.dropTarget.value.isAfter
+        }"
         tabindex="0"
+        draggable="true"
+        @dragstart="order.onDragStart($event, g.key, r.key)"
+        @dragover="order.onDragOver($event, g.key, r.key)"
+        @drop="order.onDrop(g.key, g.rows.map((x) => x.key))"
+        @dragend="order.onDragEnd"
         @click="emit('select', r.key)"
         @keydown.enter="emit('select', r.key)"
       >
+        <SessionBadge v-if="isLive(r)" :status="sessionOf(r)?.status ?? 'idle'" :model="sessionOf(r)?.model" :context-tokens="sessionOf(r)?.contextTokens" />
         <p class="summary"><span v-if="r.isDraft" class="draft">Draft</span>{{ r.title }}</p>
         <div v-if="isMineMode && isToAddress(r)" class="attnrow" :title="`${r.openThreads} unresolved ${r.openThreads === 1 ? 'thread' : 'threads'} to address`"><Icon name="message" :size="12" />{{ r.openThreads }}</div>
         <div class="meta">
@@ -147,6 +167,7 @@ const updatedAgo = (row: MrRow): string => {
           <span v-else-if="isLive(r)" class="live" title="A Claude session for this merge request is running"><i /></span>
           <span class="who"><span class="av">{{ initials(r.author) }}</span>{{ r.author }}</span>
           <span v-if="r.approvals" class="appr" :title="`${r.approvals} ${r.approvals === 1 ? 'approval' : 'approvals'}`"><Icon name="check" :size="11" />{{ r.approvals }}</span>
+          <span v-if="sessionOf(r)?.changes" class="unc" :title="`${sessionOf(r)?.changes} uncommitted ${sessionOf(r)?.changes === 1 ? 'file' : 'files'} in this merge request's folder`"><Icon name="diff" :size="11" />{{ sessionOf(r)?.changes }}</span>
           <span class="ago">{{ updatedAgo(r) }}</span>
           <button class="star" :class="{ on: isStarred(r) }" :title="isStarred(r) ? 'Unstar' : 'Star'" @click.stop="toggleStar(r)">
             <Icon name="star" :size="14" />
@@ -352,7 +373,26 @@ select:focus {
   font-weight: 400;
   color: var(--text-4);
 }
+.autoorder {
+  margin-left: auto;
+  padding: 0;
+  font: 400 11.5px var(--font-ui);
+  color: var(--text-4);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.autoorder:hover {
+  color: var(--text-2);
+}
+.tile.drop-before {
+  box-shadow: 0 -2px 0 var(--accent);
+}
+.tile.drop-after {
+  box-shadow: 0 2px 0 var(--accent);
+}
 .tile {
+  position: relative;
   margin: 0 2px 6px;
   padding: 10px 11px 9px;
   background: var(--bg-2);
@@ -477,6 +517,17 @@ select:focus {
 }
 .live.needs i {
   background: var(--warn);
+}
+.unc {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  font: 600 11px/16px var(--font-ui);
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  border-radius: 4px;
 }
 .appr {
   flex: none;

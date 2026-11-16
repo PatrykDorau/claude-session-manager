@@ -4,6 +4,7 @@ import type { Ref } from 'vue'
 import type { Session } from '../types'
 import { colorForProject } from '../filter'
 import { plainSession } from '../cards'
+import { contextLevel } from '../dashboard/context'
 
 const props = defineProps<{ session: Session; isCompact?: boolean }>()
 const colorblind = inject<Ref<boolean>>('colorblind', ref(false))
@@ -187,7 +188,7 @@ function ago(ms: number): string {
         <span v-if="session.ticket && !isCompact" class="ticket" @click.stop="openTicket">{{ session.ticket }}</span>
         <span v-if="session.manualTicket && !isCompact" class="pin" title="Ticket set manually">📌</span>
         <span v-if="isCompact" class="metinfo">{{ session.projectName }}</span>
-        <span v-if="meta()" class="metinfo">{{ meta() }}</span>
+        <span v-if="meta()" class="metinfo" :class="`ctx-${contextLevel(session.contextTokens)}`">{{ meta() }}</span>
       </div>
       <div class="actions">
       <button class="ic" title="Rename" @click.stop="startEdit">
@@ -267,6 +268,12 @@ function ago(ms: number): string {
   content: '·';
   margin-right: 6px;
   color: #555555;
+}
+.metinfo.ctx-warn {
+  color: var(--warn);
+}
+.metinfo.ctx-danger {
+  color: var(--danger);
 }
 .pin {
   font-size: 9px;

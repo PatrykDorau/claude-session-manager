@@ -93,6 +93,13 @@ const runAttached = async (start: (cols: number, rows: number) => Promise<{ erro
 
 const resumeHere = (): Promise<boolean> => runAttached((cols, rows) => window.api.openTerminal(props.sessionId, cols, rows))
 const takeOver = (): Promise<boolean> => runAttached((cols, rows) => window.api.takeOver(props.sessionId, cols, rows))
+const takeOverInteractive = async (): Promise<void> => {
+  const isDone = await runAttached((cols, rows) => window.api.takeOverInteractive(props.sessionId, cols, rows))
+  if (!isDone && error.value === 'cancelled') {
+    error.value = null
+    setMode('vscode')
+  }
+}
 
 const paste = (text: string): void => {
   if (mode.value !== 'attach') return
@@ -158,12 +165,13 @@ onBeforeUnmount(() => {
           "Open in VS Code" moves it back.
         </p>
         <p v-else>
-          This session runs as an interactive terminal in VS Code ({{ projectName }}). It can only be shown here once it
-          is closed there.
+          This session runs as an interactive Claude terminal ({{ projectName }}), usually in VS Code. If you closed VS Code
+          or do not use that terminal any more, take the session over: it continues here with the whole conversation.
         </p>
         <div class="acts">
           <button v-if="mode === 'resume'" class="db" @click="resumeHere">Open session here</button>
           <button v-if="mode === 'elsewhere'" class="db" @click="takeOver">Open session here</button>
+          <button v-if="mode === 'vscode'" class="db" :disabled="isBusy" @click="takeOverInteractive">Take over here</button>
           <button v-if="mode !== 'resume'" class="db ghost" @click="emit('focusVscode')">Focus in VS Code</button>
         </div>
         <p v-if="lastReply" class="last"><span class="dim">Last reply</span>{{ lastReply }}</p>
@@ -187,7 +195,9 @@ onBeforeUnmount(() => {
 }
 .xterm-host {
   flex: 1;
+  min-width: 0;
   min-height: 0;
+  overflow: hidden;
   padding: 6px 0 0 8px;
 }
 .overlay {

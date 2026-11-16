@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractResumeIds, extractAttachIds, extractAttachPids, probeCommand, mergedListHas, branchTickets } from '../src/main/processes'
+import { extractResumeIds, extractAttachIds, extractAttachPids, extractResumePids, probeCommand, mergedListHas, branchTickets } from '../src/main/processes'
 
 describe('extractResumeIds', () => {
   it('pulls a single resume id', () => {
@@ -84,5 +84,17 @@ describe('extractAttachPids', () => {
         { pid: 8, commandLine: 'claude.exe --resume 1c4cdc80-4419-4cfe-863c-5767abd2762f' }
       ])
     ).toEqual(new Map([['01edb0c6', 7]]))
+  })
+})
+
+describe('extractResumePids', () => {
+  it('finds the interactive claude processes that resume this session', () => {
+    const id = '3367d315-46a2-4000-bc43-7e3a5c0a43a5'
+    const rows = [
+      { pid: 10, commandLine: `claude --resume ${id}` },
+      { pid: 11, commandLine: 'claude --resume 11111111-46a2-4000-bc43-7e3a5c0a43a5' },
+      { pid: 12, commandLine: `claude attach 3367d315` }
+    ]
+    expect(extractResumePids(rows, id)).toEqual([10])
   })
 })

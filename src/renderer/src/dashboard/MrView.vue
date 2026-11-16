@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import type { DevServer, MenuItem, MrFile, MrRow, MrStatus, MrVersionDiff, QuickAction, Session, TerminalMode } from '../types'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import type { CodeComment, DevServer, DiffRow, MenuItem, MrCommentable, MrDraftNote, MrFile, MrReviewAction, MrRow, MrStatus, MrVersionDiff, QuickAction, Session, TerminalMode } from '../types'
+import { sortDrafts, draftsForThread, generalDrafts, rowsAround } from './mrreview'
 import { plainSession } from '../cards'
-import { reviewLabel, findReviewSession, findWorkSession, mergeHint } from './mrs'
+import { reviewLabel, findReviewSession, findWorkSession, findAddressSession, mergeHint } from './mrs'
 import { renderGitlabHtml, renderMarkdown, toUploadWebUrl, isVideoUrl, parseVersionLink } from './mrhtml'
 import Icon from './Icon.vue'
 import MenuButton from './MenuButton.vue'
@@ -10,8 +11,10 @@ import { ago } from '../display'
 import ClaudeTerminal from './ClaudeTerminal.vue'
 import CodeView from './CodeView.vue'
 import Splitter from './Splitter.vue'
+import ContextChip from './ContextChip.vue'
 import { clampSize, readSize, writeSize, readFlag } from './dashboard'
 import QuickActions from './QuickActions.vue'
+import ServerPanel from './ServerPanel.vue'
 
 const props = defineProps<{ row: MrRow; sessions: Session[]; isGone: boolean; myName?: string | null; servers?: DevServer[] }>()
 
@@ -23,7 +26,7 @@ const REVIEW_ACTIONS: QuickAction[] = [
   }
 ]
 
-const tab = ref<'overview' | 'changes'>('overview')
+const tab = ref<'overview' | 'changes' | 'server'>('overview')
 const isCodeOpen = ref(!readFlag('dash.mrCodeHidden'))
 const isClaudeOpen = ref(!readFlag('dash.mrClaudeHidden'))
 const isBothOpen = computed(() => isCodeOpen.value && isClaudeOpen.value)
@@ -48,6 +51,26 @@ const resizeCode = (delta: number): void => {
   codeWidth.value = clampSize(codeWidth.value + delta, 320, total - 320)
 }
 const saveCodeWidth = (): void => writeSize('dash.mrCodeWidth', codeWidth.value)
+const isOverviewClaudeOpen = ref(readFlag('dash.mrOverviewClaude'))
+const toggleOverviewClaude = (): void => {
+  isOverviewClaudeOpen.value = !isOverviewClaudeOpen.value
+  writeSize('dash.mrOverviewClaude', isOverviewClaudeOpen.value)
+}
+const docWidth = ref(readSize('dash.mrDocWidth', 820))
+const isClaudeShown = computed(() => (tab.value === 'changes' && isClaudeOpen.value) || (tab.value === 'overview' && isOverviewClaudeOpen.value))
+const isSplit = computed(() => (tab.value === 'changes' && isBothOpen.value) || (tab.value === 'overview' && isOverviewClaudeOpen.value))
+const resizeLeft = (delta: number): void => {
+  if (tab.value === 'changes') {
+    resizeCode(delta)
+    return
+  }
+  const total = panes.value?.clientWidth ?? 1400
+  docWidth.value = clampSize(docWidth.value + delta, 420, total - 320)
+}
+const saveLeftWidth = (): void => {
+  if (tab.value === 'changes') saveCodeWidth()
+  else writeSize('dash.mrDocWidth', docWidth.value)
+}
 const files = ref<MrFile[] | null | undefined>(undefined)
 const mode = ref<TerminalMode | null>(null)
 const isStarting = ref(false)
@@ -56,8 +79,33 @@ const terminalTick = ref(0)
 let remountTimer: ReturnType<typeof setTimeout> | null = null
 
 const isMine = computed(() => !!props.myName && props.row.author === props.myName)
-const session = computed(() =>
+const addressSessionId = ref<string | null>(null)
+const addressSession = computed(
+  () =>
+    props.sessions.find((s) => s.id === addressSessionId.value) ??
+    (isMine.value ? findAddressSession(props.sessions, props.row) : undefined)
+)
+const isAddressPending = computed(
+  () =>
+    isAddressing.value ||
+    (!!addressSessionId.value && !props.sessions.some((s) => s.id.startsWith(addressSessionId.value as string)))
+)
+const baseSession = computed(() =>
   isMine.value ? findWorkSession(props.sessions, props.row.ticket) : findReviewSession(props.sessions, props.row.sessionId)
+)
+const paneSessions = computed(() =>
+  [
+    baseSession.value ? { label: 'Task', session: baseSession.value } : null,
+    addressSession.value && addressSession.value.id !== baseSession.value?.id ? { label: 'Comments', session: addressSession.value } : null
+  ].filter((t): t is { label: string; session: Session } => !!t)
+)
+const pickedSessionId = ref<string | null>(null)
+const session = computed(
+  () =>
+    paneSessions.value.find((t) => t.session.id === pickedSessionId.value)?.session ??
+    (addressSession.value?.isLive ? addressSession.value : null) ??
+    baseSession.value ??
+    addressSession.value
 )
 const repoPath = ref<string | null>(null)
 const loadRepo = async (): Promise<void> => {
@@ -68,22 +116,18 @@ const codeCwd = computed(() => session.value?.projectPath ?? repoPath.value)
 const branchUrl = (branch: string): string => `${origin}/${props.row.projectPath}/-/tree/${branch.split('/').map(encodeURIComponent).join('/')}`
 const openJira = (key: string): void => window.api.openTicket(key)
 const isAddressing = ref(false)
-const addressPrompt = (where: string): string =>
-  `${where} Przeczytaj nierozwiązane wątki w moim MR !${props.row.iid} (${props.row.url}) przez gitlab.js mr discussions ${props.row.iid} i odnieś się do każdego: popraw kod tam, gdzie uwaga jest trafna, a przy pozostałych zaproponuj odpowiedź. Najpierw pokaż mi listę wątków z tym, co zamierzasz zrobić, i poczekaj na moje potwierdzenie. Niczego nie publikuj w GitLabie.`
 const addressComments = async (): Promise<void> => {
-  if (!session.value) return
   isAddressing.value = true
   startError.value = null
   tab.value = 'changes'
   if (!isClaudeOpen.value) toggleClaude()
   try {
-    const place = await window.api.getMrBranchFolder(props.row.key)
-    const ticket = props.row.ticket ?? `MR-${props.row.iid}`
-    const where = place.folder
-      ? `Pracuj w ${place.folder}: to worktree z gałęzią ${props.row.sourceBranch}. Nie przełączaj gałęzi w głównym checkoucie.`
-      : `Gałąź ${props.row.sourceBranch} nie jest wyciągnięta w żadnym worktree. W ${place.repo ?? 'repo'} uruchom git worktree add .claude/worktrees/${ticket} ${props.row.sourceBranch} i pracuj tylko tam, bez przełączania głównego checkoutu.`
-    const result = await window.api.sendPrompt(session.value.id, addressPrompt(where))
+    const result = await window.api.startAddress(props.row.key)
     startError.value = result.error
+    if (result.sessionId) {
+      addressSessionId.value = result.sessionId
+      pickedSessionId.value = result.sessionId
+    }
   } finally {
     isAddressing.value = false
   }
@@ -92,7 +136,6 @@ const chip = computed(() => reviewLabel(props.row.review))
 const facts = computed(() => {
   const list: string[] = []
   if (session.value?.model) list.push(session.value.model.replace(/^claude-/, ''))
-  if (session.value?.contextTokens) list.push(`${Math.round(session.value.contextTokens / 1000)}k context`)
   return list
 })
 
@@ -139,27 +182,22 @@ const focusVscode = (): void => {
 const status = ref<MrStatus | null>(null)
 const busyAction = ref<string | null>(null)
 const actionError = ref<string | null>(null)
+const notice = ref<string | null>(null)
 const comment = ref('')
 const PIPELINE_COLOR: Record<string, string> = { success: '#3dd68c', failed: '#f2706a', running: '#6aa9ff', pending: '#e8b84a', canceled: '#9d9d9d' }
+const explanations = ref<Record<string, string>>({})
 const loadStatus = async (): Promise<void> => {
-  status.value = await window.api.getMrStatus(props.row.key)
+  const [next, notes] = await Promise.all([window.api.getMrStatus(props.row.key), window.api.getMrExplanations(props.row.key)])
+  status.value = next
+  explanations.value = notes
+  recheckCommentable()
 }
 const serverKey = computed(() => props.row.ticket ?? `MR-${props.row.iid}`)
 const server = computed(() => (props.servers ?? []).find((sv) => sv.key === serverKey.value) ?? null)
-const isStartingServer = ref(false)
-const startServer = async (): Promise<void> => {
-  isStartingServer.value = true
-  actionError.value = null
-  try {
-    const place = await window.api.getMrBranchFolder(props.row.key)
-    const result = await window.api.startTicketServer(serverKey.value, place.folder ?? session.value?.projectPath ?? null)
-    if (result.error) actionError.value = result.error
-  } finally {
-    isStartingServer.value = false
-  }
-}
-const openServer = (): void => {
-  if (server.value) window.api.openInChrome(server.value.url, serverKey.value)
+const serverCwd = ref<string | null>(null)
+const loadServerCwd = async (): Promise<void> => {
+  const place = await window.api.getMrBranchFolder(props.row.key)
+  serverCwd.value = place.folder ?? session.value?.projectPath ?? place.repo
 }
 const isRefreshingStatus = ref(false)
 const refreshStatus = async (): Promise<void> => {
@@ -197,14 +235,40 @@ const noteHtml = computed<Record<number, string>>(() =>
 const onMediaError = (e: Event): void => {
   const el = e.target
   if (!(el instanceof HTMLVideoElement || el instanceof HTMLImageElement) || el.dataset.failed) return
-  el.dataset.failed = '1'
   const src = el.getAttribute('src') ?? ''
+  const webUrl = toUploadWebUrl(src)
+  if (webUrl !== src) {
+    el.setAttribute('src', webUrl)
+    return
+  }
+  el.dataset.failed = '1'
+  const box = document.createElement('span')
+  box.className = 'mediafail'
+  box.append(`${el instanceof HTMLVideoElement || isVideoUrl(src) ? 'Video' : 'Image'} could not load here. `)
+  const signIn = document.createElement('button')
+  signIn.className = 'mediasignin'
+  signIn.dataset.signin = '1'
+  signIn.textContent = 'Sign in to GitLab'
   const link = document.createElement('a')
-  link.href = toUploadWebUrl(src)
+  link.href = webUrl
   link.target = '_blank'
-  link.className = 'mediafail'
-  link.textContent = `${el instanceof HTMLVideoElement || isVideoUrl(src) ? 'Video' : 'Image'} could not load here. Open it in GitLab`
-  el.replaceWith(link)
+  link.textContent = 'Open it in GitLab'
+  box.append(signIn, ' or ', link)
+  el.replaceWith(box)
+}
+const mediaTick = ref(0)
+const isSigningIn = ref(false)
+const onMediaClick = async (e: MouseEvent): Promise<void> => {
+  const target = e.target instanceof HTMLElement ? e.target.closest('[data-signin]') : null
+  if (!target || isSigningIn.value) return
+  e.preventDefault()
+  e.stopPropagation()
+  isSigningIn.value = true
+  try {
+    if (await window.api.signInGitlab()) mediaTick.value++
+  } finally {
+    isSigningIn.value = false
+  }
 }
 const expandedResolved = ref<Set<string>>(new Set())
 const toggleResolved = (id: string): void => {
@@ -213,25 +277,61 @@ const toggleResolved = (id: string): void => {
   else next.add(id)
   expandedResolved.value = next
 }
-const versionPopup = ref<{ title: string; data: MrVersionDiff | null } | null>(null)
-const openVersion = async (href: string, path: string | null): Promise<void> => {
+const versionPopup = ref<{ title: string; data: MrVersionDiff | null; line: number | null; isWhole: boolean } | null>(null)
+const popupRows = (rows: DiffRow[]): DiffRow[] => {
+  const popup = versionPopup.value
+  if (!popup?.line || popup.isWhole) return rows
+  return rowsAround(rows, popup.line) ?? rows
+}
+const isPopupTrimmed = computed(() => {
+  const popup = versionPopup.value
+  if (!popup?.line || !popup.data) return false
+  return popup.data.files.some((f) => !!rowsAround(f.rows, popup.line as number))
+})
+const openVersion = async (href: string, path: string | null, line: number | null = null): Promise<void> => {
   const link = parseVersionLink(href)
   if (!link) return
-  versionPopup.value = { title: path ?? 'Changes in this version', data: null }
+  versionPopup.value = { title: path ? `${path}${line ? `:${line}` : ''}` : 'Changes in this version', data: null, line, isWhole: false }
   const data = await window.api.getMrVersionDiff(props.row.key, link.diffId, link.startSha, path)
   if (versionPopup.value) versionPopup.value = { ...versionPopup.value, data }
 }
-const onThreadClick = (e: MouseEvent, path: string | null): void => {
+const onThreadClick = (e: MouseEvent, path: string | null, line: number | null = null): void => {
   const a = (e.target as HTMLElement).closest('a')
   if (!a || !parseVersionLink(a.href)) return
   e.preventDefault()
-  void openVersion(a.href, path)
+  void openVersion(a.href, path, line)
 }
-const codeComments = computed(() =>
-  threads.value.flatMap((d) =>
+const codeComments = computed<CodeComment[]>(() =>
+  threads.value.flatMap((d): CodeComment[] =>
     d.anchor && d.anchor.side === 'new'
-      ? [{ id: d.id, path: d.anchor.path, line: d.anchor.line, isResolved: d.isResolved, notes: d.notes.map((n) => ({ author: n.author, body: n.body, html: noteHtml.value[n.id] })) }]
+      ? [
+          {
+            id: d.id,
+            path: d.anchor.path,
+            line: d.anchor.line,
+            isResolved: d.isResolved,
+            discussionId: d.id,
+            isResolvable: d.isResolvable,
+            notes: d.notes.map((n) => ({ author: n.author, body: n.body, html: noteHtml.value[n.id] }))
+          }
+        ]
       : []
+  ).concat(
+    (status.value?.drafts ?? []).flatMap((p) =>
+      p.anchor && p.anchor.side === 'new'
+        ? [
+            {
+              id: `draft-${p.id}`,
+              path: p.anchor.path,
+              line: p.anchor.line,
+              isResolved: false,
+              isDraft: true,
+              draftId: p.id,
+              notes: [{ author: 'You (pending)', body: p.body, html: renderMarkdown(p.body, origin, props.row.projectId) }]
+            }
+          ]
+        : []
+    )
   )
 )
 const hint = computed(() => mergeHint(status.value?.state?.mergeStatus ?? 'checking'))
@@ -283,6 +383,7 @@ const runAction = async (action: 'approve' | 'unapprove' | 'merge' | 'rebase'): 
       window.open(props.row.url, '_blank')
       actionError.value = `${result.error}. Your token cannot approve on this GitLab, so the merge request opened in the browser to approve there.`
     } else actionError.value = result.error
+    notice.value = result.notice ?? null
     if (!result.isCancelled) await loadStatus()
   } finally {
     busyAction.value = null
@@ -302,12 +403,125 @@ const postComment = async (): Promise<void> => {
     busyAction.value = null
   }
 }
+const drafts = computed<MrDraftNote[]>(() => status.value?.drafts ?? [])
+const sortedDrafts = computed(() => sortDrafts(drafts.value))
+const draftHtml = computed<Record<number, string>>(() =>
+  Object.fromEntries(drafts.value.map((d) => [d.id, renderMarkdown(d.body, origin, props.row.projectId)]))
+)
+const explanationHtml = computed<Record<string, string>>(() =>
+  Object.fromEntries(Object.entries(explanations.value).map(([id, text]) => [id, renderMarkdown(text, origin, props.row.projectId)]))
+)
+const isReviewListOpen = ref(false)
+const runReview = async (action: MrReviewAction): Promise<boolean> => {
+  busyAction.value = action.kind
+  actionError.value = null
+  try {
+    const result = await window.api.mrReview(props.row.key, action)
+    actionError.value = result.error
+    if (result.isCancelled) return false
+    await loadStatus()
+    return !result.error
+  } finally {
+    busyAction.value = null
+  }
+}
+const editKey = ref<string | null>(null)
+const editText = ref('')
+const startEdit = (key: string, body: string): void => {
+  editKey.value = key
+  editText.value = body
+}
+const saveDraftEdit = async (id: number): Promise<void> => {
+  if (await runReview({ kind: 'draft-edit', id, body: editText.value })) editKey.value = null
+}
+const saveNoteEdit = async (discussionId: string, noteId: number): Promise<void> => {
+  if (await runReview({ kind: 'note-edit', discussionId, noteId, body: editText.value })) editKey.value = null
+}
+const addReplyDraft = async (discussionId: string): Promise<void> => {
+  if (!(await runReview({ kind: 'draft-add', body: reply.value, replyTo: discussionId }))) return
+  reply.value = ''
+  replyTo.value = null
+}
+const addGeneralDraft = async (): Promise<void> => {
+  if (await runReview({ kind: 'draft-add', body: comment.value })) comment.value = ''
+}
+const draftWhere = (d: MrDraftNote): string => {
+  if (d.anchor) return `${d.anchor.path}:${d.anchor.line}`
+  if (!d.replyTo) return 'General comment'
+  const thread = threads.value.find((t) => t.id === d.replyTo)
+  if (thread?.where) return `Reply on ${thread.where}`
+  return thread ? `Reply to ${thread.notes[0]?.author ?? 'a thread'}` : 'Reply in a thread'
+}
+const codeView = ref<{ goToFileLine: (path: string, line: number) => Promise<void> } | null>(null)
+const flashElement = (id: string): void => {
+  const el = document.getElementById(id)
+  if (!el) return
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  el.classList.add('flash')
+  setTimeout(() => el.classList.remove('flash'), 1600)
+}
+const openDraft = async (d: MrDraftNote): Promise<void> => {
+  isReviewListOpen.value = false
+  if (d.anchor) {
+    tab.value = 'changes'
+    if (!isCodeOpen.value) toggleCode()
+    await nextTick()
+    await codeView.value?.goToFileLine(d.anchor.path, d.anchor.line)
+    return
+  }
+  tab.value = 'overview'
+  const replyTo = d.replyTo
+  if (replyTo && threads.value.find((t) => t.id === replyTo)?.isResolved && !expandedResolved.value.has(replyTo)) toggleResolved(replyTo)
+  await nextTick()
+  flashElement(replyTo ? `thread-${replyTo}` : 'mr-composer')
+}
+const isDraftMr = computed(() => overview.value?.isDraft ?? props.row.isDraft)
+const toggleDraft = (): void => {
+  void runReview({ kind: 'set-draft', isDraft: !isDraftMr.value, title: props.row.title })
+}
+const isTitleEditing = ref(false)
+const titleText = ref('')
+const startTitleEdit = (): void => {
+  titleText.value = props.row.title
+  isTitleEditing.value = true
+}
+const saveTitle = async (): Promise<void> => {
+  if (!titleText.value.trim() || titleText.value === props.row.title) {
+    isTitleEditing.value = false
+    return
+  }
+  if (await runReview({ kind: 'edit-text', title: titleText.value.trim() })) isTitleEditing.value = false
+}
+const isDescEditing = ref(false)
+const isDescPreview = ref(false)
+const descText = ref('')
+const descPreview = computed(() => renderMarkdown(descText.value, origin, props.row.projectId))
+const startDescEdit = (): void => {
+  descText.value = overview.value?.description ?? ''
+  isDescPreview.value = false
+  isDescEditing.value = true
+}
+const saveDesc = async (): Promise<void> => {
+  if (await runReview({ kind: 'edit-text', description: descText.value })) isDescEditing.value = false
+}
+const commentable = ref<MrCommentable | null>(null)
+let shownFile: { path: string; folder: string | null; isReadOnly: boolean } | null = null
+const checkCommentable = async (path: string, folder: string | null, isReadOnly: boolean): Promise<void> => {
+  shownFile = { path, folder, isReadOnly }
+  commentable.value = null
+  const result = await window.api.mrCommentable(props.row.key, folder, isReadOnly, path)
+  if (shownFile?.path === path) commentable.value = result
+}
+const recheckCommentable = (): void => {
+  if (shownFile) void checkCommentable(shownFile.path, shownFile.folder, shownFile.isReadOnly)
+}
 const openItems = computed<MenuItem[]>(() => [
   { label: 'GitLab', hint: props.row.url, icon: 'external', run: () => window.open(props.row.url, '_blank') },
   { label: 'VS Code with the review session', hint: 'Moves the session to VS Code', icon: 'code', isDisabled: !session.value, run: () => void openInVscode() }
 ])
 
 onMounted(() => {
+  void loadServerCwd()
   void loadFiles()
   void loadStatus()
 })
@@ -318,8 +532,27 @@ watch(
     void loadStatus()
   }
 )
+const STATUS_REFRESH_MS = 10000
+let statusTimer: ReturnType<typeof setTimeout> | null = null
+let lastStatusAt = Date.now()
+const scheduleStatus = (): void => {
+  if (statusTimer) return
+  statusTimer = setTimeout(
+    () => {
+      statusTimer = null
+      lastStatusAt = Date.now()
+      void loadStatus()
+    },
+    Math.max(0, STATUS_REFRESH_MS - (Date.now() - lastStatusAt))
+  )
+}
+watch(
+  () => paneSessions.value.map((t) => `${t.session.id}:${t.session.status}:${t.session.lastActive}`).join('|'),
+  scheduleStatus
+)
 onBeforeUnmount(() => {
   if (remountTimer) clearTimeout(remountTimer)
+  if (statusTimer) clearTimeout(statusTimer)
 })
 </script>
 
@@ -331,8 +564,22 @@ onBeforeUnmount(() => {
         <a class="iid" :href="row.url" target="_blank" title="Open in GitLab">!{{ row.iid }}</a>
         <span class="pill" :style="{ '--c': chip.color }">{{ chip.label }}</span>
         <span v-if="isGone" class="pill" style="--c: #666d78">no longer in your to-do</span>
-        <span v-if="row.isDraft" class="draftbadge">Draft</span>
-        <h1 class="title" :title="row.title">{{ row.title }}</h1>
+        <span v-if="isDraftMr" class="draftbadge">Draft</span>
+        <button v-if="overview" class="linkbtn draftlink" :disabled="!!busyAction || isGone" :title="isDraftMr ? 'Remove the Draft prefix so it can be merged' : 'Mark as draft so it cannot be merged yet'" @click="toggleDraft">
+          {{ isDraftMr ? 'Mark as ready' : 'Mark as draft' }}
+        </button>
+        <input
+          v-if="isTitleEditing"
+          v-model="titleText"
+          class="titleedit"
+          @keydown.enter="saveTitle"
+          @keydown.esc="isTitleEditing = false"
+        />
+        <template v-if="isTitleEditing">
+          <button class="btn sm" @click="isTitleEditing = false">Cancel</button>
+          <button class="btn sm primary" :disabled="!!busyAction" @click="saveTitle">Save title</button>
+        </template>
+        <h1 v-else class="title editable" :title="`${row.title} — click to edit`" @click="startTitleEdit">{{ row.title }}</h1>
         <button v-if="row.ticket" class="fact jira" title="Open in Jira" @click="openJira(row.ticket)">{{ row.ticket }}</button>
       </div>
       <div v-if="status?.state || approvalText" class="status">
@@ -349,6 +596,7 @@ onBeforeUnmount(() => {
       <div class="bar">
         <nav class="tabs">
           <button :class="{ on: tab === 'overview' }" @click="tab = 'overview'"><Icon name="fileText" :size="15" />Overview<span v-if="threads.length" class="count">{{ threads.filter((d) => !d.isSystem).length }}</span></button>
+          <button :class="{ on: tab === 'server' }" @click="tab = 'server'"><Icon name="server" :size="15" />Server<span v-if="server" class="dot" /></button>
           <button :class="{ on: tab === 'changes' }" @click="tab = 'changes'">
             <Icon name="code" :size="15" />Changes<span v-if="files" class="count">{{ files.length }}</span>
           </button>
@@ -358,26 +606,25 @@ onBeforeUnmount(() => {
           <Icon name="branch" :size="13" /><a class="bref" :href="branchUrl(row.sourceBranch)" target="_blank" :title="`Open ${row.sourceBranch} in GitLab`">{{ row.sourceBranch }}</a><span class="arrow">→</span><a class="bref" :href="branchUrl(row.targetBranch)" target="_blank">{{ row.targetBranch }}</a>
         </span>
         <span class="grow" />
-        <span v-for="f in facts" :key="f" class="fact">{{ f }}</span>
-        <div v-if="tab === 'changes'" class="seg" title="Show or hide the panes">
+        <ContextChip v-if="session" :session="session" :mode="mode" />
+        <div v-if="tab === 'changes'" class="seg" :title="['Show or hide the panes', ...facts].join(' · ')">
           <button :class="{ on: isCodeOpen }" @click="toggleCode"><Icon name="code" :size="14" />Code</button>
           <button :class="{ on: isClaudeOpen }" @click="toggleClaude"><Icon name="terminal" :size="14" />Claude</button>
         </div>
-        <button class="stop" :disabled="mode !== 'attach'" title="Interrupt Claude's current turn (Esc)" @click="stopTurn"><Icon name="stop" :size="12" />Stop</button>
-        <button v-if="server" class="srvchip" :title="`Open ${server.url} in this ticket's Chrome`" @click="openServer"><i />{{ server.url.replace(/^https?:\/\//, '') }}</button>
-        <button v-else class="btn" :disabled="isStartingServer" title="Start the dev server in the folder that has this branch" @click="startServer">
-          <Icon name="server" :size="14" />{{ isStartingServer ? 'Starting…' : 'Server' }}
-        </button>
-        <button class="btn" :disabled="isRefreshingStatus" title="Reload this merge request from GitLab" @click="refreshStatus"><Icon name="refresh" :size="14" />{{ isRefreshingStatus ? 'Refreshing…' : 'Refresh' }}</button>
+        <div v-if="tab === 'overview'" class="seg" :title="['Show Claude next to the overview', ...facts].join(' · ')">
+          <button :class="{ on: isOverviewClaudeOpen }" @click="toggleOverviewClaude"><Icon name="terminal" :size="14" />Claude</button>
+        </div>
+        <button v-if="isClaudeShown" class="stop" :disabled="mode !== 'attach'" title="Interrupt Claude's current turn (Esc)" @click="stopTurn"><Icon name="stop" :size="12" />Stop</button>
+        <button class="btn icon" :class="{ spinning: isRefreshingStatus }" :disabled="isRefreshingStatus" title="Reload this merge request from GitLab" @click="refreshStatus"><Icon name="refresh" :size="14" /></button>
         <MenuButton label="Open in" icon="external" :items="openItems" />
         <button
           v-if="isMine"
           class="btn primary"
-          :disabled="!session || isAddressing || isGone"
-          :title="session ? `Sends the unresolved threads to ${session.name ?? row.ticket}` : `No Claude session found for ${row.ticket ?? 'this ticket'}`"
+          :disabled="isAddressPending || isGone"
+          title="Starts a fresh Claude session in the MR worktree for the unresolved threads"
           @click="addressComments"
         >
-          <Icon name="message" :size="13" />{{ isAddressing ? 'Sending…' : 'Address comments' }}
+          <span v-if="isAddressPending" class="spin" /><Icon v-else name="message" :size="13" />{{ isAddressPending ? 'Starting…' : 'Address comments' }}
         </button>
         <button v-else class="btn primary" :disabled="isStarting || isGone" @click="review">
           <Icon name="play" :size="13" />{{ isStarting ? 'Starting review…' : row.review === 'not-reviewed' ? 'Review' : 'Review again' }}
@@ -385,11 +632,40 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="startError" class="warn">{{ startError }}</div>
       <div v-if="actionError" class="warn">GitLab: {{ actionError }}</div>
+      <div v-if="notice" class="notice">{{ notice }}<button class="linkbtn" @click="notice = null">Dismiss</button></div>
+      <div v-if="drafts.length" class="reviewbar">
+        <span class="rvdot" />
+        <b>Review</b>
+        <span class="muted">{{ drafts.length }} pending {{ drafts.length === 1 ? 'comment' : 'comments' }}, visible only to you</span>
+        <button class="btn sm" @click="isReviewListOpen = !isReviewListOpen">{{ isReviewListOpen ? 'Hide' : 'Show' }}</button>
+        <span class="grow" />
+        <button class="btn sm primary" :disabled="!!busyAction || isGone" @click="runReview({ kind: 'submit-review', count: drafts.length })">
+          <Icon name="send" :size="13" />{{ busyAction === 'submit-review' ? 'Submitting…' : 'Submit review' }}
+        </button>
+      </div>
+      <div v-if="drafts.length && isReviewListOpen" class="reviewlist">
+        <div v-for="d in sortedDrafts" :key="d.id" class="rvitem">
+          <button class="rvwhere" :title="d.anchor ? 'Open this line in Changes' : 'Scroll to this thread'" @click="openDraft(d)">{{ draftWhere(d) }}</button>
+          <template v-if="editKey === `d:${d.id}`">
+            <textarea v-model="editText" rows="3" />
+            <div class="crow">
+              <button class="btn sm" @click="editKey = null">Cancel</button>
+              <button class="btn sm primary" :disabled="!editText.trim() || !!busyAction" @click="saveDraftEdit(d.id)">Save</button>
+            </div>
+          </template>
+          <div v-else class="md" v-html="draftHtml[d.id]" />
+          <div v-if="editKey !== `d:${d.id}`" class="rvbtns">
+            <button class="linkbtn" @click="startEdit(`d:${d.id}`, d.body)">Edit</button>
+            <button class="linkbtn danger" :disabled="!!busyAction" @click="runReview({ kind: 'draft-delete', id: d.id })">Delete</button>
+          </div>
+        </div>
+      </div>
     </header>
 
-    <div v-show="tab === 'changes'" ref="panes" class="panes">
-      <section v-show="isCodeOpen" class="pane code" :style="isBothOpen ? { flex: 'none', width: `${codeWidth}px` } : undefined">
+    <div v-show="tab !== 'server'" ref="panes" class="panes">
+      <section v-show="tab === 'changes' && isCodeOpen" class="pane code" :style="isBothOpen ? { flex: 'none', width: `${codeWidth}px` } : undefined">
         <CodeView
+          ref="codeView"
           :cwd="codeCwd"
           :ticket-key="row.ticket ?? `MR-${row.iid}`"
           :branch-ref="{ source: row.sourceBranch, target: row.targetBranch }"
@@ -397,12 +673,260 @@ onBeforeUnmount(() => {
           :can-ask="mode === 'attach'"
           :source-session-id="session?.id ?? null"
           :comments="codeComments"
+          :commentable="commentable"
+          :review="runReview"
           @ask="askClaude"
           @version="openVersion"
+          @file-shown="checkCommentable"
         />
       </section>
-      <Splitter v-if="isBothOpen" @resize="resizeCode" @done="saveCodeWidth" />
-    <section v-show="isClaudeOpen" class="pane claude">
+      <section v-show="tab === 'overview'" class="pane doc" :style="isOverviewClaudeOpen ? { flex: 'none', width: `${docWidth}px` } : undefined">
+        <div class="ov">
+          <div class="ovmain">
+            <p v-if="status === null" class="muted">Loading…</p>
+            <template v-else-if="overview">
+              <div class="byline">
+                <span v-if="overview.isDraft" class="draft">Draft</span>
+                <b>{{ overview.author }}</b> requested to merge <a class="bpill" :href="branchUrl(row.sourceBranch)" target="_blank">{{ row.sourceBranch }}</a> into <a class="bpill" :href="branchUrl(row.targetBranch)" target="_blank">{{ row.targetBranch }}</a>
+                <span class="muted inline">{{ ago(Date.parse(overview.createdAt)) }}</span>
+              </div>
+              <div v-if="isDescEditing" class="descedit">
+                <div class="seg">
+                  <button :class="{ on: !isDescPreview }" @click="isDescPreview = false">Write</button>
+                  <button :class="{ on: isDescPreview }" @click="isDescPreview = true">Preview</button>
+                </div>
+                <div v-if="isDescPreview" class="md" v-html="descPreview" />
+                <textarea v-else v-model="descText" rows="14" spellcheck="true" />
+                <div class="crow">
+                  <button class="btn sm" @click="isDescEditing = false">Cancel</button>
+                  <button class="btn sm primary" :disabled="!!busyAction" @click="saveDesc">{{ busyAction === 'edit-text' ? 'Saving…' : 'Save description' }}</button>
+                </div>
+              </div>
+              <template v-else>
+                <div v-if="descriptionHtml" :key="`desc${mediaTick}`" class="md" @error.capture="onMediaError" @click.capture="onMediaClick" v-html="descriptionHtml" />
+                <p v-else class="muted">No description.</p>
+                <button class="linkbtn" :disabled="isGone" @click="startDescEdit">Edit description</button>
+              </template>
+
+              <div class="widgets">
+                <div class="w">
+                  <span class="wicon" :style="{ color: PIPELINE_COLOR[overview.pipeline?.status ?? ''] ?? '#6f6f6f' }"><Icon name="check" :size="16" /></span>
+                  <div class="wbody">
+                    <template v-if="overview.pipeline">
+                      <b>Pipeline <a :href="overview.pipeline.url" target="_blank">#{{ overview.pipeline.id }}</a> {{ overview.pipeline.status }}</b>
+                      <small>for <code>{{ overview.pipeline.sha }}</code> on {{ row.sourceBranch }}<template v-if="overview.pipeline.coverage"> · test coverage {{ overview.pipeline.coverage }}%</template></small>
+                    </template>
+                    <b v-else class="dim">No pipeline</b>
+                  </div>
+                </div>
+                <div class="w">
+                  <span class="wicon" :style="{ color: status?.approvals?.approvedBy.length ? '#3dd68c' : '#6f6f6f' }"><Icon name="user" :size="16" /></span>
+                  <button
+                    class="btn sm"
+                    :class="{ approved: status?.approvals?.isApprovedByMe }"
+                    :disabled="!!busyAction || isGone"
+                    @click="runAction(status?.approvals?.isApprovedByMe ? 'unapprove' : 'approve')"
+                  >
+                    <Icon name="check" :size="13" />{{ status?.approvals?.isApprovedByMe ? 'Revoke approval' : 'Approve' }}
+                  </button>
+                  <div class="wbody">
+                    <div v-if="status?.approvals?.approvedBy.length" class="approvers">
+                      <span class="by">Approved by</span>
+                      <span v-for="a in status.approvals.approvedBy" :key="a" class="person"><span class="av sm">{{ initials(a) }}</span>{{ a }}</span>
+                      <span v-if="status.approvals.left" class="by">· {{ status.approvals.left }} more needed</span>
+                    </div>
+                    <b v-else>{{ approvalText ?? 'Approvals unknown' }}</b>
+                  </div>
+                </div>
+                <div class="w merge">
+                  <span class="wicon" :style="{ color: hint.isReady ? '#3dd68c' : '#e8b84a' }"><Icon name="pr" :size="16" /></span>
+                  <div class="wbody">
+                    <b>{{ hint.text }}</b>
+                    <div class="opts">
+                      <label><input v-model="isSourceRemoved" type="checkbox" />Delete source branch</label>
+                      <label><input v-model="isSquash" type="checkbox" />Squash commits</label>
+                    </div>
+                    <small v-if="status?.state?.behind">{{ status.state.behind }} commits behind {{ row.targetBranch }}</small>
+                    <div class="wbtns">
+                      <button
+                        class="btn sm mergebtn"
+                        :disabled="!!busyAction || isGone || !hint.isReady || (status?.state ? !status.state.canMerge : true)"
+                        @click="runAction('merge')"
+                      >
+                        {{ busyAction === 'merge' ? 'Merging…' : 'Merge' }}
+                      </button>
+                      <button class="btn sm" :disabled="!!busyAction || isGone" @click="runAction('rebase')">
+                        <Icon name="refresh" :size="13" />{{ busyAction === 'rebase' ? 'Rebasing…' : 'Rebase' }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <h2 class="acth">Activity</h2>
+              <p v-if="status.discussions === null" class="muted">Could not load the activity.</p>
+              <template v-for="d in threads" :key="d.id">
+                <div v-if="d.isSystem" class="sys">
+                  <i />
+                  <b>{{ d.notes[0].author }}</b>
+                  <span class="md inline" v-html="noteHtml[d.notes[0].id]" />
+                  <span class="when">{{ ago(Date.parse(d.notes[0].createdAt)) }}</span>
+                </div>
+                <button v-else-if="d.isResolved && !expandedResolved.has(d.id)" class="collapsed" @click="toggleResolved(d.id)">
+                  <Icon name="check" :size="13" />
+                  <span class="cwhere">{{ d.where ?? 'Thread' }}</span>
+                  <span class="cwho">{{ d.notes[0].author }}: {{ d.notes[0].body.split(String.fromCharCode(10))[0] }}</span>
+                  <span class="ccount">{{ d.notes.length }} {{ d.notes.length === 1 ? 'comment' : 'comments' }}</span>
+                  <Icon name="chevronRight" :size="13" />
+                </button>
+                <article v-else :id="`thread-${d.id}`" class="thread" :class="{ resolved: d.isResolved }" @click="onThreadClick($event, d.anchor?.path ?? null, d.anchor?.line ?? null)">
+                  <div v-if="d.where || d.isResolvable" class="thead">
+                    <code v-if="d.where">{{ d.where }}</code>
+                    <span v-if="d.isResolvable" class="rs" :class="{ done: d.isResolved }">{{ d.isResolved ? 'resolved' : 'open' }}</span>
+                    <button v-if="d.isResolved" class="collapse" @click="toggleResolved(d.id)">Hide</button>
+                    <button
+                      v-if="d.isResolvable"
+                      class="btn sm resolvebtn"
+                      :disabled="!!busyAction || isGone"
+                      @click="runReview({ kind: 'resolve', discussionId: d.id, isResolved: !d.isResolved })"
+                    >
+                      <Icon name="check" :size="12" />{{ d.isResolved ? 'Unresolve' : 'Resolve' }}
+                    </button>
+                  </div>
+                  <div v-if="d.snippet" class="snip">
+                    <div v-for="(r, i) in d.snippet.rows" :key="i" class="sl" :class="{ hit: r.isHit, add: r.mark === '+', del: r.mark === '-' }"><span class="ln">{{ r.no ?? '' }}</span><span class="mk">{{ r.mark }}</span>{{ r.text }}</div>
+                  </div>
+                  <div v-for="n in d.notes" :key="n.id" class="note">
+                    <span class="av">{{ initials(n.author) }}</span>
+                    <div class="nbody">
+                      <div class="nhead">
+                        <b>{{ n.author }}</b><span>{{ ago(Date.parse(n.createdAt)) }}</span>
+                        <template v-if="n.isMine && editKey !== `n:${n.id}`">
+                          <button class="linkbtn" @click="startEdit(`n:${n.id}`, n.body)">Edit</button>
+                          <button class="linkbtn danger" :disabled="!!busyAction" @click="runReview({ kind: 'note-delete', discussionId: d.id, noteId: n.id })">Delete</button>
+                        </template>
+                      </div>
+                      <template v-if="editKey === `n:${n.id}`">
+                        <textarea v-model="editText" rows="3" />
+                        <div class="crow">
+                          <button class="btn sm" @click="editKey = null">Cancel</button>
+                          <button class="btn sm primary" :disabled="!editText.trim() || !!busyAction" @click="saveNoteEdit(d.id, n.id)">Save</button>
+                        </div>
+                      </template>
+                      <div v-else :key="`n${n.id}-${mediaTick}`" class="md" @error.capture="onMediaError" @click.capture="onMediaClick" v-html="noteHtml[n.id]" />
+                    </div>
+                  </div>
+                  <div v-for="p in draftsForThread(drafts, d.id)" :key="`p${p.id}`" class="note pending">
+                    <span class="av">…</span>
+                    <div class="nbody">
+                      <div class="nhead">
+                        <b>You</b><span class="pendtag">Pending</span>
+                        <template v-if="editKey !== `d:${p.id}`">
+                          <button class="linkbtn" @click="startEdit(`d:${p.id}`, p.body)">Edit</button>
+                          <button class="linkbtn danger" :disabled="!!busyAction" @click="runReview({ kind: 'draft-delete', id: p.id })">Delete</button>
+                        </template>
+                      </div>
+                      <template v-if="editKey === `d:${p.id}`">
+                        <textarea v-model="editText" rows="3" />
+                        <div class="crow">
+                          <button class="btn sm" @click="editKey = null">Cancel</button>
+                          <button class="btn sm primary" :disabled="!editText.trim() || !!busyAction" @click="saveDraftEdit(p.id)">Save</button>
+                        </div>
+                      </template>
+                      <div v-else class="md" v-html="draftHtml[p.id]" />
+                    </div>
+                  </div>
+                  <details v-if="explanationHtml[d.id]" class="explain">
+                    <summary>Wyjaśnienie <span>only you see this, it is not part of the reply</span></summary>
+                    <div class="md" v-html="explanationHtml[d.id]" />
+                  </details>
+                  <div class="replyrow">
+                    <template v-if="replyTo === d.id">
+                      <textarea v-model="reply" rows="3" placeholder="Reply…" />
+                      <div class="crow">
+                        <button class="btn sm" @click="replyTo = null">Cancel</button>
+                        <button class="btn sm" :disabled="!reply.trim() || !!busyAction" title="Save as a pending draft note; publish it with Submit review" @click="addReplyDraft(d.id)">Add to review</button>
+                        <button class="btn sm primary" :disabled="!reply.trim() || !!busyAction" @click="postReply(d.id)">
+                          {{ busyAction === 'reply' ? 'Posting…' : 'Post reply' }}
+                        </button>
+                      </div>
+                    </template>
+                    <button v-else class="replybtn" @click="(replyTo = d.id), (reply = '')">Reply…</button>
+                  </div>
+                </article>
+              </template>
+              <div v-for="p in generalDrafts(drafts)" :key="`g${p.id}`" class="note pending general">
+                <span class="av">…</span>
+                  <div class="nbody">
+                    <div class="nhead">
+                      <b>You</b><span class="pendtag">Pending</span>
+                      <template v-if="editKey !== `d:${p.id}`">
+                        <button class="linkbtn" @click="startEdit(`d:${p.id}`, p.body)">Edit</button>
+                        <button class="linkbtn danger" :disabled="!!busyAction" @click="runReview({ kind: 'draft-delete', id: p.id })">Delete</button>
+                      </template>
+                    </div>
+                    <template v-if="editKey === `d:${p.id}`">
+                      <textarea v-model="editText" rows="3" />
+                      <div class="crow">
+                        <button class="btn sm" @click="editKey = null">Cancel</button>
+                        <button class="btn sm primary" :disabled="!editText.trim() || !!busyAction" @click="saveDraftEdit(p.id)">Save</button>
+                      </div>
+                    </template>
+                    <div v-else class="md" v-html="draftHtml[p.id]" />
+                  </div>
+              </div>
+              <div id="mr-composer" class="composer">
+                <textarea v-model="comment" rows="4" placeholder="Write a comment on this merge request" spellcheck="true" />
+                <div class="crow">
+                  <span class="muted small">You confirm before it is posted.</span>
+                  <button class="btn" :disabled="!comment.trim() || !!busyAction" title="Save as a pending draft note; publish it with Submit review" @click="addGeneralDraft">Add to review</button>
+                  <button class="btn primary" :disabled="!comment.trim() || !!busyAction" @click="postComment">
+                    <Icon name="send" :size="13" />{{ busyAction === 'comment' ? 'Posting…' : 'Comment' }}
+                  </button>
+                </div>
+              </div>
+            </template>
+            <p v-else class="muted">Could not load the merge request{{ status.problem ? `: ${status.problem}` : '' }}.</p>
+          </div>
+          <aside v-if="overview" class="ovside">
+            <div class="sb">
+              <h4>Assignees</h4>
+              <p v-for="a in overview.assignees" :key="a"><span class="av sm">{{ initials(a) }}</span>{{ a }}</p>
+              <p v-if="!overview.assignees.length" class="muted small">None</p>
+            </div>
+            <div class="sb">
+              <h4>Reviewers</h4>
+              <p v-for="r in overview.reviewers" :key="r"><span class="av sm">{{ initials(r) }}</span>{{ r }}</p>
+              <p v-if="!overview.reviewers.length" class="muted small">None</p>
+            </div>
+            <div class="sb">
+              <h4>Labels</h4>
+              <div class="labels">
+                <span v-for="l in overview.labels" :key="l" class="label">{{ l }}</span>
+              </div>
+              <p v-if="!overview.labels.length" class="muted small">None</p>
+            </div>
+            <div class="sb">
+              <h4>Milestone</h4>
+              <p :class="{ 'muted small': !overview.milestone }">{{ overview.milestone ?? 'None' }}</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+      <Splitter v-if="isSplit" @resize="resizeLeft" @done="saveLeftWidth" />
+    <section v-show="isClaudeShown" class="pane claude">
+      <div v-if="paneSessions.length > 1" class="stabs">
+        <button
+          v-for="t in paneSessions"
+          :key="t.session.id"
+          :class="{ on: t.session.id === session?.id }"
+          :title="`${t.session.name ?? t.session.projectName} · ${t.session.status}`"
+          @click="pickedSessionId = t.session.id"
+        >
+          <i :class="{ live: t.session.isLive }" />{{ t.label }}
+        </button>
+      </div>
+      <div v-if="isAddressPending" class="pending"><span class="spin" />Starting a Claude session for the review comments. It opens here when it is ready.</div>
       <ClaudeTerminal
         v-if="session"
         ref="terminal"
@@ -427,156 +951,9 @@ onBeforeUnmount(() => {
     </section>
     </div>
 
-    <section v-show="tab === 'overview'" class="pane doc">
-      <div class="ov">
-        <div class="ovmain">
-          <p v-if="status === null" class="muted">Loading…</p>
-          <template v-else-if="overview">
-            <div class="byline">
-              <span v-if="overview.isDraft" class="draft">Draft</span>
-              <b>{{ overview.author }}</b> requested to merge <a class="bpill" :href="branchUrl(row.sourceBranch)" target="_blank">{{ row.sourceBranch }}</a> into <a class="bpill" :href="branchUrl(row.targetBranch)" target="_blank">{{ row.targetBranch }}</a>
-              <span class="muted inline">{{ ago(Date.parse(overview.createdAt)) }}</span>
-            </div>
-            <div v-if="descriptionHtml" class="md" @error.capture="onMediaError" v-html="descriptionHtml" />
-            <p v-else class="muted">No description.</p>
-
-            <div class="widgets">
-              <div class="w">
-                <span class="wicon" :style="{ color: PIPELINE_COLOR[overview.pipeline?.status ?? ''] ?? '#6f6f6f' }"><Icon name="check" :size="16" /></span>
-                <div class="wbody">
-                  <template v-if="overview.pipeline">
-                    <b>Pipeline <a :href="overview.pipeline.url" target="_blank">#{{ overview.pipeline.id }}</a> {{ overview.pipeline.status }}</b>
-                    <small>for <code>{{ overview.pipeline.sha }}</code> on {{ row.sourceBranch }}<template v-if="overview.pipeline.coverage"> · test coverage {{ overview.pipeline.coverage }}%</template></small>
-                  </template>
-                  <b v-else class="dim">No pipeline</b>
-                </div>
-              </div>
-              <div class="w">
-                <span class="wicon" :style="{ color: status?.approvals?.approvedBy.length ? '#3dd68c' : '#6f6f6f' }"><Icon name="user" :size="16" /></span>
-                <button
-                  class="btn sm"
-                  :class="{ approved: status?.approvals?.isApprovedByMe }"
-                  :disabled="!!busyAction || isGone"
-                  @click="runAction(status?.approvals?.isApprovedByMe ? 'unapprove' : 'approve')"
-                >
-                  <Icon name="check" :size="13" />{{ status?.approvals?.isApprovedByMe ? 'Revoke approval' : 'Approve' }}
-                </button>
-                <div class="wbody">
-                  <div v-if="status?.approvals?.approvedBy.length" class="approvers">
-                    <span class="by">Approved by</span>
-                    <span v-for="a in status.approvals.approvedBy" :key="a" class="person"><span class="av sm">{{ initials(a) }}</span>{{ a }}</span>
-                    <span v-if="status.approvals.left" class="by">· {{ status.approvals.left }} more needed</span>
-                  </div>
-                  <b v-else>{{ approvalText ?? 'Approvals unknown' }}</b>
-                </div>
-              </div>
-              <div class="w merge">
-                <span class="wicon" :style="{ color: hint.isReady ? '#3dd68c' : '#e8b84a' }"><Icon name="pr" :size="16" /></span>
-                <div class="wbody">
-                  <b>{{ hint.text }}</b>
-                  <div class="opts">
-                    <label><input v-model="isSourceRemoved" type="checkbox" />Delete source branch</label>
-                    <label><input v-model="isSquash" type="checkbox" />Squash commits</label>
-                  </div>
-                  <small v-if="status?.state?.behind">{{ status.state.behind }} commits behind {{ row.targetBranch }}</small>
-                  <div class="wbtns">
-                    <button
-                      class="btn sm mergebtn"
-                      :disabled="!!busyAction || isGone || !hint.isReady || (status?.state ? !status.state.canMerge : true)"
-                      @click="runAction('merge')"
-                    >
-                      {{ busyAction === 'merge' ? 'Merging…' : 'Merge' }}
-                    </button>
-                    <button class="btn sm" :disabled="!!busyAction || isGone" @click="runAction('rebase')">
-                      <Icon name="refresh" :size="13" />{{ busyAction === 'rebase' ? 'Rebasing…' : 'Rebase' }}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <h2 class="acth">Activity</h2>
-            <p v-if="status.discussions === null" class="muted">Could not load the activity.</p>
-            <template v-for="d in threads" :key="d.id">
-              <div v-if="d.isSystem" class="sys">
-                <i />
-                <b>{{ d.notes[0].author }}</b>
-                <span class="md inline" v-html="noteHtml[d.notes[0].id]" />
-                <span class="when">{{ ago(Date.parse(d.notes[0].createdAt)) }}</span>
-              </div>
-              <button v-else-if="d.isResolved && !expandedResolved.has(d.id)" class="collapsed" @click="toggleResolved(d.id)">
-                <Icon name="check" :size="13" />
-                <span class="cwhere">{{ d.where ?? 'Thread' }}</span>
-                <span class="cwho">{{ d.notes[0].author }}: {{ d.notes[0].body.split(String.fromCharCode(10))[0] }}</span>
-                <span class="ccount">{{ d.notes.length }} {{ d.notes.length === 1 ? 'comment' : 'comments' }}</span>
-                <Icon name="chevronRight" :size="13" />
-              </button>
-              <article v-else class="thread" :class="{ resolved: d.isResolved }" @click="onThreadClick($event, d.anchor?.path ?? null)">
-                <div v-if="d.where || d.isResolvable" class="thead">
-                  <code v-if="d.where">{{ d.where }}</code>
-                  <span v-if="d.isResolvable" class="rs" :class="{ done: d.isResolved }">{{ d.isResolved ? 'resolved' : 'open' }}</span>
-                  <button v-if="d.isResolved" class="collapse" @click="toggleResolved(d.id)">Hide</button>
-                </div>
-                <div v-if="d.snippet" class="snip">
-                  <div v-for="(r, i) in d.snippet.rows" :key="i" class="sl" :class="{ hit: r.isHit, add: r.mark === '+', del: r.mark === '-' }"><span class="ln">{{ r.no ?? '' }}</span><span class="mk">{{ r.mark }}</span>{{ r.text }}</div>
-                </div>
-                <div v-for="n in d.notes" :key="n.id" class="note">
-                  <span class="av">{{ initials(n.author) }}</span>
-                  <div class="nbody">
-                    <div class="nhead"><b>{{ n.author }}</b><span>{{ ago(Date.parse(n.createdAt)) }}</span></div>
-                    <div class="md" @error.capture="onMediaError" v-html="noteHtml[n.id]" />
-                  </div>
-                </div>
-                <div class="replyrow">
-                  <template v-if="replyTo === d.id">
-                    <textarea v-model="reply" rows="3" placeholder="Reply…" />
-                    <div class="crow">
-                      <button class="btn sm" @click="replyTo = null">Cancel</button>
-                      <button class="btn sm primary" :disabled="!reply.trim() || !!busyAction" @click="postReply(d.id)">
-                        {{ busyAction === 'reply' ? 'Posting…' : 'Post reply' }}
-                      </button>
-                    </div>
-                  </template>
-                  <button v-else class="replybtn" @click="(replyTo = d.id), (reply = '')">Reply…</button>
-                </div>
-              </article>
-            </template>
-            <div class="composer">
-              <textarea v-model="comment" rows="4" placeholder="Write a comment on this merge request" spellcheck="true" />
-              <div class="crow">
-                <span class="muted small">You confirm before it is posted.</span>
-                <button class="btn primary" :disabled="!comment.trim() || !!busyAction" @click="postComment">
-                  <Icon name="send" :size="13" />{{ busyAction === 'comment' ? 'Posting…' : 'Comment' }}
-                </button>
-              </div>
-            </div>
-          </template>
-          <p v-else class="muted">Could not load the merge request{{ status.problem ? `: ${status.problem}` : '' }}.</p>
-        </div>
-        <aside v-if="overview" class="ovside">
-          <div class="sb">
-            <h4>Assignees</h4>
-            <p v-for="a in overview.assignees" :key="a"><span class="av sm">{{ initials(a) }}</span>{{ a }}</p>
-            <p v-if="!overview.assignees.length" class="muted small">None</p>
-          </div>
-          <div class="sb">
-            <h4>Reviewers</h4>
-            <p v-for="r in overview.reviewers" :key="r"><span class="av sm">{{ initials(r) }}</span>{{ r }}</p>
-            <p v-if="!overview.reviewers.length" class="muted small">None</p>
-          </div>
-          <div class="sb">
-            <h4>Labels</h4>
-            <div class="labels">
-              <span v-for="l in overview.labels" :key="l" class="label">{{ l }}</span>
-            </div>
-            <p v-if="!overview.labels.length" class="muted small">None</p>
-          </div>
-          <div class="sb">
-            <h4>Milestone</h4>
-            <p :class="{ 'muted small': !overview.milestone }">{{ overview.milestone ?? 'None' }}</p>
-          </div>
-        </aside>
-      </div>
+    <section v-show="tab === 'server'" class="pane">
+      <ServerPanel v-if="serverCwd" :key="serverCwd" :ticket-key="serverKey" :cwd="serverCwd" :servers="servers ?? []" />
+      <p v-else class="muted pad">Looking for the folder with {{ row.sourceBranch }}…</p>
     </section>
 
     <template v-if="versionPopup">
@@ -586,15 +963,17 @@ onBeforeUnmount(() => {
           <Icon name="diff" :size="15" />
           <b>{{ versionPopup.title }}</b>
           <span class="grow" />
+          <button v-if="isPopupTrimmed" class="btn sm" @click="versionPopup.isWhole = !versionPopup.isWhole">{{ versionPopup.isWhole ? 'Only the thread lines' : 'Show whole diff' }}</button>
           <button class="iconbtn" title="Close" @click="versionPopup = null"><Icon name="close" :size="15" /></button>
         </header>
         <div class="vbody">
           <p v-if="!versionPopup.data" class="muted">Loading the change…</p>
           <p v-else-if="!versionPopup.data.files.length" class="muted">No change found{{ versionPopup.data.problem ? `: ${versionPopup.data.problem}` : '' }}.</p>
+          <p v-else-if="versionPopup.data.problem" class="muted small">{{ versionPopup.data.problem }}</p>
           <section v-for="f in versionPopup.data?.files ?? []" :key="f.path" class="vfile">
             <h4>{{ f.path }}</h4>
             <div class="vdiff">
-              <div v-for="(r, i) in f.rows" :key="i" class="vr" :class="{ add: r.kind === '+', del: r.kind === '-', hunk: r.kind === 'hunk' }">
+              <div v-for="(r, i) in popupRows(f.rows)" :key="i" class="vr" :class="{ add: r.kind === '+', del: r.kind === '-', hunk: r.kind === 'hunk', hit: !!versionPopup?.line && r.new === versionPopup.line }">
                 <span class="ln">{{ r.old ?? '' }}</span><span class="ln">{{ r.new ?? '' }}</span><span class="mk">{{ r.kind === 'hunk' ? '' : r.kind }}</span>{{ r.text }}
               </div>
             </div>
@@ -835,7 +1214,8 @@ onBeforeUnmount(() => {
 }
 .ov {
   display: flex;
-  gap: 28px;
+  flex-direction: column;
+  gap: 14px;
   max-width: 1180px;
   padding: 20px 24px 40px;
 }
@@ -844,8 +1224,15 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 .ovside {
-  flex: none;
-  width: 230px;
+  order: -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 32px;
+  border-bottom: 1px solid var(--line);
+}
+.ovside .sb {
+  border-bottom: none;
+  padding: 0 0 10px;
 }
 .byline {
   margin-bottom: 14px;
@@ -964,6 +1351,15 @@ onBeforeUnmount(() => {
   color: var(--warn);
   background: var(--warn-soft);
   border-radius: 6px;
+}
+.md :deep(.mediasignin) {
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  background: none;
+  border: 0;
+  cursor: pointer;
 }
 .md.inline :deep(p) {
   display: inline;
@@ -1535,6 +1931,43 @@ onBeforeUnmount(() => {
 .pane.claude {
   background: var(--bg-editor);
 }
+.stabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.stabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 11px;
+  font: 500 12.5px var(--font-ui);
+  color: var(--text-4);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.stabs button:hover {
+  color: var(--text-2);
+  background: var(--bg-2);
+}
+.stabs button.on {
+  color: var(--text);
+  background: var(--bg-3);
+}
+.stabs i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #666d78;
+}
+.stabs i.live {
+  background: var(--ok, #3fb950);
+}
 .seg {
   flex: none;
   display: inline-flex;
@@ -1566,6 +1999,7 @@ onBeforeUnmount(() => {
 }
 .pane {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -1581,7 +2015,18 @@ onBeforeUnmount(() => {
   text-align: center;
   color: var(--text-3);
 }
+.pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+}
 .spin {
+  flex: none;
   width: 12px;
   height: 12px;
   border: 2px solid var(--line-2);
@@ -1652,5 +2097,203 @@ h3:not(:first-child) {
 }
 .del {
   color: var(--danger);
+}
+.reviewbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 7px 12px;
+  font-size: 12.5px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-2));
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 8px;
+}
+.rvdot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.reviewlist {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  overflow-y: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.rvitem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.rvitem:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+.rvitem textarea,
+.nbody textarea,
+.descedit textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 10px;
+  font: 13px/1.5 var(--font-ui);
+  color: var(--text);
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+  outline: none;
+  resize: vertical;
+}
+.rvwhere {
+  align-self: flex-start;
+  padding: 0;
+  font: 12px var(--font-mono);
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.rvbtns {
+  display: flex;
+  gap: 10px;
+}
+.linkbtn {
+  padding: 0;
+  font: 12px var(--font-ui);
+  color: var(--text-4);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.linkbtn:hover:not(:disabled) {
+  color: var(--text);
+}
+.linkbtn.danger:hover:not(:disabled) {
+  color: #f2706a;
+}
+.nhead .linkbtn {
+  margin-left: 4px;
+}
+.note.pending {
+  border-left: 2px dashed var(--accent);
+}
+.note.pending.general {
+  margin: 0 0 10px;
+}
+.explain {
+  margin: 4px 12px 8px 46px;
+  padding: 6px 10px;
+  background: var(--bg-2);
+  border: 1px dashed var(--line-3);
+  border-radius: 6px;
+}
+.explain summary {
+  font: 600 12px var(--font-ui);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.explain summary span {
+  margin-left: 6px;
+  font-weight: 400;
+  color: var(--text-4);
+}
+.pendtag {
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px dashed var(--accent);
+  border-radius: 4px;
+}
+.resolvebtn {
+  margin-left: auto;
+}
+.title.editable {
+  cursor: text;
+}
+.title.editable:hover {
+  text-decoration: underline dotted var(--text-4);
+}
+.titleedit {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  font: 600 16px var(--font-ui);
+  color: var(--text);
+  background: var(--bg-3);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  outline: none;
+}
+.descedit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.descedit .seg {
+  align-self: flex-start;
+}
+.tabs .dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+.muted.pad {
+  padding: 24px;
+}
+.draftlink {
+  flex: none;
+  font-size: 12px;
+}
+.btn.icon {
+  width: 30px;
+  padding: 0;
+  justify-content: center;
+}
+.btn.icon.spinning :deep(svg) {
+  animation: mrspin 0.8s linear infinite;
+}
+@keyframes mrspin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.thread.flash,
+.composer.flash {
+  animation: threadflash 1.6s ease-out;
+}
+@keyframes threadflash {
+  0%,
+  40% {
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+  100% {
+    box-shadow: 0 0 0 2px transparent;
+  }
+}
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 7px 12px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  background: var(--accent-soft);
+  border-radius: 8px;
+}
+.vr.hit {
+  box-shadow: inset 3px 0 0 var(--warn);
+  background: var(--warn-soft);
 }
 </style>

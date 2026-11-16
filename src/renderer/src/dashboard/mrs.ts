@@ -68,9 +68,20 @@ export const mergeHint = (status: string): { text: string; isReady: boolean } =>
   isReady: status === 'mergeable'
 })
 
+export const findAddressSession = (sessions: Session[], row: { ticket: string | null; iid: number }): Session | undefined =>
+  sessions.filter((s) => s.name === `${row.ticket ?? `MR-${row.iid}`}-cr`).sort((a, b) => b.lastActive - a.lastActive)[0]
+
+export const findMineSession = (sessions: Session[], row: { ticket: string | null; iid: number }): Session | undefined => {
+  const address = findAddressSession(sessions, row)
+  const work = findWorkSession(sessions, row.ticket)
+  return (
+    [address, work].find((s) => s?.isLive && s.status === 'waiting') ?? (address?.isLive ? address : undefined) ?? work ?? address
+  )
+}
+
 export const findWorkSession = (sessions: Session[], ticket: string | null): Session | undefined =>
   ticket
     ? sessions
-        .filter((s) => s.ticket?.toUpperCase() === ticket.toUpperCase() && !/\bexplain$/.test(s.name ?? '') && !/^MR-\d+/.test(s.name ?? ''))
+        .filter((s) => s.ticket?.toUpperCase() === ticket.toUpperCase() && !/\bexplain$/.test(s.name ?? '') && !/-cr$/.test(s.name ?? '') && !/^MR-\d+/.test(s.name ?? ''))
         .sort((a, b) => b.lastActive - a.lastActive)[0]
     : undefined

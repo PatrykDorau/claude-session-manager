@@ -10,7 +10,10 @@ import {
   attachCommand,
   repoForProject,
   reviewArgs,
-  taskContext
+  taskContext,
+  addressArgs,
+  scoreArgs,
+  factoryTestArgs
 } from '../src/main/tasks'
 import type { Session } from '../src/renderer/src/types'
 
@@ -139,6 +142,27 @@ describe('reviewArgs', () => {
   })
 })
 
+describe('addressArgs', () => {
+  const base = { iid: 7, url: 'https://g/x/-/merge_requests/7', ticket: 'SOFRMPT-1', folder: 'C:/r/.claude/worktrees/SOFRMPT-1', repo: 'C:/r', branch: 'feat/x', handoff: 'C:/o/11-2026/SOFRMPT-1/handoff.md', model: 'sonnet' as const }
+  it('names the session after the ticket and works in the branch folder from the handoff', () => {
+    const args = addressArgs(base)
+    expect(args.slice(0, 5)).toEqual(['--bg', '--model', 'sonnet', '--name', 'SOFRMPT-1-cr'])
+    expect(args).toHaveLength(6)
+    expect(args[5]).toContain('C:/r/.claude/worktrees/SOFRMPT-1')
+    expect(args[5]).toContain('C:/o/11-2026/SOFRMPT-1/handoff.md')
+    expect(args[5]).toContain('address-mr-comments')
+  })
+  it('starts on the model it is given', () => {
+    expect(addressArgs({ ...base, model: 'opus' }).slice(0, 3)).toEqual(['--bg', '--model', 'opus'])
+  })
+  it('asks for a worktree when the branch has no folder', () => {
+    expect(addressArgs({ ...base, folder: null })[5]).toContain('git worktree add .claude/worktrees/SOFRMPT-1 feat/x')
+  })
+  it('works from the MR diff when there is no handoff', () => {
+    expect(addressArgs({ ...base, handoff: null })[5]).toContain('handoff.md nie istnieje')
+  })
+})
+
 describe('parseSearch — priority', () => {
   it('reads the priority name when Jira sends it', () => {
     const json = { issues: [{ key: 'A-1', fields: { summary: 'Fix', status: { name: 'To Do' }, priority: { name: 'Major' } } }] }
@@ -154,5 +178,47 @@ describe('taskContext', () => {
     expect(text).toContain('origin/develop')
     expect(text).toContain('cockpit.js server --ticket SOFNJJ-2537')
     expect(text).toContain(String.raw`Opis zadan\11-2026\SOFNJJ-2537`)
+  })
+})
+
+describe('scoreArgs', () => {
+  it('asks for a usage section with stages, size and risk', () => {
+    const prompt = scoreArgs('2026-11-16', 'C:/Users/me')[1]
+    expect(prompt).toContain('## Zużycie')
+    expect(prompt).toContain('risk')
+  })
+  it('runs one headless sonnet pass that reads the day digests and writes the day proposals', () => {
+    const args = scoreArgs('2026-11-16', 'C:/Users/me')
+    expect(args).toContain('-p')
+    expect(args[args.indexOf('--model') + 1]).toBe('sonnet')
+    expect(args.slice(args.indexOf('--tools') + 1, args.indexOf('--tools') + 4)).toEqual(['Read', 'Glob', 'Grep'])
+    expect(args.slice(args.indexOf('--allowedTools') + 1, args.indexOf('--allowedTools') + 4)).toEqual([
+      'Read(./**)',
+      'Read(//c/Users/me/.claude/CLAUDE.md)',
+      'Read(//c/Users/me/.claude/skills/**)'
+    ])
+    expect(args.some((a) => a.includes('Write') || a.includes('Edit'))).toBe(false)
+    expect(args[args.indexOf('--setting-sources') + 1]).toBe('local')
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('dontAsk')
+    expect(args).toContain('--strict-mcp-config')
+    expect(args[args.indexOf('--add-dir') + 1]).toBe('C:/Users/me/.claude/skills')
+    const prompt = args[args.indexOf('-p') + 1]
+    expect(prompt).toContain('digests/2026-11-16')
+    expect(prompt).toContain('proposals/2026-11-16.json')
+    expect(prompt).toContain('```json')
+    expect(prompt).toContain('Nie zapisuj żadnych plików')
+    expect(prompt).toContain('dismissed.json')
+    expect(prompt).not.toContain('wyłącznie')
+    expect(prompt).toContain('przeczytaj plik docelowy')
+  })
+})
+
+describe('factoryTestArgs', () => {
+  it('starts a background session that tests the proposal with writing-skills before applying it', () => {
+    const p = { id: 'p1', target: 'C:/h/.claude/CLAUDE.md', title: 'Shorter rule', evidence: ['s1'], find: 'old', replace: 'new' }
+    const args = factoryTestArgs(p)
+    expect(args.slice(0, 3)).toEqual(['--bg', '--name', 'factory-p1'])
+    expect(args[3]).toContain('Użyj superpowers:writing-skills: przetestuj tę zmianę (baseline i green) zanim ją zastosujesz: ')
+    expect(args[3]).toContain('"find": "old"')
   })
 })

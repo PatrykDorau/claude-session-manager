@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { filterRows, rowChip, lastActivity, isQuickExit, clampSize, priorityLook } from '../src/renderer/src/dashboard/dashboard'
+import { filterRows, rowChip, lastActivity, isQuickExit, clampSize, priorityLook, uncommittedCount } from '../src/renderer/src/dashboard/dashboard'
 import type { TaskRow } from '../src/renderer/src/taskview'
 import type { Session, Status } from '../src/renderer/src/types'
 
@@ -95,5 +95,15 @@ describe('priorityLook', () => {
   it('returns nothing for an unknown or missing priority', () => {
     expect(priorityLook(undefined)).toBeNull()
     expect(priorityLook('Weird')).toBeNull()
+  })
+})
+
+describe('uncommittedCount', () => {
+  it('counts each folder once and adds folders together', () => {
+    const list = [session({ projectPath: 'C:/A', changes: 3 }), session({ projectPath: 'c:/a', changes: 3 }), session({ projectPath: 'C:/B', changes: 2 })]
+    expect(uncommittedCount(list)).toBe(5)
+  })
+  it('is zero without counts', () => {
+    expect(uncommittedCount([session({})])).toBe(0)
   })
 })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import type { UsageResult } from '../types'
 import type { DashboardPage } from './dashboard'
 import { formatReset, severityColor } from '../usage'
@@ -20,18 +20,41 @@ const ENTRIES: { page: DashboardPage; label: string; icon: IconName; isSoon: boo
   { page: 'mrs', label: 'Merge requests to review', icon: 'pr', isSoon: false },
   { page: 'starred', label: 'Starred', icon: 'star', isSoon: false },
   { page: 'tree', label: 'Agent tree', icon: 'tree', isSoon: false },
-  { page: 'hosts', label: 'Local servers', icon: 'server', isSoon: false }
+  { page: 'hosts', label: 'Local servers', icon: 'server', isSoon: false },
+  { page: 'factory', label: 'Factory', icon: 'sparkles', isSoon: false },
+  { page: 'flow', label: 'Flow', icon: 'flow', isSoon: false }
 ]
 const select = (entry: (typeof ENTRIES)[number]): void => {
   if (!entry.isSoon) emit('select', entry.page)
 }
-const sessionGauge = computed(() => (props.usage?.ok ? (props.usage.gauges.find((g) => g.key === 'session') ?? props.usage.gauges[0]) : null))
+const SHORT_LABELS: Record<string, string> = { session: '5h', weekly_all: '7d' }
+const now = ref(Date.now())
+let clock: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  clock = setInterval(() => (now.value = Date.now()), 30000)
+})
+onBeforeUnmount(() => {
+  if (clock) clearInterval(clock)
+})
+const meters = computed(() =>
+  props.usage?.ok
+    ? props.usage.gauges
+        .filter((g) => g.key in SHORT_LABELS)
+        .map((g) => ({
+          key: g.key,
+          short: SHORT_LABELS[g.key],
+          percent: Math.min(100, Math.max(0, Math.round(g.percent))),
+          color: g.severity === 'normal' ? 'var(--accent)' : severityColor(g.severity),
+          reset: g.resetsAt ? formatReset(g.resetsAt, now.value) : ''
+        }))
+    : []
+)
 const usageTitle = computed(() => {
   const usage = props.usage
   if (!usage) return 'Usage limits are loading'
   if (!usage.ok) return 'Usage unavailable. Open Claude Code to sign in'
   return usage.gauges
-    .map((g) => `${g.label}: ${g.percent}%${g.resetsAt ? `, resets ${formatReset(g.resetsAt, Date.now())}` : ''}`)
+    .map((g) => `${g.label}: ${g.percent}%${g.resetsAt ? `, resets in ${formatReset(g.resetsAt, now.value)}` : ''}`)
     .join('\n')
 })
 const showSidebar = (): void => window.api.showSidebar()
@@ -54,9 +77,13 @@ const showSidebar = (): void => window.api.showSidebar()
       <i v-if="alerts?.[e.page]" class="alert" :title="`${alerts[e.page]} waiting for your answer`" />
     </button>
     <span class="grow" />
-    <div v-if="sessionGauge" class="usage" :title="usageTitle">
-      <Icon name="gauge" :size="16" />
-      <b :style="{ color: severityColor(sessionGauge.severity) }">{{ sessionGauge.percent }}%</b>
+    <div v-if="meters.length" class="usage" :title="usageTitle">
+      <div v-for="m in meters" :key="m.key" class="meter">
+        <span class="mlabel">{{ m.short }}</span>
+        <b :style="{ color: m.color }">{{ m.percent }}%</b>
+        <span class="mbar"><i :style="{ width: `${m.percent}%`, background: m.color }" /></span>
+        <span v-if="m.reset" class="mreset">{{ m.reset === 'now' ? 'reset now' : m.reset }}</span>
+      </div>
     </div>
     <div v-else-if="usage && !usage.ok" class="usage off" :title="usageTitle"><Icon name="gauge" :size="16" /><b>–</b></div>
     <button class="nav" title="Open the compact sidebar" @click="showSidebar"><Icon name="sidebar" :size="19" /></button>
@@ -164,13 +191,49 @@ const showSidebar = (): void => window.api.showSidebar()
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  margin-bottom: 6px;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 8px 0 2px;
   color: var(--text-4);
+  border-top: 1px solid var(--line);
   cursor: default;
 }
 .usage b {
-  font: 600 10px var(--font-ui);
+  font: 700 13px/1 var(--font-ui);
+}
+.usage.off {
+  gap: 2px;
+}
+.meter {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 44px;
+}
+.mlabel {
+  font: 600 9.5px/1 var(--font-ui);
+  letter-spacing: 0.04em;
+  color: var(--text-4);
+}
+.mbar {
+  display: block;
+  width: 34px;
+  height: 4px;
+  overflow: hidden;
+  background: var(--bg-3);
+  border-radius: 2px;
+}
+.mbar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+}
+.mreset {
+  font: 500 9.5px/1 var(--font-ui);
+  color: var(--text-3);
+  white-space: nowrap;
 }
 .usage.off b {
   color: var(--text-5);

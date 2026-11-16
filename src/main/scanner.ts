@@ -1,9 +1,9 @@
 import { readdir, readFile, stat, open } from 'node:fs/promises'
 import { join } from 'node:path'
-import { ideDir, projectsDir, needsInputDir, activeDir, doneDir } from './paths'
+import { ideDir, projectsDir, needsInputDir, activeDir, doneDir, jobsDir } from './paths'
 import { parseLockFile } from './lock'
 import { parseTranscriptHead, parseTail } from './transcript'
-import type { RawSession } from './aggregate'
+import { mergeClearedSessions, parseClearLink, type RawSession } from './aggregate'
 import { createStageScanner } from './stages'
 
 const stageScanner = createStageScanner()
@@ -11,6 +11,13 @@ const stageScanner = createStageScanner()
 export interface ScanResult {
   raw: RawSession[]
   lockedFolders: string[]
+  cleared: Map<string, string>
+}
+
+export const readClearLinks = async (): Promise<Map<string, string>> => {
+  const jobs = await readdir(jobsDir()).catch(() => [] as string[])
+  const links = await Promise.all(jobs.map((job) => readFile(join(jobsDir(), job, 'state.json'), 'utf8').then(parseClearLink, () => null)))
+  return new Map(links.filter((link): link is [string, string] => link !== null))
 }
 
 function pidAlive(pid: number): boolean {
@@ -104,7 +111,7 @@ export async function scanRaw(): Promise<ScanResult> {
   try {
     projects = await readdir(projectsDir())
   } catch {
-    return { raw: [], lockedFolders: folders }
+    return { raw: [], lockedFolders: folders, cleared: new Map() }
   }
 
   const raw: RawSession[] = []
@@ -140,5 +147,6 @@ export async function scanRaw(): Promise<ScanResult> {
       })
     }
   }
-  return { raw, lockedFolders: folders }
+  const cleared = await readClearLinks()
+  return { raw: mergeClearedSessions(raw, cleared), lockedFolders: folders, cleared }
 }

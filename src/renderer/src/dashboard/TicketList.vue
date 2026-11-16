@@ -3,9 +3,12 @@ import { ref, computed } from 'vue'
 import { laneGroups, splitTag, statusLane, type TaskRow } from '../taskview'
 import type { MrRow } from '../types'
 import { ago } from '../display'
-import { filterRows, rowChip, lastActivity } from './dashboard'
+import { filterRows, rowChip, lastActivity, uncommittedCount } from './dashboard'
 import PriorityIcon from './PriorityIcon.vue'
 import Icon from './Icon.vue'
+import { useManualOrder } from './useOrder'
+import SessionBadge from './SessionBadge.vue'
+import type { Session } from '../types'
 
 const props = defineProps<{
   rows: TaskRow[]
@@ -27,9 +30,19 @@ const OUTSIDE = { key: 'outside', label: 'Not in your Jira query', color: '#4b52
 const query = ref('')
 const isOutsideOpen = ref(false)
 const visible = computed(() => filterRows(props.rows, query.value, props.starred, props.isStarredOnly))
+const liveSession = (r: TaskRow): Session | null => {
+  const live = r.sessions.filter((s) => s.isLive)
+  if (!live.length) return null
+  return live.find((s) => s.status === 'waiting') ?? live.find((s) => s.status === 'working') ?? live[0]
+}
+const order = useManualOrder('dash.order.tickets')
+const rankTicket = (r: TaskRow): { isActive: boolean; priority: string | undefined } => ({ isActive: r.sessions.some((s) => s.isLive), priority: r.priority })
 const groups = computed(() => {
   const outside = visible.value.filter((r) => !r.isFromJira)
-  return [...laneGroups(visible.value), ...(outside.length ? [{ lane: OUTSIDE, rows: outside }] : [])]
+  return [...laneGroups(visible.value), ...(outside.length ? [{ lane: OUTSIDE, rows: outside }] : [])].map((g) => ({
+    ...g,
+    rows: order.ordered(g.lane.key, g.rows, rankTicket)
+  }))
 })
 const isStarred = (row: TaskRow): boolean => props.starred.includes(row.key)
 const toggleStar = (row: TaskRow): void => window.api.setStarred(row.key, !isStarred(row))
@@ -68,17 +81,30 @@ const toggleOutside = (key: string): void => {
         <span>{{ g.lane.label }}</span>
         <span class="lcount">{{ g.rows.length }}</span>
         <span v-if="g.lane.key === 'outside'" class="fold-lbl">{{ isOutsideOpen ? 'Hide' : 'Show' }}</span>
+        <button v-else-if="order.isManual(g.lane.key)" class="autoorder" title="Drop your order and sort by running sessions, then priority" @click.stop="order.resetOrder(g.lane.key)">Auto order</button>
       </h3>
       <article
         v-for="r in rowsOf(g)"
         :key="r.key"
         class="tile"
-        :class="{ sel: selectedKey === r.key, 'has-session': r.sessions.some((s) => s.isLive), 'needs-input': r.sessions.some((s) => s.isLive && s.status === 'waiting') }"
+        :class="{
+          sel: selectedKey === r.key,
+          'has-session': r.sessions.some((s) => s.isLive),
+          'needs-input': r.sessions.some((s) => s.isLive && s.status === 'waiting'),
+          'drop-before': order.dropTarget.value?.key === r.key && !order.dropTarget.value.isAfter,
+          'drop-after': order.dropTarget.value?.key === r.key && order.dropTarget.value.isAfter
+        }"
         :style="{ '--edge': edgeOf(r) }"
         tabindex="0"
+        draggable="true"
+        @dragstart="order.onDragStart($event, g.lane.key, r.key)"
+        @dragover="order.onDragOver($event, g.lane.key, r.key)"
+        @drop="order.onDrop(g.lane.key, g.rows.map((x) => x.key))"
+        @dragend="order.onDragEnd"
         @click="emit('select', r.key)"
         @keydown.enter="emit('select', r.key)"
       >
+        <SessionBadge v-if="liveSession(r)" :status="liveSession(r)?.status ?? 'idle'" :model="liveSession(r)?.model" :context-tokens="liveSession(r)?.contextTokens" />
         <p class="summary">{{ splitTag(r.summary).text || 'No title' }}</p>
         <div
           v-if="mrOf(r)"
@@ -101,6 +127,7 @@ const toggleOutside = (key: string): void => {
           <span v-if="rowChip(r)" class="chip" :style="{ color: rowChip(r)?.color, borderColor: rowChip(r)?.color }">
             {{ rowChip(r)?.label }}
           </span>
+          <span v-if="uncommittedCount(r.sessions)" class="unc" :title="`${uncommittedCount(r.sessions)} uncommitted ${uncommittedCount(r.sessions) === 1 ? 'file' : 'files'} in this ticket's folder`"><Icon name="diff" :size="11" />{{ uncommittedCount(r.sessions) }}</span>
           <span v-if="activityOf(r)" class="meta">{{ activityOf(r) }}</span>
           <button
             class="star"
@@ -178,6 +205,24 @@ const toggleOutside = (key: string): void => {
 }
 .lane {
   margin-top: 10px;
+}
+.autoorder {
+  margin-left: auto;
+  padding: 0;
+  font: 400 11.5px var(--font-ui);
+  color: var(--text-4);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.autoorder:hover {
+  color: var(--text-2);
+}
+.tile.drop-before {
+  box-shadow: 0 -2px 0 var(--accent);
+}
+.tile.drop-after {
+  box-shadow: 0 2px 0 var(--accent);
 }
 .lhead {
   display: flex;
@@ -400,6 +445,17 @@ const toggleOutside = (key: string): void => {
   line-height: 15px;
   color: var(--bg-0);
   background: var(--warn);
+  border-radius: 4px;
+}
+.unc {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  font: 600 11px/16px var(--font-ui);
+  color: var(--warn);
+  border: 1px solid var(--warn);
   border-radius: 4px;
 }
 .meta {

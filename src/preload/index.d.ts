@@ -116,6 +116,7 @@ declare global {
       minimizeWindow: () => void
       onResumeFailed: (cb: (info: { label: string; command: string }) => void) => void
       installHooks: () => { ok: boolean; error?: string }
+      onFocusSession: (cb: (target: { ticket: string | null; sessionId: string }) => void) => void
       onPlayAlert: (cb: () => void) => void
       toggleDock: () => void
       getDockState: () => { isDocked: boolean; edge: 'left' | 'right' }
@@ -128,6 +129,8 @@ declare global {
       closeTerminal: (id: string) => void
       sendPrompt: (id: string, text: string) => Promise<{ error: string | null }>
       stopTurn: (id: string) => void
+      closeSession: (id: string) => Promise<{ error: string | null }>
+      takeOverInteractive: (id: string, cols: number, rows: number) => Promise<{ error: string | null }>
       takeOver: (id: string, cols: number, rows: number) => Promise<{ error: string | null }>
       openInVscode: (id: string) => Promise<void>
       getSessionDetail: (id: string) => Promise<SessionDetail>
@@ -179,8 +182,21 @@ declare global {
       getMrFiles: (key: string) => Promise<MrFile[] | null>
       getMrStatus: (key: string) => Promise<import('../renderer/src/types').MrStatus>
       getMrRepo: (key: string) => Promise<string | null>
+      signInGitlab: () => Promise<boolean>
+      getMrExplanations: (key: string) => Promise<Record<string, string>>
+      getTicketMr: (ticket: string) => Promise<import('../renderer/src/types').TicketMr | null>
+      mrReview: (key: string, action: import('../renderer/src/types').MrReviewAction) => Promise<{ error: string | null; isCancelled: boolean }>
+      mrCommentable: (key: string, folder: string | null, isReadOnly: boolean, path: string | null) => Promise<import('../renderer/src/types').MrCommentable>
       refreshLists: () => Promise<boolean>
       getLocalHosts: () => Promise<import('../renderer/src/types').LocalHost[]>
+      getFactoryReport: () => Promise<import('../renderer/src/types').FactoryReport>
+      getFlow: (keys: string[]) => Promise<import('../renderer/src/types').FlowState>
+      openFlowSkill: () => void
+      runFactoryNow: () => Promise<{ error: string | null }>
+      applyFactoryProposal: (id: string) => Promise<{ error: string | null }>
+      dismissFactoryProposal: (id: string) => Promise<{ error: string | null }>
+      testFactoryProposal: (id: string) => Promise<{ error: string | null; sessionId?: string }>
+      onFactoryChanged: (cb: () => void) => () => void
       closeChrome: (key: string | null) => Promise<{ error: string | null }>
       startTicketServer: (key: string, cwd: string | null) => Promise<{ error?: string; url?: string }>
       getMrBranchFolder: (key: string) => Promise<{ repo: string | null; folder: string | null }>
@@ -189,10 +205,11 @@ declare global {
         key: string,
         action: 'approve' | 'unapprove' | 'merge' | 'rebase',
         options?: { isSquash: boolean; isSourceRemoved: boolean }
-      ) => Promise<{ error: string | null; isCancelled: boolean }>
+      ) => Promise<{ error: string | null; isCancelled: boolean; notice?: string | null }>
       postMrReply: (key: string, discussionId: string, body: string) => Promise<{ error: string | null; isCancelled: boolean }>
       postMrComment: (key: string, body: string) => Promise<{ error: string | null; isCancelled: boolean }>
       startReview: (key: string) => Promise<{ error: string | null; sessionId?: string }>
+      startAddress: (key: string) => Promise<{ error: string | null; sessionId?: string }>
       setAllProjects: (isAll: boolean) => void
       getStarred: () => string[]
       setStarred: (key: string, isOn: boolean) => void

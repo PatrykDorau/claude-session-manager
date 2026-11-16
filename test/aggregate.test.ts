@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildSessions, computeOpen } from '../src/main/aggregate'
+import { buildSessions, computeOpen, mergeClearedSessions, parseClearLink, type RawSession } from '../src/main/aggregate'
 
 const now = 1_000_000
 
@@ -135,5 +135,48 @@ describe('buildSessions ticket resolution', () => {
       ['SOF']
     )
     expect(s.ticket).toBe('SOFKAN-7')
+  })
+})
+
+describe('parseClearLink', () => {
+  it('links the transcript a background job continues in after /clear to the job session', () => {
+    expect(parseClearLink(JSON.stringify({ sessionId: 'job-1', resumeSessionId: 'new-1' }))).toEqual(['new-1', 'job-1'])
+  })
+  it('ignores jobs that never cleared and broken files', () => {
+    expect(parseClearLink(JSON.stringify({ sessionId: 'job-1', resumeSessionId: 'job-1' }))).toBeNull()
+    expect(parseClearLink(JSON.stringify({ sessionId: 'job-1' }))).toBeNull()
+    expect(parseClearLink('{')).toBeNull()
+  })
+})
+
+describe('mergeClearedSessions', () => {
+  const session = (id: string, over: Partial<RawSession>): RawSession => ({
+    id,
+    cwd: 'C:\w',
+    gitBranch: 'b',
+    firstPrompt: null,
+    mtimeMs: 0,
+    needsInput: false,
+    active: false,
+    done: false,
+    pendingToolUse: false,
+    model: null,
+    contextTokens: null,
+    stages: [],
+    ...over
+  })
+  it('shows the cleared transcript under the job session and keeps its first prompt and stages', () => {
+    const raw = [
+      session('job-1', { firstPrompt: 'T-1 start', contextTokens: 192_000, mtimeMs: 100, stages: ['plan'] }),
+      session('new-1', { firstPrompt: 'Przeczytaj', contextTokens: 30_000, mtimeMs: 200, done: true, stages: ['impl'] }),
+      session('other', { contextTokens: 5 })
+    ]
+    const merged = mergeClearedSessions(raw, new Map([['new-1', 'job-1']]))
+    expect(merged.map((r) => r.id)).toEqual(['job-1', 'other'])
+    expect(merged[0]).toMatchObject({ firstPrompt: 'T-1 start', contextTokens: 30_000, mtimeMs: 200, done: true, stages: ['plan', 'impl'] })
+  })
+  it('renames the cleared transcript when the job transcript is gone', () => {
+    const merged = mergeClearedSessions([session('new-1', { contextTokens: 1 })], new Map([['new-1', 'job-1']]))
+    expect(merged.map((r) => r.id)).toEqual(['job-1'])
   })
 })

@@ -60,6 +60,29 @@ export function computeOpen(
   return next
 }
 
+export const parseClearLink = (text: string): [string, string] | null => {
+  try {
+    const state = JSON.parse(text) as { sessionId?: unknown; resumeSessionId?: unknown }
+    const { sessionId, resumeSessionId } = state
+    if (typeof sessionId !== 'string' || typeof resumeSessionId !== 'string' || sessionId === resumeSessionId) return null
+    return [resumeSessionId, sessionId]
+  } catch {
+    return null
+  }
+}
+
+export const mergeClearedSessions = (raw: RawSession[], cleared: Map<string, string>): RawSession[] => {
+  const byId = new Map(raw.map((r) => [r.id, r]))
+  return raw.flatMap((r) => {
+    const jobId = cleared.get(r.id)
+    if (jobId) return byId.has(jobId) ? [] : [{ ...r, id: jobId }]
+    const newId = [...cleared].find(([, job]) => job === r.id)?.[0]
+    const next = newId ? byId.get(newId) : undefined
+    if (!next) return [r]
+    return [{ ...next, id: r.id, firstPrompt: r.firstPrompt ?? next.firstPrompt, stages: [...new Set([...(r.stages ?? []), ...(next.stages ?? [])])] }]
+  })
+}
+
 export function buildSessions(
   raw: RawSession[],
   openIds: string[],

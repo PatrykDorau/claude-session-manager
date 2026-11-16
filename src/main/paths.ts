@@ -16,6 +16,9 @@ export function needsInputDir(): string {
 export function activeDir(): string {
   return join(claudeRoot(), 'active')
 }
+export function jobsDir(): string {
+  return join(claudeRoot(), 'jobs')
+}
 export function doneDir(): string {
   return join(claudeRoot(), 'done')
 }

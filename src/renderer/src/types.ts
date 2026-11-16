@@ -40,6 +40,7 @@ export interface Session {
   model: string | null
   contextTokens: number | null
   dirty: boolean
+  changes?: number
   stages: Stage[]
   bg?: boolean
   worktree?: boolean
@@ -336,6 +337,7 @@ export interface MrNote {
   author: string
   body: string
   createdAt: string
+  isMine: boolean
 }
 
 export interface MrSnippet {
@@ -381,6 +383,8 @@ export interface MrStatus {
   overview: MrOverview | null
   approvals: MrApprovals | null
   discussions: MrDiscussion[] | null
+  drafts: MrDraftNote[] | null
+  diffRefs: MrDiffRefs | null
   problem: string | null
 }
 
@@ -390,6 +394,10 @@ export interface CodeComment {
   line: number
   isResolved: boolean
   notes: { author: string; body: string; html?: string }[]
+  isDraft?: boolean
+  draftId?: number
+  discussionId?: string
+  isResolvable?: boolean
 }
 
 export interface DiffRow {
@@ -408,4 +416,108 @@ export interface LocalHost {
   key: string | null
   server: (DevServer & { lastOutputAt: number | null }) | null
   chrome: { port: number; isUp: boolean; pages: { title: string; url: string }[] }
+}
+
+export interface MrDiffRefs {
+  baseSha: string
+  startSha: string
+  headSha: string
+}
+
+export interface MrLinePosition {
+  position_type: 'text'
+  base_sha: string
+  start_sha: string
+  head_sha: string
+  old_path: string
+  new_path: string
+  new_line?: number
+  old_line?: number
+}
+
+export interface MrDraftNote {
+  id: number
+  body: string
+  anchor: MrDiscussion['anchor']
+  replyTo: string | null
+}
+
+export interface MrCommentable {
+  isAllowed: boolean
+  reason: string | null
+  headSha?: string | null
+  path?: string
+}
+
+export interface MrLineAnchor {
+  path: string
+  line: number
+  side: 'new' | 'old'
+  sha: string
+}
+
+export type MrReviewAction =
+  | { kind: 'draft-add'; body: string; anchor?: MrLineAnchor; replyTo?: string }
+  | { kind: 'draft-edit'; id: number; body: string }
+  | { kind: 'draft-delete'; id: number }
+  | { kind: 'submit-review'; count: number }
+  | { kind: 'line-comment'; body: string; anchor: MrLineAnchor }
+  | { kind: 'resolve'; discussionId: string; isResolved: boolean }
+  | { kind: 'reply'; discussionId: string; body: string }
+  | { kind: 'note-edit'; discussionId: string; noteId: number; body: string }
+  | { kind: 'note-delete'; discussionId: string; noteId: number }
+  | { kind: 'set-draft'; isDraft: boolean; title: string }
+  | { kind: 'edit-text'; title?: string; description?: string }
+
+export interface TicketMr {
+  iid: number
+  projectId: number
+  state: string
+  title: string
+  url: string
+  description: string
+}
+
+export interface FactoryProposal {
+  id: string
+  target: string
+  title: string
+  evidence: string[]
+  find: string
+  replace: string
+  isDismissed: boolean
+}
+
+export type FlowRole = { stage: string; who: string; model: string; isMain: boolean; agents: string[] }
+export type FlowStage = { n: number; title: string; isGated: boolean; roles: FlowRole[] }
+export type FlowAgent = { name: string; model: string; description: string }
+export type FlowBooster = { id: string; name: string; detail: string }
+export type FlowSkill = { stages: FlowStage[]; sizes: string[][]; risk: string[]; error: string | null }
+export type FlowTicket = {
+  key: string
+  n: number | null
+  stage: string
+  next: string
+  firstStep: string
+  size: 'S' | 'M' | 'L' | null
+  risk: 'low' | 'high' | 'critical' | null
+}
+export type FlowState = {
+  skill: FlowSkill
+  raw: string
+  skillPath: string
+  updatedAt: number
+  tickets: FlowTicket[]
+  agents: FlowAgent[]
+  boosters: FlowBooster[]
+}
+
+export interface FactoryReport {
+  day: string | null
+  report: string | null
+  proposals: FactoryProposal[]
+  trend: { date: string; tokens: number }[]
+  isRunning: boolean
+  lastRun: number | null
+  lastError: string | null
 }

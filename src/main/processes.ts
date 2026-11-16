@@ -194,6 +194,11 @@ export const extractAttachPids = (rows: ClaudeProcess[]): Map<string, number> =>
     return id ? [[id, r.pid] as [string, number]] : []
   }))
 
+export const extractResumePids = (rows: ClaudeProcess[], id: string): number[] =>
+  rows.filter((r) => extractResumeIds([r.commandLine]).includes(id)).map((r) => r.pid)
+
+export const runningResumePids = async (id: string): Promise<number[]> => extractResumePids(await claudeProcesses(), id)
+
 export const runningAttaches = async (): Promise<Map<string, number>> => extractAttachPids(await claudeProcesses())
 
 export const runningAttachIds = async (): Promise<Set<string>> => new Set((await runningAttaches()).keys())

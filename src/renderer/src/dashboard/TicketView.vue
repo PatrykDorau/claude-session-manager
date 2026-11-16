@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import type { DevServer, MrRow, Session, SessionDetail, TerminalMode } from '../types'
+import type { DevServer, MrRow, Session, SessionDetail, TerminalMode, TicketMr } from '../types'
 import type { TaskRow } from '../taskview'
 import { splitTag, statusLane } from '../taskview'
 import { plainSession } from '../cards'
@@ -14,7 +14,8 @@ import TestCasesDialog from './TestCasesDialog.vue'
 import ServerPanel from './ServerPanel.vue'
 import StatusMenu from './StatusMenu.vue'
 import Splitter from './Splitter.vue'
-import { clampSize, readSize, writeSize, readFlag } from './dashboard'
+import ContextChip from './ContextChip.vue'
+import { clampSize, readSize, writeSize, readFlag, uncommittedCount } from './dashboard'
 import MenuButton from './MenuButton.vue'
 import Icon from './Icon.vue'
 import type { MenuItem } from '../types'
@@ -45,6 +46,11 @@ const showClaude = (): void => {
   tab.value = 'work'
   if (!isClaudeOpen.value) toggleClaude()
 }
+const showCode = (): void => {
+  tab.value = 'work'
+  if (!isCodeOpen.value) toggleCode()
+}
+const changes = computed(() => uncommittedCount(props.row.sessions))
 const panes = ref<HTMLDivElement | null>(null)
 const codeWidth = ref(readSize('dash.codeWidth', 760))
 const resizeCode = (delta: number): void => {
@@ -99,7 +105,6 @@ const title = computed(() => splitTag(props.row.summary))
 const facts = computed(() => {
   const list: string[] = []
   if (session.value?.model) list.push(session.value.model.replace(/^claude-/, ''))
-  if (session.value?.contextTokens) list.push(`${Math.round(session.value.contextTokens / 1000)}k context`)
   if (detail.value) list.push(`${detail.value.turns} turns`)
   return list
 })
@@ -107,10 +112,42 @@ const facts = computed(() => {
 const openJira = (): void => window.api.openTicket(props.row.key)
 const openCode = (): void => window.api.openTaskCode(props.row.key)
 const openMr = (): void => window.api.openMr(props.row.key)
+const ticketMr = ref<TicketMr | null>(null)
+const loadTicketMr = async (): Promise<void> => {
+  if (props.mr) return
+  ticketMr.value = await window.api.getTicketMr(props.row.key)
+}
+void loadTicketMr()
+const openTicketMr = (): void => {
+  if (ticketMr.value) window.open(ticketMr.value.url, '_blank')
+}
 const pick = (id: string): void => {
   pickedId.value = id
 }
 const pickFromSelect = (e: Event): void => pick((e.target as HTMLSelectElement).value)
+const forgetTab = (id: string): void => {
+  openedIds.value = openedIds.value.filter((o) => o !== id)
+  if (pickedId.value === id) pickedId.value = null
+}
+const closingIds = ref<string[]>([])
+const closeTab = async (s: Session): Promise<void> => {
+  if (closingIds.value.includes(s.id)) return
+  if (s.isLive) {
+    closingIds.value = [...closingIds.value, s.id]
+    const result = await window.api.closeSession(s.id).finally(() => {
+      closingIds.value = closingIds.value.filter((c) => c !== s.id)
+    })
+    if (result.error === 'cancelled') return
+    if (result.error) {
+      window.alert(result.error)
+      return
+    }
+  }
+  forgetTab(s.id)
+}
+const onTerminalExited = (id: string): void => {
+  if (!closingIds.value.includes(id)) remountSession(id)
+}
 const stopTurn = (): void => {
   if (session.value) window.api.stopTurn(session.value.id)
 }
@@ -242,7 +279,11 @@ onBeforeUnmount(() => {
         <button v-if="mr" class="mrlink" :class="{ attn: mr.openThreads > 0 }" title="Open this ticket's merge request" @click="emit('open-mr', mr.key)">
           <Icon name="pr" :size="13" />!{{ mr.iid }}<span v-if="mr.isDraft" class="dr">Draft</span><span v-if="mr.openThreads" class="thr"><Icon name="message" :size="11" />{{ mr.openThreads }}</span><span v-if="mr.approvals" class="ap"><Icon name="check" :size="11" />{{ mr.approvals }}</span>
         </button>
+        <button v-else-if="ticketMr" class="mrlink" :title="`Open !${ticketMr.iid} in GitLab`" @click="openTicketMr">
+          <Icon name="pr" :size="13" />!{{ ticketMr.iid }}<span class="dr">{{ ticketMr.state === 'merged' ? 'merged' : ticketMr.state }}</span>
+        </button>
         <h1 class="title" :title="title.text">{{ title.text || 'No title' }}</h1>
+        <button v-if="changes" class="unc" :title="`${changes} uncommitted ${changes === 1 ? 'file' : 'files'}. Show the code`" @click="showCode"><Icon name="diff" :size="13" />{{ changes }} uncommitted</button>
         <button v-if="server" class="srv" title="Show the dev server" @click="tab = 'server'"><i />localhost:{{ server.port }}</button>
         <span v-if="chip" class="state" :style="{ color: chip.color }"><i :style="{ background: chip.color }" />{{ chip.label }}</span>
       </div>
@@ -254,6 +295,7 @@ onBeforeUnmount(() => {
         </nav>
         <span class="grow" />
         <span v-if="facts.length" class="facts">{{ facts.join('  ·  ') }}</span>
+        <ContextChip v-if="session" :session="session" :mode="mode" />
         <div v-if="tab === 'work'" class="seg" title="Show or hide the panes">
           <button :class="{ on: isCodeOpen }" @click="toggleCode"><Icon name="code" :size="14" />Code</button>
           <button :class="{ on: isClaudeOpen }" @click="toggleClaude"><Icon name="terminal" :size="14" />Claude</button>
@@ -291,12 +333,14 @@ onBeforeUnmount(() => {
             <button
               v-for="s in tabSessions"
               :key="s.id"
-              :class="{ on: s.id === session?.id }"
+              :class="{ on: s.id === session?.id, closing: closingIds.includes(s.id) }"
               :title="`${s.name ?? s.projectName} · ${s.status}`"
               @click="pick(s.id)"
             >
-              <Icon v-if="isExplain(s)" name="sparkles" :size="13" />
-              <i v-else :style="{ background: STATUS_DOT[s.status] ?? '#666d78' }" />{{ sessionLabel(s) }}
+              <span v-if="closingIds.includes(s.id)" class="spin" />
+              <Icon v-else-if="isExplain(s)" name="sparkles" :size="13" />
+              <i v-else :style="{ background: STATUS_DOT[s.status] ?? '#666d78' }" />{{ closingIds.includes(s.id) ? 'Closing…' : sessionLabel(s) }}
+              <span v-if="!closingIds.includes(s.id)" class="x" role="button" :title="s.isLive ? 'Close this session (stops the Claude process)' : 'Hide this tab'" @click.stop="closeTab(s)">×</span>
             </button>
             <select v-if="row.sessions.length > tabSessions.length" class="older" :value="''" @change="pickFromSelect">
               <option value="" disabled>Older sessions…</option>
@@ -313,7 +357,7 @@ onBeforeUnmount(() => {
           :session-id="s.id"
           :project-name="s.projectName"
           @mode="setMode(s.id, $event)"
-          @exited="remountSession(s.id)"
+          @exited="onTerminalExited(s.id)"
           @focus-vscode="focusVscode"
         />
         <div v-if="pendingStart" class="starting">
@@ -478,6 +522,20 @@ onBeforeUnmount(() => {
 }
 .srv:hover {
   border-color: var(--ok);
+}
+.unc {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  font: 600 11.5px var(--font-ui);
+  color: var(--warn);
+  background: none;
+  border: 1px solid var(--warn);
+  border-radius: 11px;
+  cursor: pointer;
 }
 .srv i,
 .dot {
@@ -668,6 +726,27 @@ onBeforeUnmount(() => {
 .stabs button.on {
   color: var(--text);
   background: var(--bg-3);
+}
+.stabs .x {
+  margin: 0 -5px 0 -2px;
+  padding: 0 4px;
+  font-size: 14px;
+  line-height: 18px;
+  color: var(--text-4);
+  border-radius: 4px;
+  opacity: 0;
+}
+.stabs button:hover .x,
+.stabs button.on .x {
+  opacity: 1;
+}
+.stabs button.closing {
+  color: var(--text-3);
+  pointer-events: none;
+}
+.stabs .x:hover {
+  color: var(--text);
+  background: var(--bg-2);
 }
 .stabs i {
   width: 7px;

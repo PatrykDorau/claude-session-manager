@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { jiraApiUrl, isAccepting, descriptionText, commentUrl, parseTransitions, transitionsUrl, parseTicketDetail, parsePriority } from '../src/main/jira'
+import { jiraApiUrl, isAccepting, descriptionText, commentUrl, parseTransitions, transitionsUrl, parseTicketDetail, parsePriority, releaseTransition } from '../src/main/jira'
 
 describe('jiraApiUrl', () => {
   it('derives the issue API url from a browse base (trailing slash)', () => {
@@ -114,5 +114,18 @@ describe('parsePriority', () => {
   it('returns null without a priority', () => {
     expect(parsePriority({ fields: {} })).toBeNull()
     expect(parsePriority(null)).toBeNull()
+  })
+})
+
+describe('releaseTransition', () => {
+  it('picks the transition that leads to Waiting for internal release', () => {
+    const list = [
+      { id: '1', name: 'Back to dev', to: 'In Progress' },
+      { id: '7', name: 'Merged', to: 'Waiting for Internal Release' }
+    ]
+    expect(releaseTransition(list)?.id).toBe('7')
+  })
+  it('returns null when the ticket cannot go there from its status', () => {
+    expect(releaseTransition([{ id: '1', name: 'Back to dev', to: 'In Progress' }])).toBeNull()
   })
 })

@@ -37,6 +37,7 @@ const base: State = {
   mrSessions: {},
   serverCommands: {},
   chromePorts: {},
+  factoryLastRun: null,
   settings: {
     jiraBase: 'https://jira.redge.com/browse/',
     jiraToken: '',
@@ -84,6 +85,7 @@ describe('ticket-level state', () => {
     expect(s.pane).toEqual({})
     expect(s.restore).toEqual({ snapshot: [], pendingRemoval: {}, lastScanAt: 0 })
     expect(s.repoByPrefix).toEqual({})
+    expect(s.factoryLastRun).toBeNull()
     expect(s.settings.taskJql).toBe(base.settings.taskJql)
     expect(s.settings.startPrompt).toBe(base.settings.startPrompt)
     rmSync(dir, { recursive: true, force: true })
@@ -164,6 +166,7 @@ describe('store io', () => {
       mrSessions: { '7!1': 'sid' },
       serverCommands: { repo: 'npm run serve -- --port {port}' },
       chromePorts: { 'A-1': 9301 },
+      factoryLastRun: 1700000000000,
       settings: {
         jiraBase: 'http://jira.local/',
         jiraToken: 'tok',
