@@ -234,6 +234,9 @@ const background = computed(() => {
   flex: 1;
   min-width: 0;
 }
+.body :deep(.stagebar) {
+  padding-right: 34px;
+}
 .line {
   display: flex;
   align-items: baseline;
@@ -253,7 +256,11 @@ const background = computed(() => {
   text-decoration: underline;
 }
 .jira {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 9px;
   font-weight: 600;
   color: #d4d4d4;
@@ -280,6 +287,7 @@ const background = computed(() => {
 }
 .time {
   flex: none;
+  white-space: nowrap;
   color: #737373;
   font-size: 10px;
 }

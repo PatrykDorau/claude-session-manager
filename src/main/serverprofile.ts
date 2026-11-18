@@ -67,3 +67,9 @@ export const chromeArgs = (profileDir: string, debugPort: number, url: string): 
   '--disable-web-security',
   url
 ]
+
+export const isChoiceMismatch = (label: string, tenant: string, environment: string): boolean => {
+  if (label === 'custom') return false
+  const [runningTenant, runningEnvironment] = label.split(' · ')
+  return (!!tenant && runningTenant !== tenant) || (!!environment && runningEnvironment !== environment)
+}

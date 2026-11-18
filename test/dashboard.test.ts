@@ -33,14 +33,11 @@ const row = (key: string, summary: string, sessions: Session[] = []): TaskRow =>
 describe('filterRows', () => {
   const rows = [row('SOFRMPT-3953', 'Channel logo updates'), row('SOFNJJ-2350', 'EPG grid scroll')]
   it('matches the key and the summary case-insensitively', () => {
-    expect(filterRows(rows, 'sofnjj', [], false).map((r) => r.key)).toEqual(['SOFNJJ-2350'])
-    expect(filterRows(rows, 'CHANNEL', [], false).map((r) => r.key)).toEqual(['SOFRMPT-3953'])
+    expect(filterRows(rows, 'sofnjj').map((r) => r.key)).toEqual(['SOFNJJ-2350'])
+    expect(filterRows(rows, 'CHANNEL').map((r) => r.key)).toEqual(['SOFRMPT-3953'])
   })
   it('keeps every row for an empty query', () => {
-    expect(filterRows(rows, '  ', [], false)).toHaveLength(2)
-  })
-  it('keeps only starred rows when asked', () => {
-    expect(filterRows(rows, '', ['SOFNJJ-2350'], true).map((r) => r.key)).toEqual(['SOFNJJ-2350'])
+    expect(filterRows(rows, '  ')).toHaveLength(2)
   })
 })
 

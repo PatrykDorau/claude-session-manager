@@ -69,3 +69,18 @@ export const parseStatusPaths = (out: string): string[] =>
       const arrow = rest.indexOf(' -> ')
       return (arrow >= 0 ? rest.slice(arrow + 4) : rest).replace(/^"|"$/g, '')
     })
+
+export interface CodeMatch {
+  path: string
+  line: number
+  text: string
+}
+
+export const parseGrep = (out: string, limit: number): CodeMatch[] =>
+  out
+    .split(/\r?\n/)
+    .flatMap((row) => {
+      const match = /^(.+?):(\d+):(.*)$/.exec(row)
+      return match ? [{ path: match[1], line: Number(match[2]), text: match[3].trim().slice(0, 200) }] : []
+    })
+    .slice(0, limit)

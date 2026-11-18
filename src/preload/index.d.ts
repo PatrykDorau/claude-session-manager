@@ -15,6 +15,7 @@ import type {
   QuickAction,
   Session,
   SessionDetail,
+  InboxItem,
   TerminalMode,
   TaskMeta,
   UsageResult,
@@ -51,6 +52,7 @@ declare global {
       ) => Promise<{ error: string | null; sessionId?: string }>
       openTaskCode: (key: string) => void
       getTaskRepos: () => { roots: { path: string; name: string }[]; byPrefix: Record<string, string> }
+      pickRepo: () => Promise<{ repo: { path: string; name: string } | null; error: string | null }>
       getVscodeLayout: () => VscodeProfile[]
       applyVscodeLayout: () => VscodeProfile[]
       openSession: (s: Session) => void
@@ -134,10 +136,21 @@ declare global {
       takeOver: (id: string, cols: number, rows: number) => Promise<{ error: string | null }>
       openInVscode: (id: string) => Promise<void>
       getSessionDetail: (id: string) => Promise<SessionDetail>
+      getInboxItem: (id: string) => Promise<InboxItem | null>
+      answerInbox: (id: string, toolUseId: string, key: string) => Promise<{ error: string | null }>
+      dismissInbox: (id: string) => void
+      getTicketReadiness: (key: string, cwd: string | null) => Promise<{ handoffAt: number | null; lastCommitAt: number | null }>
+      getPromptHistory: () => Promise<import('../renderer/src/types').PromptEntry[]>
+      getTaskFiles: (ticket: string) => Promise<{ name: string; kind: 'video' | 'image' }[] | null>
+      openTaskFile: (ticket: string, name: string) => void
+      setViewingSession: (id: string | null) => void
+      onInboxNext: (cb: () => void) => void
+      isJumpKeyReady: () => boolean
       getTicketDescription: (key: string) => Promise<string | null>
       copyResume: (id: string) => void
       postJiraComment: (key: string, body: string) => Promise<{ error: string | null }>
       onPtyData: (cb: (id: string, chunk: string) => void) => () => void
+      onPtyRekey: (cb: (from: string, to: string) => void) => () => void
       onPtyExit: (cb: (id: string, code: number) => void) => () => void
       openDashboard: () => void
       showSidebar: () => void
@@ -157,6 +170,7 @@ declare global {
       getServerLog: (key: string) => string
       getServerProfile: (cwd: string) => ServerProfile
       listFiles: (cwd: string) => Promise<string[]>
+      searchCode: (cwd: string, query: string) => Promise<{ path: string; line: number; text: string }[]>
       listChanges: (cwd: string) => Promise<ChangedFile[]>
       listBranchChanges: (cwd: string) => Promise<BranchChanges>
       getExplainDoc: (key: string) => Promise<ExplainFile | null>
@@ -189,14 +203,14 @@ declare global {
       mrCommentable: (key: string, folder: string | null, isReadOnly: boolean, path: string | null) => Promise<import('../renderer/src/types').MrCommentable>
       refreshLists: () => Promise<boolean>
       getLocalHosts: () => Promise<import('../renderer/src/types').LocalHost[]>
-      getFactoryReport: () => Promise<import('../renderer/src/types').FactoryReport>
+      getInsightsReport: () => Promise<import('../renderer/src/types').InsightsReport>
       getFlow: (keys: string[]) => Promise<import('../renderer/src/types').FlowState>
       openFlowSkill: () => void
-      runFactoryNow: () => Promise<{ error: string | null }>
-      applyFactoryProposal: (id: string) => Promise<{ error: string | null }>
-      dismissFactoryProposal: (id: string) => Promise<{ error: string | null }>
-      testFactoryProposal: (id: string) => Promise<{ error: string | null; sessionId?: string }>
-      onFactoryChanged: (cb: () => void) => () => void
+      runInsightsNow: () => Promise<{ error: string | null }>
+      applyInsightsProposal: (id: string) => Promise<{ error: string | null }>
+      dismissInsightsProposal: (id: string) => Promise<{ error: string | null }>
+      testInsightsProposal: (id: string) => Promise<{ error: string | null; sessionId?: string }>
+      onInsightsChanged: (cb: () => void) => () => void
       closeChrome: (key: string | null) => Promise<{ error: string | null }>
       startTicketServer: (key: string, cwd: string | null) => Promise<{ error?: string; url?: string }>
       getMrBranchFolder: (key: string) => Promise<{ repo: string | null; folder: string | null }>

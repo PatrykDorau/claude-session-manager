@@ -11,7 +11,11 @@ describe('parseAgentMeta', () => {
     const meta = parseAgentMeta(
       '{"agentType":"vue-reviewer","description":"Review diff","spawnDepth":1,"model":"opus","pickedEffortModel":"claude-opus-5-5","finished":true}'
     )
-    expect(meta).toEqual({ agentType: 'vue-reviewer', description: 'Review diff', model: 'claude-opus-5-5', isFinished: true, depth: 1 })
+    expect(meta).toEqual({ agentType: 'vue-reviewer', description: 'Review diff', model: 'opus', isFinished: true, depth: 1 })
+  })
+  it('prefers the requested model over the parent effort model', () => {
+    expect(parseAgentMeta('{"model":"sonnet","pickedEffortModel":"claude-opus-5-5"}')?.model).toBe('sonnet')
+    expect(parseAgentMeta('{"pickedEffortModel":"claude-opus-5-5"}')?.model).toBe('claude-opus-5-5')
   })
   it('falls back for missing fields and bad json', () => {
     expect(parseAgentMeta('{}')).toEqual({ agentType: 'agent', description: '', model: null, isFinished: false, depth: 1 })
@@ -33,11 +37,16 @@ describe('summarizeAgent', () => {
       lastText: 'Status: done',
       lastAt: Date.parse('2026-11-10T10:00:12Z'),
       model: 'claude-sonnet-5-5',
-      task: 'Do the task'
+      task: 'Do the task',
+      contextTokens: null
     })
   })
+  it('reads the context size from the last usage', () => {
+    const withUsage = line({ type: 'assistant', timestamp: '2026-11-10T10:00:00Z', message: { role: 'assistant', content: [], usage: { input_tokens: 5, cache_read_input_tokens: 30000, cache_creation_input_tokens: 1000 } } })
+    expect(summarizeAgent([withUsage]).contextTokens).toBe(31005)
+  })
   it('survives broken lines', () => {
-    expect(summarizeAgent(['{', ''])).toEqual({ toolCalls: 0, lastText: '', lastAt: null, model: null, task: '' })
+    expect(summarizeAgent(['{', ''])).toEqual({ toolCalls: 0, lastText: '', lastAt: null, model: null, task: '', contextTokens: null })
   })
 })
 

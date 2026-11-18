@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { pickChromePort, claudeProjectKey, withTaskMcp, taskChromeProfile, seedProfile } from '../src/main/taskbrowser'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { pickChromePort, claudeProjectKey, withTaskMcp, taskChromeProfile, seedProfile, writeTaskMcpFile, taskMcpArgs } from '../src/main/taskbrowser'
 
 describe('pickChromePort', () => {
   it('takes the lowest free port from 9301', () => {
@@ -62,5 +65,29 @@ describe('seedProfile', () => {
     expect(existsSync(join(target, 'SingletonLock'))).toBe(false)
     expect(await seedProfile(base, target)).toBe(false)
     rmSync(root, { recursive: true, force: true })
+  })
+})
+
+describe('writeTaskMcpFile', () => {
+  it('writes a Playwright server for the task Chrome and returns its path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-'))
+    const file = writeTaskMcpFile(join(dir, 'mcp'), 'SOFRMPT-1', 9310, 'C:/cfg.json')
+    expect(file).toBe(join(dir, 'mcp', 'SOFRMPT-1.json'))
+    expect(JSON.parse(readFileSync(file!, 'utf8')).mcpServers.playwright.args).toEqual([
+      '-y',
+      '@playwright/mcp@latest',
+      '--config',
+      'C:/cfg.json',
+      '--cdp-endpoint',
+      'http://localhost:9310'
+    ])
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('taskMcpArgs', () => {
+  it('passes the config last so the variadic flag cannot swallow the prompt', () => {
+    expect(taskMcpArgs(['--bg', '--name', 'A-1', 'go'], 'C:/m/A-1.json')).toEqual(['--bg', '--name', 'A-1', 'go', '--mcp-config', 'C:/m/A-1.json'])
+    expect(taskMcpArgs(['--bg'], null)).toEqual(['--bg'])
   })
 })

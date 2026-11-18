@@ -22,7 +22,7 @@ const mr = (over: Partial<MrRow>): MrRow => ({
   ...over
 })
 
-const none = { query: '', project: '', author: '', isUnreviewedOnly: false, starred: [], isStarredOnly: false, myName: null, isMineHidden: false, isMineOnly: false }
+const none = { query: '', project: '', author: '', isUnreviewedOnly: false, myName: null, isMineHidden: false, isMineOnly: false }
 
 describe('filterMrs', () => {
   const rows = [
@@ -42,8 +42,9 @@ describe('filterMrs', () => {
     expect(filterMrs(rows, { ...none, author: 'Anna' }).map((r) => r.key)).toEqual(['7!1'])
     expect(filterMrs(rows, { ...none, isUnreviewedOnly: true }).map((r) => r.key)).toEqual(['7!1'])
   })
-  it('keeps only starred MRs when asked', () => {
-    expect(filterMrs(rows, { ...none, starred: ['8!2'], isStarredOnly: true }).map((r) => r.key)).toEqual(['8!2'])
+  it('hides approved MRs together with reviewed ones under "Not reviewed"', () => {
+    const list = [...rows, mr({ key: '9!3', review: 'approved' })]
+    expect(filterMrs(list, { ...none, isUnreviewedOnly: true }).map((r) => r.key)).toEqual(['7!1'])
   })
 })
 
@@ -52,6 +53,7 @@ describe('reviewLabel', () => {
     expect(reviewLabel('new-changes')).toEqual({ label: 'new changes since your review', color: '#f0883e' })
     expect(reviewLabel('not-reviewed')).toEqual({ label: 'not reviewed', color: '#9a9a9a' })
     expect(reviewLabel('reviewed')).toEqual({ label: 'reviewed', color: '#2ea043' })
+    expect(reviewLabel('approved')).toEqual({ label: 'approved by me', color: '#3dd68c' })
   })
 })
 
@@ -90,6 +92,10 @@ describe('filterMrs — my merge requests', () => {
 })
 
 describe('groupMrs', () => {
+  it('puts approved MRs in the last group', () => {
+    const list = [mr({ key: '7!1', review: 'approved' }), mr({ key: '7!2', review: 'reviewed' }), mr({ key: '7!3' })]
+    expect(groupMrs(list).map((g) => g.state)).toEqual(['not-reviewed', 'reviewed', 'approved'])
+  })
   it('groups by review state in the order new changes, not reviewed, reviewed', () => {
     const list = [mr({ key: '7!1', review: 'reviewed' }), mr({ key: '7!2', review: 'new-changes' }), mr({ key: '7!3' })]
     expect(groupMrs(list).map((g) => [g.state, g.rows.map((r) => r.key)])).toEqual([

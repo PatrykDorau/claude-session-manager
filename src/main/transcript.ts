@@ -1,8 +1,11 @@
+import type { PendingTool } from '../renderer/src/types'
+
 interface Head {
   sessionId: string | null
   cwd: string | null
   gitBranch: string | null
   firstPrompt: string | null
+  title?: string | null
 }
 
 const NOT_PROMPT = /^<(local-command-caveat|system-reminder|local-command-stdout)>/
@@ -18,11 +21,60 @@ function textOf(content: unknown): string | null {
 
 interface Tail {
   pendingToolUse: boolean
+  pendingTool: PendingTool | null
+  isOpaqueRequest: boolean
+  questionOptions: string[]
   isQuestion: boolean
   question: string | null
   model: string | null
   contextTokens: number | null
   gitBranch: string | null
+}
+
+const OPAQUE_TOOLS = ['Agent', 'Task', 'ExitPlanMode']
+const FILE_TOOLS = ['Edit', 'Write', 'Read', 'MultiEdit', 'NotebookEdit']
+const INPUT_MAX = 300
+
+const toolInput = (name: string, input: any): string => {
+  const text =
+    name === 'Bash' && typeof input?.command === 'string'
+      ? input.command
+      : FILE_TOOLS.includes(name) && typeof input?.file_path === 'string'
+        ? input.file_path
+        : JSON.stringify(input ?? {})
+  return text.length > INPUT_MAX ? `${text.slice(0, INPUT_MAX - 1)}…` : text
+}
+
+const pendingRequest = (message: any): { pendingTool: PendingTool | null; isOpaqueRequest: boolean; questionOptions: string[] } => {
+  const uses = message?.stop_reason === 'tool_use' && Array.isArray(message.content) ? message.content.filter((c: any) => c?.type === 'tool_use') : []
+  if (!uses.length) return { pendingTool: null, isOpaqueRequest: false, questionOptions: [] }
+  if (uses.length > 1 || OPAQUE_TOOLS.includes(uses[0].name)) return { pendingTool: null, isOpaqueRequest: true, questionOptions: [] }
+  const use = uses[0]
+  const questions = use.name === 'AskUserQuestion' && Array.isArray(use.input?.questions) ? use.input.questions : []
+  if (questions.length > 1 || questions[0]?.multiSelect) return { pendingTool: null, isOpaqueRequest: true, questionOptions: [] }
+  const options = questions[0]?.options
+  return {
+    pendingTool: { name: String(use.name), input: toolInput(String(use.name), use.input), toolUseId: String(use.id ?? '') },
+    isOpaqueRequest: false,
+    questionOptions: Array.isArray(options) ? options.map((o: any) => o?.label).filter((l: unknown): l is string => typeof l === 'string') : []
+  }
+}
+
+const lastMessage = (lines: string[]): any => {
+  const entries = lines.flatMap((line) => {
+    try {
+      const o = JSON.parse(line)
+      return o?.type === 'assistant' || o?.type === 'user' ? [o] : []
+    } catch {
+      return []
+    }
+  })
+  const last = entries[entries.length - 1]
+  if (last?.type !== 'assistant') return null
+  const id = last.message?.id
+  const sameMessage: any[] = []
+  for (let i = entries.length - 1; i >= 0 && entries[i].type === 'assistant' && (id ? entries[i].message?.id === id : i === entries.length - 1); i--) sameMessage.unshift(entries[i])
+  return { ...last.message, content: sameMessage.flatMap((o) => (Array.isArray(o.message?.content) ? o.message.content : [])) }
 }
 
 const QUESTION_END = /\?[\s*_`)"'\]]*$/
@@ -73,7 +125,8 @@ export function parseTail(lines: string[]): Tail {
     }
     if (lastRealType !== null && model !== null && gitBranch !== null) break
   }
-  return { pendingToolUse, isQuestion: question !== null, question, model, contextTokens, gitBranch }
+  const request = pendingRequest(lastMessage(lines))
+  return { pendingToolUse, ...request, isQuestion: question !== null, question, model, contextTokens, gitBranch }
 }
 
 const createPromptFilter = (): ((o: any) => string | null) => {
@@ -107,6 +160,7 @@ export function parseTranscriptHead(lines: string[]): Head {
     if (head.sessionId == null && typeof o.sessionId === 'string') head.sessionId = o.sessionId
     if (head.cwd == null && typeof o.cwd === 'string') head.cwd = o.cwd
     if (head.gitBranch == null && typeof o.gitBranch === 'string') head.gitBranch = o.gitBranch
+    if (head.title == null && o.type === 'custom-title' && typeof o.customTitle === 'string') head.title = o.customTitle
     if (head.firstPrompt != null) continue
     head.firstPrompt = realPrompt(o)
   }

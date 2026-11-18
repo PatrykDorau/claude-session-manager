@@ -18,6 +18,7 @@ export interface AgentSummary {
   lastAt: number | null
   model: string | null
   task: string
+  contextTokens: number | null
 }
 
 export interface AgentStep {
@@ -37,6 +38,7 @@ export interface AgentNode {
   lastAt: number | null
   task: string
   depth: number
+  contextTokens: number | null
 }
 
 export interface AgentGroup {
@@ -45,7 +47,7 @@ export interface AgentGroup {
 }
 
 const STUCK_MS = 5 * 60 * 1000
-const RECENT_MS = 3 * 24 * 60 * 60 * 1000
+const RECENT_MS = 14 * 24 * 60 * 60 * 1000
 const MAX_STEPS = 300
 
 const asText = (v: unknown): string => (typeof v === 'string' ? v : '')
@@ -65,7 +67,7 @@ export const parseAgentMeta = (raw: string): AgentMeta | null => {
     return {
       agentType: asText(o.agentType) || 'agent',
       description: asText(o.description),
-      model: asText(o.pickedEffortModel) || asText(o.model) || null,
+      model: asText(o.model) || asText(o.pickedEffortModel) || null,
       isFinished: o.finished === true,
       depth: typeof o.spawnDepth === 'number' ? o.spawnDepth : 1
     }
@@ -102,12 +104,14 @@ export const summarizeAgent = (lines: string[]): AgentSummary => {
   const lastWithText = [...assistants].reverse().find((o) => textOf(o))
   const times = rows.map((o) => Date.parse(asText(o.timestamp))).filter((t) => !Number.isNaN(t))
   const firstUser = rows.find((o) => o.type === 'user' && textOf(o))
+  const usage = [...assistants].reverse().find((o) => o.message?.usage)?.message?.usage
   return {
     toolCalls: assistants.reduce((n, o) => n + contentOf(o).filter((c: any) => c?.type === 'tool_use').length, 0),
     lastText: lastWithText ? firstLine(textOf(lastWithText), 200) : '',
     lastAt: times.length ? Math.max(...times) : null,
     model: asText(assistants.find((o) => o.message?.model)?.message?.model) || null,
-    task: firstUser ? firstLine(textOf(firstUser), 200) : ''
+    task: firstUser ? firstLine(textOf(firstUser), 200) : '',
+    contextTokens: usage ? (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0) : null
   }
 }
 
@@ -168,7 +172,8 @@ const readGroup = async (dir: string, sessionId: string, isLive: (id: string) =>
           lastText: summary.lastText,
           lastAt: summary.lastAt,
           task: summary.task,
-          depth: meta.depth
+          depth: meta.depth,
+          contextTokens: summary.contextTokens
         }
       })
     )

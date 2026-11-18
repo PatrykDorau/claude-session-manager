@@ -124,8 +124,35 @@ const surface = EditorView.theme(
   { dark: true }
 )
 
-const view = ref<'changes' | 'files' | 'flow'>('changes')
+const view = ref<'changes' | 'files' | 'flow' | 'search'>('changes')
 const filter = ref('')
+const searchQuery = ref('')
+const searchResults = ref<{ path: string; line: number; text: string }[]>([])
+const searchedFor = ref('')
+const isSearching = ref(false)
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+const runSearch = async (): Promise<void> => {
+  const query = searchQuery.value.trim()
+  if (searchTimer) clearTimeout(searchTimer)
+  if (query.length < 2) {
+    searchResults.value = []
+    searchedFor.value = ''
+    return
+  }
+  isSearching.value = true
+  const results = await window.api.searchCode(workCwd.value ?? props.cwd ?? '', query)
+  isSearching.value = false
+  if (query !== searchQuery.value.trim()) return
+  searchResults.value = results
+  searchedFor.value = query
+}
+const startSearch = (): void => {
+  void runSearch()
+}
+const scheduleSearch = (): void => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(startSearch, 400)
+}
 const files = ref<string[]>([])
 const branch = ref<BranchChanges | null>(null)
 const openPath = ref<string | null>(null)
@@ -162,6 +189,11 @@ const toggleUncommitted = async (): Promise<void> => {
 const isOtherBranch = computed(
   () => !!branch.value && !branch.value.branch.toUpperCase().includes(props.ticketKey.toUpperCase())
 )
+const isOtherBranchShown = ref(false)
+const showOtherBranch = (): void => {
+  isOtherBranchShown.value = true
+}
+const isChangesHidden = computed(() => isOtherBranch.value && !isOtherBranchShown.value)
 const tree = computed(() => buildTree(files.value))
 const filtered = computed(() => {
   const needle = filter.value.trim().toLowerCase()
@@ -183,7 +215,7 @@ const toggleSide = (): void => {
   isSideCollapsed.value = !isSideCollapsed.value
   writeSize('dash.codeSideCollapsed', isSideCollapsed.value)
 }
-const showView = (next: 'changes' | 'files' | 'flow'): void => {
+const showView = (next: 'changes' | 'files' | 'flow' | 'search'): void => {
   view.value = next
   if (isSideCollapsed.value) toggleSide()
 }
@@ -800,6 +832,7 @@ onBeforeUnmount(() => {
       </button>
       <button :class="{ on: view === 'files' }" title="All files" @click="showView('files')"><Icon name="folder" :size="16" /></button>
       <button :class="{ on: view === 'flow' }" :disabled="!flow.length" title="Flow" @click="showView('flow')"><Icon name="flow" :size="16" /></button>
+      <button :class="{ on: view === 'search' }" title="Search the code" @click="showView('search')"><Icon name="search" :size="16" /></button>
       <button title="Refresh" @click="refresh"><Icon name="refresh" :size="16" /></button>
     </aside>
     <aside v-else class="side" :style="{ width: `${sideWidth}px` }">
@@ -807,7 +840,8 @@ onBeforeUnmount(() => {
         <button :class="{ on: view === 'changes' }" title="Changed files" @click="view = 'changes'"><Icon name="diff" :size="14" /><span class="lbl">Changes</span><span class="n">{{ changes.length }}</span></button>
         <button :class="{ on: view === 'files' }" title="All files" @click="view = 'files'"><Icon name="folder" :size="14" /><span class="lbl">Files</span></button>
         <button :class="{ on: view === 'flow' }" :disabled="!flow.length" title="The process this ticket changes, step by step" @click="view = 'flow'"><Icon name="flow" :size="14" /><span class="lbl">Flow</span></button>
-        <button class="refresh" title="Refresh" @click="refresh"><Icon name="refresh" :size="14" /></button>
+        <button :class="{ on: view === 'search' }" title="Search the code in the whole repository" @click="view = 'search'"><Icon name="search" :size="14" /><span class="lbl">Search</span></button>
+        <button class="refresh push" title="Refresh" @click="refresh"><Icon name="refresh" :size="14" /></button>
         <button class="refresh" title="Collapse to icons" @click="toggleSide"><Icon name="panelClose" :size="14" /></button>
       </div>
       <p v-if="!cwd" class="muted">No working folder yet. Start a session for a ticket, or a review for a merge request, to see its code here.</p>
@@ -851,6 +885,8 @@ onBeforeUnmount(() => {
             <i />{{ isUncommittedOnly ? 'Showing uncommitted only' : 'Uncommitted' }}<span>{{ branch.uncommitted.length }}</span>
           </button>
         </div>
+        <button v-if="isChangesHidden" class="mdlink" @click="showOtherBranch"><Icon name="code" :size="12" />Show this branch's changes anyway</button>
+        <template v-else>
         <button
           class="explain"
           :disabled="isExplaining || !changes.length"
@@ -878,6 +914,24 @@ onBeforeUnmount(() => {
           <em v-if="commentCount(c.path)" class="cmtn" title="Unresolved comments"><Icon name="message" :size="11" />{{ commentCount(c.path) }}</em>
           <em v-if="whyCount(c.path)" class="whyn" title="Explained changes"><Icon name="info" :size="11" />{{ whyCount(c.path) }}</em>
           <b :style="{ color: STATE_MARK[c.state].color }">{{ STATE_MARK[c.state].mark }}</b>
+        </button>
+        </template>
+      </template>
+      <template v-else-if="view === 'search'">
+        <label class="filter"><Icon name="search" :size="13" /><input v-model="searchQuery" placeholder="Search the code" spellcheck="false" @input="scheduleSearch" @keydown.enter="runSearch" /></label>
+        <p v-if="isSearching" class="muted">Searching…</p>
+        <p v-else-if="searchedFor && !searchResults.length" class="muted">No matches for “{{ searchedFor }}”.</p>
+        <p v-else-if="searchResults.length" class="muted">{{ searchResults.length >= 300 ? 'First 300 matches' : `${searchResults.length} matches` }}</p>
+        <button
+          v-for="m in searchResults"
+          :key="`${m.path}:${m.line}`"
+          class="row hit"
+          :class="{ on: openPath === m.path }"
+          :title="`${m.path}:${m.line}`"
+          @click="openStepChange(m.path, m.line)"
+        >
+          <span class="hitpath"><span class="name">{{ m.path.split('/').pop() }}:{{ m.line }}</span><span class="dir">{{ m.path.split('/').slice(0, -1).join('/') }}</span></span>
+          <code class="hittext">{{ m.text }}</code>
         </button>
       </template>
       <template v-else>
@@ -1028,10 +1082,37 @@ onBeforeUnmount(() => {
 .side {
   container-type: inline-size;
 }
-@container (max-width: 370px) {
+.seg .push {
+  margin-left: auto;
+}
+@container (max-width: 420px) {
   .seg .lbl {
     display: none;
   }
+  .seg button {
+    flex: none;
+    padding: 0 7px;
+  }
+}
+.row.hit {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  height: auto;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.hitpath {
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+}
+.hittext {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-3);
 }
 @container (max-width: 240px) {
   .seg .n {

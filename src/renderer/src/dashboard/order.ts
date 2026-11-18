@@ -27,6 +27,13 @@ export const orderRows = <T extends Keyed>(rows: T[], rank: (row: T) => Rank, ma
   return [...unknown.filter((row) => rank(row).isActive), ...known, ...unknown.filter((row) => !rank(row).isActive)]
 }
 
+export const splitStarred = <T extends Keyed>(rows: T[], starred: string[]): { starred: T[]; rest: T[] } => {
+  const keys = new Set(starred)
+  return { starred: rows.filter((row) => keys.has(row.key)), rest: rows.filter((row) => !keys.has(row.key)) }
+}
+
+export const starredBlock = (group: string): string => `${group}:starred`
+
 export const moveKey = (order: string[], key: string, target: string, isAfter: boolean): string[] => {
   if (key === target) return order
   const rest = order.filter((k) => k !== key)

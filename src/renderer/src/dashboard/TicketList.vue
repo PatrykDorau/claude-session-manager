@@ -3,17 +3,19 @@ import { ref, computed } from 'vue'
 import { laneGroups, splitTag, statusLane, type TaskRow } from '../taskview'
 import type { MrRow } from '../types'
 import { ago } from '../display'
-import { filterRows, rowChip, lastActivity, uncommittedCount } from './dashboard'
+import { filterRows, rowChip, lastActivity, uncommittedCount, readFlag, writeSize } from './dashboard'
+import { isActiveToday } from './workday'
+import { useWorkday } from './useWorkday'
 import PriorityIcon from './PriorityIcon.vue'
 import Icon from './Icon.vue'
 import { useManualOrder } from './useOrder'
+import { splitStarred, starredBlock } from './order'
 import SessionBadge from './SessionBadge.vue'
 import type { Session } from '../types'
 
 const props = defineProps<{
   rows: TaskRow[]
   starred: string[]
-  isStarredOnly: boolean
   selectedKey: string | null
   jiraError: 'no-token' | 'failed' | null
   mrs?: MrRow[]
@@ -26,10 +28,20 @@ const JIRA_HINT = {
   failed: 'Jira search failed. Check the token and the JQL in Settings.'
 }
 const OUTSIDE = { key: 'outside', label: 'Not in your Jira query', color: '#4b525c' }
+const FINISHED = { key: 'finished', label: 'Finished today', color: '#4b525c' }
 
 const query = ref('')
 const isOutsideOpen = ref(false)
-const visible = computed(() => filterRows(props.rows, query.value, props.starred, props.isStarredOnly))
+const isFinishedOpen = ref(false)
+const isTodayOnly = ref(readFlag('dash.todayTickets'))
+const setTodayOnly = (next: boolean): void => {
+  isTodayOnly.value = next
+  writeSize('dash.todayTickets', next)
+}
+const { now, finished, toggleFinish } = useWorkday()
+const isFinished = (row: TaskRow): boolean => isTodayOnly.value && finished.value.includes(row.key)
+const matching = computed(() => filterRows(props.rows, query.value).filter((r) => !isTodayOnly.value || isActiveToday(r.sessions, now.value)))
+const visible = computed(() => matching.value.filter((r) => !isFinished(r)))
 const liveSession = (r: TaskRow): Session | null => {
   const live = r.sessions.filter((s) => s.isLive)
   if (!live.length) return null
@@ -39,11 +51,28 @@ const order = useManualOrder('dash.order.tickets')
 const rankTicket = (r: TaskRow): { isActive: boolean; priority: string | undefined } => ({ isActive: r.sessions.some((s) => s.isLive), priority: r.priority })
 const groups = computed(() => {
   const outside = visible.value.filter((r) => !r.isFromJira)
-  return [...laneGroups(visible.value), ...(outside.length ? [{ lane: OUTSIDE, rows: outside }] : [])].map((g) => ({
+  const done = matching.value.filter(isFinished)
+  return [
+    ...laneGroups(visible.value),
+    ...(outside.length ? [{ lane: OUTSIDE, rows: outside }] : []),
+    ...(done.length ? [{ lane: FINISHED, rows: done }] : [])
+  ].map((g) => ({
     ...g,
-    rows: order.ordered(g.lane.key, g.rows, rankTicket)
+    rows: orderLane(g.lane.key, g.rows)
   }))
 })
+const orderLane = (key: string, rows: TaskRow[]): TaskRow[] => {
+  const split = splitStarred(rows, props.starred)
+  return [...order.ordered(starredBlock(key), split.starred, rankTicket), ...order.ordered(key, split.rest, rankTicket)]
+}
+const blockOf = (key: string, row: TaskRow): string => (isStarred(row) ? starredBlock(key) : key)
+const blockKeys = (key: string, rows: TaskRow[], row: TaskRow): string[] =>
+  rows.filter((r) => blockOf(key, r) === blockOf(key, row)).map((r) => r.key)
+const isLaneManual = (key: string): boolean => order.isManual(key) || order.isManual(starredBlock(key))
+const resetLane = (key: string): void => {
+  order.resetOrder(key)
+  order.resetOrder(starredBlock(key))
+}
 const isStarred = (row: TaskRow): boolean => props.starred.includes(row.key)
 const toggleStar = (row: TaskRow): void => window.api.setStarred(row.key, !isStarred(row))
 const edgeOf = (row: TaskRow): string => (row.isFromJira ? statusLane(row.status).color : OUTSIDE.color)
@@ -55,10 +84,12 @@ const activityOf = (row: TaskRow): string => {
   const at = lastActivity(row)
   return at === null ? '' : ago(at)
 }
-const rowsOf = (g: { lane: { key: string }; rows: TaskRow[] }): TaskRow[] =>
-  g.lane.key === 'outside' && !isOutsideOpen.value ? [] : g.rows
+const isFolded = (key: string): boolean => key === 'outside' || key === 'finished'
+const isLaneOpen = (key: string): boolean => (key === 'finished' ? isFinishedOpen.value : isOutsideOpen.value)
+const rowsOf = (g: { lane: { key: string }; rows: TaskRow[] }): TaskRow[] => (isFolded(g.lane.key) && !isLaneOpen(g.lane.key) ? [] : g.rows)
 const toggleOutside = (key: string): void => {
   if (key === 'outside') isOutsideOpen.value = !isOutsideOpen.value
+  if (key === 'finished') isFinishedOpen.value = !isFinishedOpen.value
 }
 </script>
 
@@ -68,20 +99,23 @@ const toggleOutside = (key: string): void => {
       <Icon name="search" :size="14" />
       <input v-model="query" placeholder="Search tickets" spellcheck="false" />
     </label>
+    <div class="filters">
+      <label title="Only tickets with a Claude session active since midnight"><input :checked="isTodayOnly" type="checkbox" @change="setTodayOnly(($event.target as HTMLInputElement).checked)" />Today</label>
+    </div>
     <div v-if="jiraError" class="note">
       {{ JIRA_HINT[jiraError] }}
       <button class="link" @click="emit('settings')">Open Settings</button>
     </div>
-    <div v-else-if="!visible.length" class="note">{{ isStarredOnly ? 'Star a ticket to see it here' : 'No tickets match' }}</div>
+    <div v-else-if="!matching.length" class="note">{{ isTodayOnly ? 'No tickets worked on today' : 'No tickets match' }}</div>
 
     <div v-for="g in groups" :key="g.lane.key" class="lane" :style="{ '--lane': g.lane.color }">
-      <h3 class="lhead" :class="{ fold: g.lane.key === 'outside' }" @click="toggleOutside(g.lane.key)">
-        <Icon v-if="g.lane.key === 'outside'" :name="isOutsideOpen ? 'chevronDown' : 'chevronRight'" :size="12" />
+      <h3 class="lhead" :class="{ fold: isFolded(g.lane.key) }" @click="toggleOutside(g.lane.key)">
+        <Icon v-if="isFolded(g.lane.key)" :name="isLaneOpen(g.lane.key) ? 'chevronDown' : 'chevronRight'" :size="12" />
         <span v-else class="ldot" />
         <span>{{ g.lane.label }}</span>
         <span class="lcount">{{ g.rows.length }}</span>
-        <span v-if="g.lane.key === 'outside'" class="fold-lbl">{{ isOutsideOpen ? 'Hide' : 'Show' }}</span>
-        <button v-else-if="order.isManual(g.lane.key)" class="autoorder" title="Drop your order and sort by running sessions, then priority" @click.stop="order.resetOrder(g.lane.key)">Auto order</button>
+        <span v-if="isFolded(g.lane.key)" class="fold-lbl">{{ isLaneOpen(g.lane.key) ? 'Hide' : 'Show' }}</span>
+        <button v-else-if="isLaneManual(g.lane.key)" class="autoorder" title="Drop your order and sort by running sessions, then priority" @click.stop="resetLane(g.lane.key)">Auto order</button>
       </h3>
       <article
         v-for="r in rowsOf(g)"
@@ -97,9 +131,9 @@ const toggleOutside = (key: string): void => {
         :style="{ '--edge': edgeOf(r) }"
         tabindex="0"
         draggable="true"
-        @dragstart="order.onDragStart($event, g.lane.key, r.key)"
-        @dragover="order.onDragOver($event, g.lane.key, r.key)"
-        @drop="order.onDrop(g.lane.key, g.rows.map((x) => x.key))"
+        @dragstart="order.onDragStart($event, blockOf(g.lane.key, r), r.key)"
+        @dragover="order.onDragOver($event, blockOf(g.lane.key, r), r.key)"
+        @drop="order.onDrop(blockOf(g.lane.key, r), blockKeys(g.lane.key, g.rows, r))"
         @dragend="order.onDragEnd"
         @click="emit('select', r.key)"
         @keydown.enter="emit('select', r.key)"
@@ -129,6 +163,15 @@ const toggleOutside = (key: string): void => {
           </span>
           <span v-if="uncommittedCount(r.sessions)" class="unc" :title="`${uncommittedCount(r.sessions)} uncommitted ${uncommittedCount(r.sessions) === 1 ? 'file' : 'files'} in this ticket's folder`"><Icon name="diff" :size="11" />{{ uncommittedCount(r.sessions) }}</span>
           <span v-if="activityOf(r)" class="meta">{{ activityOf(r) }}</span>
+          <button
+            v-if="isTodayOnly"
+            class="star finish"
+            :class="{ on: isFinished(r) }"
+            :title="isFinished(r) ? 'Not finished yet' : 'Finished for today'"
+            @click.stop="toggleFinish(r.key)"
+          >
+            <Icon name="check" :size="14" />
+          </button>
           <button
             class="star"
             :class="{ on: isStarred(r) }"
@@ -346,6 +389,34 @@ const toggleOutside = (key: string): void => {
 }
 .star.on {
   color: var(--warn);
+}
+.star.finish {
+  right: 31px;
+}
+.star.finish:hover,
+.star.finish.on {
+  color: var(--accent);
+}
+.star.finish.on :deep(path) {
+  fill: none;
+}
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0 4px 8px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.filters input[type='checkbox'] {
+  margin: 0;
+  accent-color: var(--accent);
 }
 .star.on :deep(path) {
   fill: currentColor;

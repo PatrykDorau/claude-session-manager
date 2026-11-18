@@ -19,16 +19,17 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import chokidar from 'chokidar'
 import icon from '../../resources/icon.png?asset'
 import attentionPng from '../../resources/attention.png?asset'
-import { STAGES, type Session, type TaskMeta } from '../renderer/src/types'
+import { STAGES, type Session, type TaskMeta, type InboxItem } from '../renderer/src/types'
 import { rmSync, readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, openSync, readSync, closeSync, fstatSync, statSync, symlinkSync } from 'node:fs'
 import { parseTail, countTurns, lastMessages, createDetailCache } from './transcript'
 import { createPtyHost } from './ptyhost'
 import { pickPort, serverCommand, bashCandidates, isPortFree, DEFAULT_SERVER_COMMAND } from './devserver'
-import { stvOptions, webOptions, mergeEnvLocal, stvCommand, serverHost as serverHostName, chromeArgs, type StvChoice } from './serverprofile'
+import { stvOptions, webOptions, mergeEnvLocal, stvCommand, serverHost as serverHostName, chromeArgs, isChoiceMismatch, type StvChoice } from './serverprofile'
+import { createConnection } from 'node:net'
 import type { LocalHost, BranchChanges, ChangedFile, ExplainFile, ServerProfile, ServerSpec } from '../renderer/src/types'
 import { terminalMode, attachArgs, resumeBackgroundArgs, pasteInput, STOP_TURN, createOpenGuard, isHandedOff, type TerminalMode } from './terminal'
 import { readdir } from 'node:fs/promises'
-import { join as joinPath, dirname } from 'node:path'
+import { join as joinPath, dirname, basename } from 'node:path'
 import { spawn, execFile, execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { release } from 'node:os'
@@ -36,7 +37,8 @@ import { scanRaw } from './scanner'
 import { buildSessions } from './aggregate'
 import { normalizePath } from './lock'
 import {
-  runningResumeIds,
+  claudeProcesses,
+  extractResumeIds,
   runningAttachIds,
   runningAttaches,
   runningResumePids,
@@ -67,9 +69,13 @@ import {
 import { formatDiagnostics } from './diagnostics'
 import { contextAlerts, idleAlerts } from './contextalert'
 import { parseHandoffSize, type HandoffSize } from './handoffsize'
+import { isHandoffDue, autoHandoffArgs, autoHandoffPrompt } from './autohandoff'
+import { findContinuations, carryOver, type Continuations } from './continuation'
 import { parseWorkflow, parseHandoffStage, parseAgentFile, parseBoosters } from './flow'
-import { collectDigests, ensureRubric, dayStamp, parseProposals, applyProposal, isFactoryDue, tokenTrend, dismissedList, withDismissed, isDismissedBy, latestDay, splitScoreOutput, type Digest, type Proposal } from './factory'
-import type { FactoryReport, FlowAgent, FlowState, FlowTicket } from '../renderer/src/types'
+import { collectDigests, ensureGuide, dayStamp, parseInsights, applyProposal, isInsightsDue, dismissedList, withDismissed, latestDay, reportDay, migrateFactoryDir, aggregateDay, expiredDayFiles, recentDayFiles, isEmptyInsights, storedInsights, appliedList, withProposalStates, type InsightsProposal, type DayMetrics, type Incident } from './insights'
+import type { InsightsReport, FlowAgent, FlowState, FlowTicket } from '../renderer/src/types'
+import { inboxReason, isAnswerCurrent, isFinishedNotifiable, finishedTransitions } from './inbox'
+import { parseHistory, type PromptEntry } from './prompthistory'
 import { ideDir, projectsDir, doneDir, activeDir, needsInputDir, sessionsDir } from './paths'
 import {
   focusOrOpen,
@@ -101,11 +107,11 @@ import {
   type SessionFile
 } from './closing'
 import { worktreeRows, parseCount, isLinkedWorktreeGitFile, branchToDelete, nodeModulesAction } from './worktrees'
-import { taskContext, startPrompt, parseBgId, ticketPrefix, repoRoots, startArgs, claudeExeCandidates, attachCommand, repoForProject, reviewArgs, addressArgs, scoreArgs, factoryTestArgs } from './tasks'
+import { taskContext, startPrompt, parseBgId, ticketPrefix, repoRoots, startArgs, claudeExeCandidates, attachCommand, repoForProject, reviewArgs, addressArgs, scoreArgs, insightsTestArgs, warmUpTask, mediaFiles } from './tasks'
 import { searchIssues, fetchDescription, postComment, fetchTransitions, doTransition, fetchTicketDetail, fetchPriority, releaseTransition } from './jira'
-import { isSafeRef, worktreeForBranch, parseStatusPaths, safeRelPath, parseStatus, isNoisePath, parseNameStatus, countChanges } from './ide'
+import { isSafeRef, worktreeForBranch, parseStatusPaths, safeRelPath, parseStatus, isNoisePath, parseNameStatus, countChanges, parseGrep, type CodeMatch } from './ide'
 import { parseExplainDoc, explainArgs } from './explaindoc'
-import { fetchMrsToReview, enrichMrs, forgetApprovals, fetchDiffStats, fetchMrSha, isInProjects, reviewState, sortMrs } from './gitlab'
+import { fetchMrsToReview, enrichMrs, forgetApprovals, fetchDiffStats, fetchMrSha, isInProjects, reviewState, approvalState, carryEnrichment, pruneApproved, sortMrs } from './gitlab'
 import type { JiraTicket, MrFile, MrItem, MyMrs } from '../renderer/src/types'
 import {
   loadState,
@@ -126,7 +132,7 @@ import { installHooks } from './hooks'
 import { migrateUserData } from './migrate'
 import { listAgentGroups, readAgentRun } from './agents'
 import { startBridge, ticketFromPath } from './bridge'
-import { pickChromePort, taskChromeProfile, writeTaskMcp, seedProfile } from './taskbrowser'
+import { pickChromePort, taskChromeProfile, writeTaskMcp, seedProfile, writeTaskMcpFile, taskMcpArgs } from './taskbrowser'
 import {
   fetchMrStatus,
   runMrAction,
@@ -169,6 +175,20 @@ let changeMap: Record<string, number> = {}
 let lastUsage: UsageResult | null = null
 let bgAgents = new Map<string, { status: string; name: string | null }>()
 let clearedIds = new Map<string, string>()
+let isAutoHandoffRunning = false
+let continuations: Continuations = { links: new Map(), seen: new Map(), active: new Map() }
+let followLinks = new Map<string, string>()
+let activeLinks = new Map<string, string>()
+const throughCleared = (links: Map<string, string>): Map<string, string> =>
+  new Map(
+    [...links]
+      .map(([from, to]): [string, string] => [clearedIds.get(from) ?? from, clearedIds.get(to) ?? to])
+      .filter(([from, to]) => from !== to)
+  )
+const predecessorsOf = (id: string): string[] => [...activeLinks].filter(([, to]) => to === id).map(([from]) => from)
+const triedHandoffs = new Map<string, number>()
+const liveSince = new Map<string, number>()
+const AUTO_HANDOFF_TIMEOUT = 10 * 60_000
 let claudeOk = true
 let editorOk = true
 let claudeVersion: string | null = null
@@ -190,6 +210,12 @@ const branchDone = new Map<string, boolean>()
 const knownFolders = new Map<string, string>()
 const worktreeRepo = new Map<string, string | null>()
 const notifiedWaiting = new Set<string>()
+let lastTurnStatus = new Map<string, Session['status']>()
+let viewingSessionId: string | null = null
+let pendingInboxNext = false
+let isJumpKeyReady = false
+let tasksSyncedAt: number | null = null
+let mrsSyncedAt: number | null = null
 let alertedContext = new Set<string>()
 let alertedIdle = new Set<string>()
 const shownNotifications = new Set<Notification>()
@@ -280,14 +306,18 @@ function decorate(sessions: Session[]): Session[] {
     const repo = worktreeRepo.get(key)
     const fin = computeFinished(s, key, finishCtx)
     const ov = appState.ticketOverride[s.id]
+    const before = [...followLinks].filter(([, to]) => to === s.id).map(([from]) => from)
+    const inherited = s.ticket ?? before.map((id) => sessions.find((x) => x.id === id)?.ticket).find((t) => !!t) ?? null
+    const next = followLinks.get(s.id)
     return {
       ...s,
-      ticket: overrideTicket(s.ticket, ov),
+      continuedAs: next && sessions.some((x) => x.id === next) ? next : null,
+      ticket: overrideTicket(inherited, ov),
       manualTicket: ov !== undefined,
       worktree: !!repo,
       repo: repo ?? null,
       watched: appState.watched.includes(s.id),
-      name: appState.names[s.id] ?? bgAgents.get(s.id)?.name ?? null,
+      name: appState.names[s.id] ?? bgAgents.get(s.id)?.name ?? s.name ?? null,
       dirty: dirtyMap[key] ?? false,
       changes: changeMap[key] ?? 0,
       bg: bgAgents.has(s.id),
@@ -299,7 +329,18 @@ function decorate(sessions: Session[]): Session[] {
 }
 
 async function refreshRunning(): Promise<void> {
-  cachedRunningIds = [...(await runningResumeIds())]
+  const procs = await claudeProcesses()
+  continuations = findContinuations(procs, sessionFiles(), continuations)
+  const nextFollow = throughCleared(continuations.links)
+  const fresh = [...nextFollow].filter(([from, to]) => followLinks.get(from) !== to)
+  followLinks = nextFollow
+  activeLinks = throughCleared(continuations.active)
+  if (fresh.length) {
+    for (const [from, to] of fresh) if (ptyHost.isOpen(from) && !ptyHost.isOpen(to)) rekeyTerminal(from, to)
+    appState = fresh.reduce((state, [from, to]) => carryOver(state, from, to), appState)
+    saveState(statePath, appState)
+  }
+  cachedRunningIds = [...new Set(extractResumeIds(procs.map((p) => p.commandLine)).map((id) => activeLinks.get(id) ?? id))]
 }
 
 async function refreshAgents(): Promise<void> {
@@ -345,6 +386,7 @@ async function pushSessions(): Promise<void> {
   const sessions = buildSessions(raw, openIds, Date.now(), 8000, parsePrefixes(appState.settings.ticketPrefixes))
   const decorated = decorate(sessions)
   lastSessions = decorated
+  runAutoHandoff(decorated, cleared)
   lastCounts = {
     total: sessions.length,
     live: sessions.filter((s) => s.isLive).length,
@@ -361,7 +403,7 @@ async function pushSessions(): Promise<void> {
     if (root) linkNodeModules(row.path, root)
   }
   mainWindow.webContents.send('worktrees', rows)
-  updateAttention(sessions)
+  updateAttention(sessions, decorated)
   const contextCheck = contextAlerts(sessions.filter((s) => s.isLive), alertedContext)
   alertedContext = contextCheck.alerted
   for (const id of contextCheck.toNotify) {
@@ -625,7 +667,8 @@ const refreshMyTasks = async (): Promise<void> => {
       ? { tickets: found, error: null }
       : { tickets: myTasks.tickets, error: 'failed' }
     : { tickets: [], error: 'no-token' }
-  sendAll('my-tasks', myTasks)
+  tasksSyncedAt = Date.now()
+  sendAll('my-tasks', { ...myTasks, syncedAt: tasksSyncedAt })
 }
 
 let mrItems: MrItem[] = []
@@ -666,7 +709,7 @@ const myMrs = (): MyMrs => ({
       .filter((m) => isAllProjects || isInProjects(m.projectPath, appState.settings.mrProjects))
       .map((m) => ({
         ...m,
-        review: reviewState(m.sha, appState.reviewedMrs[m.key]),
+        review: approvalState(m.sha, m.isApprovedByMe, appState.approvedMrs[m.key]) ?? reviewState(m.sha, appState.reviewedMrs[m.key]),
         sessionId: appState.mrSessions[m.key] ?? null,
         ...(priorityOf(m.ticket) ? { priority: priorityOf(m.ticket) } : {})
       }))
@@ -675,7 +718,8 @@ const myMrs = (): MyMrs => ({
   errorDetail: mrErrorDetail,
   isLoading: !isMrsLoaded,
   myName: gitlabMe,
-  isAllProjects
+  isAllProjects,
+  syncedAt: mrsSyncedAt
 })
 
 const pushMyMrs = (): void => sendAll('my-mrs', myMrs())
@@ -691,20 +735,23 @@ const refreshMyMrs = async (): Promise<void> => {
     mrErrorDetail = found.detail
     gitlabMe = found.me ?? gitlabMe
     if (found.items) {
-      const previous = new Map(mrItems.map((m) => [m.key, m]))
-      mrItems = found.items.map((m) => {
-        const old = previous.get(m.key)
-        return old ? { ...m, approvals: old.approvals, openThreads: old.openThreads } : m
-      })
+      mrItems = carryEnrichment(found.items, mrItems)
       isMrsLoaded = true
       pushMyMrs()
       const wanted = mrItems.filter((m) => isInProjects(m.projectPath, appState.settings.mrProjects))
-      const enriched = new Map((await enrichMrs(appState.settings.gitlabBase, token, wanted, gitlabMe)).map((m) => [m.key, m]))
+      const enrichedList = await enrichMrs(appState.settings.gitlabBase, token, wanted, gitlabMe)
+      const enriched = new Map(enrichedList.map((m) => [m.key, m]))
       mrItems = mrItems.map((m) => enriched.get(m.key) ?? m)
+      const approvedMrs = pruneApproved(appState.approvedMrs, enrichedList)
+      if (Object.keys(approvedMrs).length !== Object.keys(appState.approvedMrs).length) {
+        appState = { ...appState, approvedMrs }
+        saveState(statePath, appState)
+      }
     }
     void refreshPriorities()
   }
   isMrsLoaded = true
+  mrsSyncedAt = Date.now()
   pushMyMrs()
 }
 
@@ -830,6 +877,30 @@ const spawnBackground = (exe: string, cwd: string, args: string[]): Promise<stri
     p.on('close', () => finish(out))
   })
 
+const waitForCheckout = async (worktree: string): Promise<boolean> =>
+  (await waitForFolder(joinPath(worktree, 'package.json'), 60000)) && existsSync(joinPath(worktree, '.git'))
+
+const isPortAccepting = (port: number): Promise<boolean> =>
+  new Promise((resolve) => {
+    const socket = createConnection({ host: '127.0.0.1', port })
+    socket.once('connect', () => {
+      socket.destroy()
+      resolve(true)
+    })
+    socket.once('error', () => resolve(false))
+  })
+
+const waitForPortOpen = async (url: string, timeoutMs: number): Promise<boolean> => {
+  const port = Number(new URL(url).port)
+  if (!port) return false
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await isPortAccepting(port)) return true
+    await new Promise((r) => setTimeout(r, 1000))
+  }
+  return false
+}
+
 const waitForFolder = async (folder: string, timeoutMs: number): Promise<boolean> => {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -866,14 +937,23 @@ const startTask = async (
     saveState(statePath, appState)
     const worktree = taskWorktree(repo, key)
     const isExisting = isLinkedWorktreeGitFile(readText(joinPath(worktree, '.git')) ?? '')
-    prepareTaskBrowser(key, worktree)
+    const mcpConfig = prepareTaskBrowser(key, worktree)
     const prompt = `${startPrompt(appState.settings.startPrompt, key, title)}\n\n${taskContext(key, worktree, repo, new Date())}`
-    const out = await spawnBackground(exe, isExisting ? worktree : repo, startArgs(key, prompt, isExisting))
+    const out = await spawnBackground(exe, isExisting ? worktree : repo, taskMcpArgs(startArgs(key, prompt, isExisting), mcpConfig))
     const shortId = parseBgId(out)
     if (!shortId) return { error: out.trim().split(/\r?\n/).pop() || 'claude did not start' }
     isStarted = true
+    const warmUp = (link: () => void): void =>
+      void warmUpTask({
+        waitFolder: () => waitForCheckout(worktree),
+        link,
+        startServer: async () => (await bridgeRoutes['/server']({ ticket: key, cwd: worktree })) as { url?: string; error?: string },
+        waitServer: (url) => waitForPortOpen(url, 180000),
+        openChrome: (url) => bridgeRoutes['/chrome']({ ticket: key, cwd: worktree, url }),
+        log: (message) => console.error(`[warm-up] ${key}: ${message}`)
+      })
     if (mode === 'background') {
-      void waitForFolder(worktree, 30000).then((isReady) => isReady && linkNodeModules(worktree, repo))
+      warmUp(() => linkNodeModules(worktree, repo))
       const id = await waitForSessionId(shortId, 20000)
       if (!id) return { error: null, sessionId: shortId }
       appState = applyTicketOverride(appState, id, key)
@@ -886,6 +966,7 @@ const startTask = async (
     linkNodeModules(worktree, repo)
     const id = sessionFiles().find((f) => f.sessionId.startsWith(shortId))?.sessionId ?? shortId
     const isOpened = await attachInVsCode(id, worktree)
+    warmUp(() => undefined)
     return { error: isOpened ? null : 'could not open the session in VS Code' }
   } finally {
     if (isStarted) setTimeout(() => startingTasks.delete(key), 30000)
@@ -1052,6 +1133,58 @@ const sessionDetail = (id: string): { turns: number; messages: { role: 'user' | 
   } catch {
     return { turns: 0, messages: [] }
   }
+}
+
+const sessionTail = (id: string): ReturnType<typeof parseTail> | null => {
+  const f = transcriptFile(id)
+  try {
+    return f ? parseTail(readTailLines(f)) : null
+  } catch {
+    return null
+  }
+}
+
+const inboxItem = async (id: string): Promise<InboxItem | null> => {
+  const s = sessionById(id)
+  const tail = sessionTail(id)
+  const reason = s && tail ? inboxReason(s.status, tail) : null
+  if (!s || !tail || !reason) return null
+  return {
+    reason,
+    pendingTool: tail.pendingTool,
+    isOpaqueRequest: tail.isOpaqueRequest,
+    question: tail.question,
+    questionOptions: tail.questionOptions,
+    messages: sessionDetail(id).messages,
+    isWritable: (await modeOf(id)) === 'attach' && !tail.isOpaqueRequest
+  }
+}
+
+const NOT_PENDING = { error: 'This request is no longer pending' }
+
+const isStillPending = (id: string, toolUseId: string): boolean =>
+  isAnswerCurrent({ status: sessionById(id)?.status ?? 'closed', toolUseId: sessionTail(id)?.pendingTool?.toolUseId ?? null }, toolUseId)
+
+const answerInbox = async (id: string, toolUseId: string, key: string): Promise<{ error: string | null }> => {
+  if (!isStillPending(id, toolUseId)) return NOT_PENDING
+  if ((await modeOf(id)) !== 'attach') return { error: 'This session runs outside Cockpit' }
+  if (!ptyHost.isOpen(id)) {
+    const opened = await openTerminal(id, 120, 32)
+    if (opened.error) return opened
+  }
+  if (!(await waitForQuietOutput(id, true))) return { error: 'Claude is busy in the terminal, so nothing was sent' }
+  if (!isStillPending(id, toolUseId)) return NOT_PENDING
+  ptyHost.write(id, key)
+  return { error: null }
+}
+
+const dismissInbox = (id: string): void => {
+  try {
+    rmSync(joinPath(doneDir(), id), { force: true })
+  } catch {
+    return
+  }
+  void pushSessions()
 }
 
 const sendToDashboard = (channel: string, ...args: unknown[]): void => {
@@ -1227,6 +1360,14 @@ const ideFiles = async (cwd: string): Promise<string[]> => {
   return res.isOk ? res.out.split(/\r?\n/).filter(Boolean).slice(0, MAX_TREE_FILES) : []
 }
 
+const MAX_SEARCH_MATCHES = 300
+
+const ideSearch = async (cwd: string, query: string): Promise<CodeMatch[]> => {
+  if (!query.trim()) return []
+  const res = await runGit(cwd, ['grep', '-n', '-I', '-i', '-F', '--untracked', '--full-name', '-e', query])
+  return res.isOk ? parseGrep(res.out, MAX_SEARCH_MATCHES) : []
+}
+
 const ideStatus = async (cwd: string): Promise<ChangedFile[]> => {
   const res = await runGit(cwd, ['status', '--porcelain', '--untracked-files=all'])
   return res.isOk ? parseStatus(res.out) : []
@@ -1347,16 +1488,15 @@ const startExplain = async (
   }
 }
 
-const FACTORY_DIR = joinPath(homedir(), '.claude', 'factory')
-const FACTORY_WINDOW = 24 * 3_600_000
-const FACTORY_TIMEOUT = 15 * 60_000
-const FACTORY_CHECK = 3_600_000
-const FACTORY_TREND_DAYS = 14
-const DAY_DIR = /^\d{4}-\d{2}-\d{2}$/
-let isFactoryRunning = false
-let factoryError: string | null = null
+const INSIGHTS_DIR = joinPath(homedir(), '.claude', 'insights')
+const LEGACY_FACTORY_DIR = joinPath(homedir(), '.claude', 'factory')
+const INSIGHTS_WINDOW = 24 * 3_600_000
+const INSIGHTS_TIMEOUT = 15 * 60_000
+const INSIGHTS_CHECK = 3_600_000
+let isInsightsRunning = false
+let insightsError: string | null = null
 
-const factoryPath = (...parts: string[]): string => joinPath(FACTORY_DIR, ...parts)
+const insightsPath = (...parts: string[]): string => joinPath(INSIGHTS_DIR, ...parts)
 
 const readJson = (path: string): unknown => {
   try {
@@ -1366,7 +1506,7 @@ const readJson = (path: string): unknown => {
   }
 }
 
-const pushFactory = (): void => sendToDashboard('factory-changed')
+const pushInsights = (): void => sendToDashboard('insights-changed')
 
 const runScoring = (exe: string, day: string): Promise<{ error: string | null }> =>
   new Promise((resolve) => {
@@ -1376,7 +1516,7 @@ const runScoring = (exe: string, day: string): Promise<{ error: string | null }>
     let output = ''
     let isTimedOut = false
     const p = spawn(exe, scoreArgs(day, homedir().replace(/\\/g, '/')), {
-      cwd: FACTORY_DIR,
+      cwd: INSIGHTS_DIR,
       shell: false,
       windowsHide: true,
       env,
@@ -1389,7 +1529,7 @@ const runScoring = (exe: string, day: string): Promise<{ error: string | null }>
       isTimedOut = true
       if (p.pid) void killProcess(p.pid, true)
       else p.kill()
-    }, FACTORY_TIMEOUT)
+    }, INSIGHTS_TIMEOUT)
     p.stderr?.on('data', (d: Buffer) => {
       errorText = (errorText + d.toString()).slice(-2000)
     })
@@ -1401,87 +1541,101 @@ const runScoring = (exe: string, day: string): Promise<{ error: string | null }>
       clearTimeout(timer)
       if (isTimedOut) return resolve({ error: 'The scoring run did not finish within 15 min' })
       if (code === 0 && output.trim()) {
-        const { report, proposals } = splitScoreOutput(output)
-        writeFileSync(factoryPath('reports', `${day}.md`), `${report}\n`, 'utf8')
-        writeFileSync(factoryPath('proposals', `${day}.json`), JSON.stringify(proposals, null, 2), 'utf8')
+        const parsed = parseInsights(output, { home: homedir(), day, applied: insightsApplied(), dismissed: insightsDismissed() })
+        if (isEmptyInsights(parsed)) return resolve({ error: 'The analysis returned no usable JSON' })
+        writeDayJson('findings', day, parsed)
       }
       resolve({ error: code === 0 ? null : errorText.trim().split(/\r?\n/).pop() || `claude exited with code ${code}` })
     })
   })
 
-const runFactory = async (): Promise<{ error: string | null }> => {
-  if (isFactoryRunning) return { error: 'The factory is already running' }
+const pruneInsights = (day: string): void => {
+  for (const dir of ['metrics', 'incidents', 'findings']) {
+    for (const name of expiredDayFiles(listDir(insightsPath(dir)), day)) {
+      try {
+        if (statSync(insightsPath(dir, name)).isFile()) rmSync(insightsPath(dir, name), { force: true })
+      } catch (e) {
+        console.error('[insights] prune failed:', name, e)
+      }
+    }
+  }
+}
+
+const writeDayJson = (dir: string, day: string, value: unknown): void => {
+  mkdirSync(insightsPath(dir), { recursive: true })
+  writeFileSync(insightsPath(dir, `${day}.json`), JSON.stringify(value, null, 2), 'utf8')
+}
+
+const runInsights = async (): Promise<{ error: string | null }> => {
+  if (isInsightsRunning) return { error: 'Insights is already running' }
   const exe = resolveClaudeExe()
   if (!exe) return { error: 'claude.exe not found' }
-  isFactoryRunning = true
-  pushFactory()
+  isInsightsRunning = true
+  pushInsights()
   const now = Date.now()
   const day = dayStamp(new Date(now))
   let result: { error: string | null } = { error: null }
   try {
-    ensureRubric(factoryPath('rubric.md'))
-    for (const dir of ['reports', 'proposals']) mkdirSync(factoryPath(dir), { recursive: true })
-    if (!existsSync(factoryPath('dismissed.json'))) writeFileSync(factoryPath('dismissed.json'), '[]', 'utf8')
+    migrateFactoryDir(LEGACY_FACTORY_DIR, INSIGHTS_DIR)
+    ensureGuide(insightsPath('guide.md'))
+    if (!existsSync(insightsPath('dismissed.json'))) writeFileSync(insightsPath('dismissed.json'), '[]', 'utf8')
     const sizeOf = (ticket: string): HandoffSize | null => {
       const handoff = findHandoff(ticket)
       return handoff ? handoffSizeOf(handoff) : null
     }
-    const count = await collectDigests(projectsDir(), now - FACTORY_WINDOW, factoryPath('digests', day), sizeOf)
-    if (count) result = await runScoring(exe, day)
+    pruneInsights(day)
+    const collected = await collectDigests(projectsDir(), now - INSIGHTS_WINDOW, sizeOf, homedir())
+    if (collected.digests.length) {
+      writeDayJson('metrics', day, aggregateDay(day, collected.digests))
+      writeDayJson('incidents', day, collected.incidents)
+      result = await runScoring(exe, day)
+    }
   } catch (e) {
     result = { error: e instanceof Error ? e.message : String(e) }
   } finally {
-    appState = { ...appState, factoryLastRun: now }
+    appState = { ...appState, insightsLastRun: now }
     saveState(statePath, appState)
-    factoryError = result.error
-    isFactoryRunning = false
-    pushFactory()
+    insightsError = result.error
+    isInsightsRunning = false
+    pushInsights()
   }
   return result
 }
 
-const checkFactory = (): void => {
-  if (isFactoryDue(appState.factoryLastRun, Date.now())) void runFactory()
+const checkInsights = (): void => {
+  if (isInsightsDue(appState.insightsLastRun, Date.now())) void runInsights()
 }
 
-const factoryDay = (): string | null => latestDay([...listDir(factoryPath('reports')), ...listDir(factoryPath('proposals'))])
+const insightsDay = (): string | null => latestDay(listDir(insightsPath('findings')))
 
-const factoryProposals = (day: string | null): Proposal[] => {
-  if (!day) return []
-  const json = readJson(factoryPath('proposals', `${day}.json`))
-  const list = json && typeof json === 'object' && !Array.isArray(json) ? (json as { proposals?: unknown }).proposals : json
-  return parseProposals(list, homedir())
-}
+const insightsResult = (day: string | null) => (day ? storedInsights(readJson(insightsPath('findings', `${day}.json`)), homedir()) : null)
 
-const factoryProposal = (id: string): Proposal | null => factoryProposals(factoryDay()).find((p) => p.id === id) ?? null
+const insightsProposal = (id: string): InsightsProposal | null => insightsResult(insightsDay())?.proposals.find((p) => p.id === id) ?? null
 
-const factoryDismissed = (): ReturnType<typeof dismissedList> => dismissedList(readJson(factoryPath('dismissed.json')))
+const insightsDismissed = (): ReturnType<typeof dismissedList> => dismissedList(readJson(insightsPath('dismissed.json')))
 
-const dayDigests = (date: string): Digest[] =>
-  listDir(factoryPath('digests', date))
-    .filter((name) => name.endsWith('.json'))
-    .flatMap((name) => {
-      const digest = readJson(factoryPath('digests', date, name)) as Digest | null
-      return digest && typeof digest.tokensRead === 'number' ? [digest] : []
-    })
+const insightsApplied = (): ReturnType<typeof appliedList> => appliedList(readJson(insightsPath('applied.json')))
 
-const factoryReport = (): FactoryReport => {
-  const day = factoryDay()
-  const dismissed = factoryDismissed()
-  const reportPath = day ? factoryPath('reports', `${day}.md`) : null
-  const dates = listDir(factoryPath('digests')).filter((name) => DAY_DIR.test(name)).sort().slice(-FACTORY_TREND_DAYS)
+const insightsReport = (): InsightsReport => {
+  const result = insightsResult(insightsDay())
+  const day = reportDay(listDir(insightsPath('findings')), listDir(insightsPath('metrics')))
+  const incidents = day ? readJson(insightsPath('incidents', `${day}.json`)) : null
   return {
     day,
-    report: reportPath && existsSync(reportPath) ? readText(reportPath) : null,
-    proposals: factoryProposals(day).map((p) => ({ ...p, isDismissed: isDismissedBy(dismissed, p) })),
-    trend: tokenTrend(Object.fromEntries(dates.map((date) => [date, dayDigests(date)]))),
-    isRunning: isFactoryRunning,
-    lastRun: appState.factoryLastRun,
-    lastError: factoryError
+    result: result ? withProposalStates(result, insightsDismissed(), insightsApplied()) : null,
+    history: recentDayFiles(listDir(insightsPath('metrics'))).flatMap((name) => {
+      const metrics = readJson(insightsPath('metrics', name))
+      return metrics ? [metrics as DayMetrics] : []
+    }),
+    incidents: Array.isArray(incidents) ? (incidents as Incident[]) : [],
+    applied: insightsApplied(),
+    isRunning: isInsightsRunning,
+    lastRun: appState.insightsLastRun,
+    lastError: insightsError
   }
 }
 
-const confirmFactory = async (p: Proposal): Promise<boolean> => {
+const confirmInsights = async (p: InsightsProposal): Promise<boolean> => {
   const options = {
     type: 'question' as const,
     buttons: ['Cancel', 'Apply'],
@@ -1489,17 +1643,18 @@ const confirmFactory = async (p: Proposal): Promise<boolean> => {
     cancelId: 0,
     title: 'Claude Cockpit',
     message: `Apply "${p.title}"?`,
-    detail: `${p.target}\n\n- ${p.find}\n\n+ ${p.replace}`
+    detail: `${p.target}\n\n${p.why}\n\n- ${p.find}\n\n+ ${p.replace}`
   }
   const parent = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow : null
   const answer = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options)
   return answer.response === 1
 }
 
-const applyFactoryProposal = async (id: string): Promise<{ error: string | null }> => {
-  const p = factoryProposal(id)
+const applyInsightsProposal = async (id: string): Promise<{ error: string | null }> => {
+  const p = insightsProposal(id)
   if (!p) return { error: 'Proposal not found' }
-  if (!(await confirmFactory(p))) return { error: 'cancelled' }
+  if (insightsApplied().some((a) => a.id === id)) return { error: 'Already applied' }
+  if (!(await confirmInsights(p))) return { error: 'cancelled' }
   const text = readText(p.target)
   if (text === null) return { error: `Cannot read ${p.target}` }
   const result = applyProposal(text, p)
@@ -1509,29 +1664,38 @@ const applyFactoryProposal = async (id: string): Promise<{ error: string | null 
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) }
   }
-  pushFactory()
-  return { error: null }
+  let recordError: string | null = null
+  try {
+    const entry = { id: p.id, target: p.target, title: p.title, day: dayStamp(new Date()), metric: p.metric }
+    const stored = readJson(insightsPath('applied.json'))
+    mkdirSync(INSIGHTS_DIR, { recursive: true })
+    writeFileSync(insightsPath('applied.json'), JSON.stringify([...(Array.isArray(stored) ? stored : []), entry], null, 2), 'utf8')
+  } catch (e) {
+    recordError = `Applied, but not recorded in applied.json: ${e instanceof Error ? e.message : String(e)}`
+  }
+  pushInsights()
+  return { error: recordError }
 }
 
-const dismissFactoryProposal = (id: string): { error: string | null } => {
-  const p = factoryProposal(id)
+const dismissInsightsProposal = (id: string): { error: string | null } => {
+  const p = insightsProposal(id)
   if (!p) return { error: 'Proposal not found' }
   try {
-    mkdirSync(FACTORY_DIR, { recursive: true })
-    writeFileSync(factoryPath('dismissed.json'), JSON.stringify(withDismissed(factoryDismissed(), p), null, 2), 'utf8')
+    mkdirSync(INSIGHTS_DIR, { recursive: true })
+    writeFileSync(insightsPath('dismissed.json'), JSON.stringify(withDismissed(insightsDismissed(), p), null, 2), 'utf8')
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) }
   }
-  pushFactory()
+  pushInsights()
   return { error: null }
 }
 
-const testFactoryProposal = async (id: string): Promise<{ error: string | null; sessionId?: string }> => {
-  const p = factoryProposal(id)
+const testInsightsProposal = async (id: string): Promise<{ error: string | null; sessionId?: string }> => {
+  const p = insightsProposal(id)
   if (!p) return { error: 'Proposal not found' }
   const exe = resolveClaudeExe()
   if (!exe) return { error: 'claude.exe not found' }
-  const out = await spawnBackground(exe, joinPath(homedir(), '.claude'), factoryTestArgs(p))
+  const out = await spawnBackground(exe, joinPath(homedir(), '.claude'), insightsTestArgs(p))
   const shortId = parseBgId(out)
   if (!shortId) return { error: out.trim().split(/\r?\n/).pop() || 'claude did not start' }
   const sessionId = (await waitForSessionId(shortId, 10000)) ?? shortId
@@ -1553,6 +1717,64 @@ const addBranchWorktree = async (repo: string, key: string, branch: string): Pro
   if (!added.isOk) return null
   linkNodeModules(worktree, repo)
   return worktree
+}
+
+const handoffMtime = (path: string | null): number | null => {
+  if (!path) return null
+  try {
+    return statSync(path).mtimeMs
+  } catch {
+    return null
+  }
+}
+
+const runAutoHandoff = (sessions: Session[], cleared: Map<string, string>): void => {
+  const now = Date.now()
+  for (const id of liveSince.keys()) if (!sessions.some((x) => x.id === id && x.isLive)) liveSince.delete(id)
+  for (const x of sessions) if (x.isLive && !liveSince.has(x.id)) liveSince.set(x.id, now)
+  if (isAutoHandoffRunning) return
+  const isUntried = (x: Session): boolean => triedHandoffs.get(x.id) !== x.lastActive
+  const isDue = (x: Session, handoffAt: number | null): boolean => !/\bexplain$/.test(x.name ?? '') && isHandoffDue({ ...x, liveSince: liveSince.get(x.id) ?? now }, handoffAt, now)
+  const s = sessions.find((x) => {
+    if (!x.ticket || !isUntried(x) || !isDue(x, null)) return false
+    if (isDue(x, handoffMtime(findHandoff(x.ticket)))) return true
+    triedHandoffs.set(x.id, x.lastActive)
+    return false
+  })
+  if (!s?.ticket || !s.projectPath) return
+  const exe = resolveClaudeExe()
+  if (!exe) return
+  const ticket = s.ticket
+  triedHandoffs.set(s.id, s.lastActive)
+  const existing = findHandoff(ticket)
+  const month = `${String(new Date(now).getMonth() + 1).padStart(2, '0')}-${new Date(now).getFullYear()}`
+  const path = existing ?? joinPath(opisDir(), month, ticket, 'handoff.md')
+  const resumeId = [...cleared].find(([, root]) => root === s.id)?.[0] ?? s.id
+  const env = { ...process.env }
+  delete env.NO_COLOR
+  isAutoHandoffRunning = true
+  const p = spawn(exe, autoHandoffArgs(resumeId, autoHandoffPrompt(path, ticket), opisDir()), {
+    cwd: s.projectPath,
+    shell: false,
+    windowsHide: true,
+    env,
+    stdio: 'ignore'
+  })
+  let isDone = false
+  const timer = setTimeout(() => {
+    if (p.pid) void killProcess(p.pid, true)
+    else p.kill()
+    finish('timeout')
+  }, AUTO_HANDOFF_TIMEOUT)
+  const finish = (result: string | number | null): void => {
+    if (isDone) return
+    isDone = true
+    clearTimeout(timer)
+    isAutoHandoffRunning = false
+    console.log('[auto-handoff]', ticket, result)
+  }
+  p.on('error', (e) => finish(e.message))
+  p.on('close', finish)
 }
 
 const findHandoff = (ticket: string): string | null => {
@@ -1644,11 +1866,11 @@ const startAddress = async (key: string): Promise<{ error: string | null; sessio
   try {
     const ticket = mr.ticket ?? `MR-${mr.iid}`
     const folder = (await branchFolder(repo, mr.sourceBranch)) ?? (await addBranchWorktree(repo, ticket, mr.sourceBranch))
-    if (folder) prepareTaskBrowser(ticket.toUpperCase(), folder)
+    const mcpConfig = folder ? prepareTaskBrowser(ticket.toUpperCase(), folder) : null
     const handoff = findHandoff(ticket)
     const model = handoff && handoffSizeOf(handoff)?.risk === 'critical' ? 'opus' : 'sonnet'
     const args = addressArgs({ iid: mr.iid, url: mr.url, ticket, folder, repo, branch: mr.sourceBranch, handoff, model })
-    const out = await spawnBackground(exe, folder ?? repo, args)
+    const out = await spawnBackground(exe, folder ?? repo, taskMcpArgs(args, mcpConfig))
     const shortId = parseBgId(out)
     if (!shortId) return { error: out.trim().split(/\r?\n/).pop() || 'claude did not start' }
     isStarted = true
@@ -1704,10 +1926,10 @@ const chromePortFor = (key: string): number => {
   return port
 }
 
-const prepareTaskBrowser = (key: string, folder: string): number => {
+const prepareTaskBrowser = (key: string, folder: string): string | null => {
   const port = chromePortFor(key)
   if (ticketFromPath(folder) === key) writeTaskMcp(join(homedir(), '.claude.json'), folder, port, PLAYWRIGHT_CONFIG)
-  return port
+  return writeTaskMcpFile(join(app.getPath('userData'), 'mcp'), key, port, PLAYWRIGHT_CONFIG)
 }
 
 const openInChrome = async (url: string, key?: string | null): Promise<void> => {
@@ -1743,26 +1965,41 @@ const serverFolderFor = async (key: string, cwd: string): Promise<string | null>
   )
 }
 
+const serverStarts = new Map<string, Promise<unknown>>()
+
+const startServerFor = async (key: string, cwd: string, body: Record<string, unknown>): Promise<unknown> => {
+  const folder = await serverFolderFor(key, cwd)
+  if (!folder) return { error: `No folder found for ${key}` }
+  const profile = serverProfile(folder)
+  const choice = {
+    tenant: asString(body.tenant) || profile.choice.tenant,
+    environment: asString(body.environment) || profile.choice.environment,
+    platform: asString(body.platform) || profile.choice.platform,
+    resolution: asString(body.resolution) || profile.choice.resolution
+  }
+  const result = await startServer(key, folder, { kind: profile.kind, choice, command: profile.command }, null, 120, 32)
+  if (result.error) return { error: result.error }
+  const started = servers.get(key)
+  return { key, url: started?.url, port: started?.port, cwd: folder, label: started?.label, isNew: true }
+}
+
 const bridgeRoutes = {
   '/server': async (body: Record<string, unknown>): Promise<unknown> => {
     const cwd = asString(body.cwd)
     const key = asString(body.ticket).toUpperCase() || ticketFromPath(cwd)
     if (!key) return { error: 'Pass --ticket <KEY> or run it from the ticket worktree' }
+    const pending = serverStarts.get(key)
+    if (pending) await pending.catch(() => undefined)
     const running = servers.get(key)
-    if (running) return { key, url: running.url, port: running.port, cwd: running.cwd, label: running.label, isNew: false }
-    const folder = await serverFolderFor(key, cwd)
-    if (!folder) return { error: `No folder found for ${key}` }
-    const profile = serverProfile(folder)
-    const choice = {
-      tenant: asString(body.tenant) || profile.choice.tenant,
-      environment: asString(body.environment) || profile.choice.environment,
-      platform: asString(body.platform) || profile.choice.platform,
-      resolution: asString(body.resolution) || profile.choice.resolution
+    if (running && isChoiceMismatch(running.label, asString(body.tenant), asString(body.environment))) stopServer(key)
+    else if (running) return { key, url: running.url, port: running.port, cwd: running.cwd, label: running.label, isNew: false }
+    const started = startServerFor(key, cwd, body)
+    serverStarts.set(key, started)
+    try {
+      return await started
+    } finally {
+      if (serverStarts.get(key) === started) serverStarts.delete(key)
     }
-    const result = await startServer(key, folder, { kind: profile.kind, choice, command: profile.command }, null, 120, 32)
-    if (result.error) return { error: result.error }
-    const started = servers.get(key)
-    return { key, url: started?.url, port: started?.port, cwd: folder, label: started?.label, isNew: true }
   },
   '/chrome': async (body: Record<string, unknown>): Promise<unknown> => {
     const key = asString(body.ticket).toUpperCase() || ticketFromPath(asString(body.cwd)) || null
@@ -1858,6 +2095,11 @@ const stopServer = (key: string): void => {
   pushServers()
 }
 const openGuard = createOpenGuard()
+const rekeyTerminal = (from: string, to: string): void => {
+  openGuard.cancel(from)
+  ptyHost.rekey(from, to)
+  sendToDashboard('pty-rekey', from, to)
+}
 const handedToVscode = new Map<string, number>()
 const PROMPT_QUIET_MS = 1500
 const PROMPT_WAIT_MS = 20000
@@ -1896,8 +2138,8 @@ const openTerminalNow = async (
     return { error: null }
   }
   if (mode !== 'resume') return { error: mode === 'vscode' ? 'this session runs in a VS Code terminal' : 'this session is attached in VS Code' }
-  if (s.ticket) prepareTaskBrowser(s.ticket.toUpperCase(), s.projectPath)
-  const out = await spawnBackground(exe, s.projectPath, resumeBackgroundArgs(id, s.ticket))
+  const mcpConfig = s.ticket ? prepareTaskBrowser(s.ticket.toUpperCase(), s.projectPath) : null
+  const out = await spawnBackground(exe, s.projectPath, taskMcpArgs(resumeBackgroundArgs(id, s.name ?? s.ticket), mcpConfig))
   const shortId = parseBgId(out)
   if (!shortId) return { error: out.trim().split(/\r?\n/).pop() || 'claude did not resume' }
   void refreshAgents().then(() => pushSessions())
@@ -1906,14 +2148,14 @@ const openTerminalNow = async (
   return { error: null }
 }
 
-const waitForQuietOutput = async (id: string): Promise<boolean> => {
+const waitForQuietOutput = async (id: string, isStrict = false): Promise<boolean> => {
   const deadline = Date.now() + PROMPT_WAIT_MS
   while (Date.now() < deadline) {
     const at = ptyHost.lastOutputAt(id)
     if (at !== null && Date.now() - at >= PROMPT_QUIET_MS) return true
     await new Promise((r) => setTimeout(r, 250))
   }
-  return ptyHost.isOpen(id)
+  return !isStrict && ptyHost.isOpen(id)
 }
 
 const sendPrompt = async (id: string, text: string): Promise<{ error: string | null }> => {
@@ -1950,7 +2192,7 @@ const takeOverInteractive = async (id: string, cols: number, rows: number): Prom
   const answer = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options)
   if (answer.response !== 1) return { error: 'cancelled' }
   handedToVscode.delete(id)
-  for (const pid of await runningResumePids(id)) await killProcess(pid, true)
+  for (const launchId of [id, ...predecessorsOf(id)]) for (const pid of await runningResumePids(launchId)) await killProcess(pid, true)
   await new Promise((r) => setTimeout(r, 800))
   await Promise.all([refreshRunning(), refreshAgents()])
   await pushSessions()
@@ -1983,11 +2225,12 @@ const closeSessionTab = async (id: string): Promise<{ error: string | null }> =>
   const exe = resolveClaudeExe()
   if (exe && bgAgents.has(id)) await stopBackground(exe, id)
   await killSessions([id])
-  for (const pid of await runningResumePids(id)) await killProcess(pid, true)
+  for (const launchId of [id, ...predecessorsOf(id)]) for (const pid of await runningResumePids(launchId)) await killProcess(pid, true)
   await new Promise((r) => setTimeout(r, 800))
   await Promise.all([refreshRunning(), refreshAgents()])
   await pushSessions()
-  return (await runningResumePids(id)).length ? { error: 'The Claude process is still running' } : { error: null }
+  const isStillRunning = (await Promise.all([id, ...predecessorsOf(id)].map(runningResumePids))).some((pids) => pids.length)
+  return isStillRunning ? { error: 'The Claude process is still running' } : { error: null }
 }
 
 const openTerminalInVscode = async (id: string): Promise<void> => {
@@ -2021,6 +2264,25 @@ function notifyNeedsYou(s: Session): void {
   })
   n.show()
   mainWindow?.webContents.send('play-alert')
+}
+
+function notifyFinished(s: Session): void {
+  if (!Notification.isSupported()) return
+  const who = s.ticket ? `${s.ticket} · ${s.name ?? lastTasks[s.ticket]?.title ?? s.projectName}` : (s.name ?? s.projectName)
+  const last = [...sessionDetail(s.id).messages].reverse().find((m) => m.role === 'assistant')?.text
+  const n = new Notification({
+    title: clip(`Claude finished: ${who}`, 120),
+    body: clip(last ?? 'Claude finished its turn. Click to open the session.', 240),
+    icon,
+    silent: true
+  })
+  shownNotifications.add(n)
+  n.on('close', () => shownNotifications.delete(n))
+  n.on('click', () => {
+    shownNotifications.delete(n)
+    focusInDashboard({ ticket: s.ticket ?? null, sessionId: s.id })
+  })
+  n.show()
 }
 
 function notifyIdle(s: Session): void {
@@ -2057,7 +2319,7 @@ function notifyContext(s: Session): void {
   n.show()
 }
 
-function updateAttention(sessions: Session[]): void {
+function updateAttention(sessions: Session[], shown: Session[]): void {
   if (!mainWindow) return
   const waitingIds = new Set<string>()
   for (const s of sessions) {
@@ -2069,6 +2331,15 @@ function updateAttention(sessions: Session[]): void {
     }
   }
   for (const id of [...notifiedWaiting]) if (!waitingIds.has(id)) notifiedWaiting.delete(id)
+  if (isProcessScanReady) {
+    const check = finishedTransitions(lastTurnStatus, shown)
+    lastTurnStatus = check.next
+    const isFocused = !!dashboardWindow && !dashboardWindow.isDestroyed() && dashboardWindow.isFocused()
+    for (const id of check.finished) {
+      const s = shown.find((x) => x.id === id)
+      if (s && isFinishedNotifiable(id, { isFocused, viewingId: viewingSessionId })) notifyFinished(s)
+    }
+  }
   const count = waitingIds.size
   if (count > 0) {
     if (!attentionIcon) attentionIcon = nativeImage.createFromPath(attentionPng)
@@ -2207,6 +2478,13 @@ const loadRenderer = (win: BrowserWindow, hash?: string): void => {
   else void win.loadFile(join(__dirname, '../renderer/index.html'), hash ? { hash } : undefined)
 }
 
+const jumpToInbox = (): void => {
+  const isLoaded = !!dashboardWindow && !dashboardWindow.isDestroyed() && !dashboardWindow.webContents.isLoading()
+  openDashboard()
+  if (isLoaded) dashboardWindow?.webContents.send('inbox-next')
+  else pendingInboxNext = true
+}
+
 const openDashboard = (): void => {
   if (dashboardWindow) {
     if (dashboardWindow.isMinimized()) dashboardWindow.restore()
@@ -2234,11 +2512,13 @@ const openDashboard = (): void => {
   win.once('ready-to-show', () => win.show())
   win.webContents.on('did-finish-load', () => {
     win.webContents.send('my-mrs', myMrs())
-    win.webContents.send('my-tasks', myTasks)
+    win.webContents.send('my-tasks', { ...myTasks, syncedAt: tasksSyncedAt })
     win.webContents.send('usage-update', lastUsage)
     void pushSessions()
     if (pendingFocus) win.webContents.send('focus-session', pendingFocus)
     pendingFocus = null
+    if (pendingInboxNext) win.webContents.send('inbox-next')
+    pendingInboxNext = false
   })
   win.on('close', () => {
     appState = { ...appState, dashboardBounds: win.getBounds() }
@@ -2726,6 +3006,7 @@ if (!app.requestSingleInstanceLock()) {
       startServer(key, cwd, spec, port, cols, rows)
   )
   ipcMain.handle('ide-files', (_e, cwd: string) => ideFiles(cwd))
+  ipcMain.handle('ide-search', (_e, cwd: string, query: string) => ideSearch(cwd, query))
   ipcMain.handle('ide-status', (_e, cwd: string) => ideStatus(cwd))
   ipcMain.handle('ide-changes', (_e, cwd: string) => ideChanges(cwd))
   ipcMain.handle('ide-ref-changes', (_e, cwd: string, source: string, target: string) => ideRefChanges(cwd, source, target))
@@ -2734,21 +3015,22 @@ if (!app.requestSingleInstanceLock()) {
   )
   ipcMain.handle('ide-ref-files', (_e, cwd: string, source: string) => ideRefFiles(cwd, source))
   ipcMain.handle('explain-doc', (_e, key: string) => findExplainFile(key))
-  ipcMain.handle('agent-tree', () => {
+  ipcMain.handle('agent-tree', async () => {
     const live = new Set(lastSessions.filter((s) => s.isLive).map((s) => s.id))
-    return listAgentGroups(projectsDir(), (id) => live.has(id), Date.now())
+    const groups = await listAgentGroups(projectsDir(), (id) => live.has(clearedIds.get(id) ?? id), Date.now())
+    return groups.map((g) => ({ ...g, sessionId: clearedIds.get(g.sessionId) ?? g.sessionId }))
   })
   ipcMain.handle('agent-run', (_e, sessionId: string, agentId: string) => readAgentRun(projectsDir(), sessionId, agentId))
   ipcMain.handle('explain-start', (_e, key: string, cwd: string, sourceSessionId: string | null) =>
     startExplain(key, cwd, sourceSessionId)
   )
-  ipcMain.handle('factory-report', () => factoryReport())
+  ipcMain.handle('insights-report', () => insightsReport())
   ipcMain.handle('flow-state', (_e, keys: string[]) => flowState(keys))
   ipcMain.on('flow-open-skill', () => void shell.openPath(FLOW_SKILL))
-  ipcMain.handle('factory-run-now', () => runFactory())
-  ipcMain.handle('factory-apply', (_e, id: string) => applyFactoryProposal(id))
-  ipcMain.handle('factory-dismiss', (_e, id: string) => dismissFactoryProposal(id))
-  ipcMain.handle('factory-test', (_e, id: string) => testFactoryProposal(id))
+  ipcMain.handle('insights-run-now', () => runInsights())
+  ipcMain.handle('insights-apply', (_e, id: string) => applyInsightsProposal(id))
+  ipcMain.handle('insights-dismiss', (_e, id: string) => dismissInsightsProposal(id))
+  ipcMain.handle('insights-test', (_e, id: string) => testInsightsProposal(id))
   ipcMain.handle('explain-md-text', (_e, key: string) => {
     const found = findExplainFile(key)
     return found && existsSync(found.mdPath) ? readText(found.mdPath) : null
@@ -2867,6 +3149,11 @@ if (!app.requestSingleInstanceLock()) {
     if (!(await confirmMr(text.question, text.button, detail))) return { error: null, isCancelled: true }
     const error = await runMrAction(appState.settings.gitlabBase, found.token, found.mr.projectId, found.mr.iid, action, options ?? null)
     forgetApprovals(key)
+    if (!error && (action === 'approve' || action === 'unapprove')) {
+      const approvedMrs = Object.fromEntries(Object.entries(appState.approvedMrs).filter(([k]) => k !== key))
+      appState = { ...appState, approvedMrs: action === 'approve' ? { ...approvedMrs, [key]: found.mr.sha } : approvedMrs }
+      saveState(statePath, appState)
+    }
     if (!error) void refreshMyMrs()
     const notice = action === 'merge' && !error ? await offerReleaseStatus(found.mr.ticket) : null
     return { error, isCancelled: false, notice }
@@ -3008,6 +3295,61 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
   ipcMain.handle('terminal-open-vscode', (_e, id: string) => openTerminalInVscode(id))
   ipcMain.handle('session-close', (_e, id: string) => closeSessionTab(id))
   ipcMain.handle('session-detail', (_e, id: string) => sessionDetail(id))
+  ipcMain.handle('inbox-item', (_e, id: string) => inboxItem(id))
+  ipcMain.handle('inbox-answer', (_e, id: string, toolUseId: string, key: string) => answerInbox(id, toolUseId, key))
+  ipcMain.on('inbox-dismiss', (_e, id: string) => dismissInbox(id))
+  ipcMain.handle('ticket-readiness', async (_e, key: string, cwd: string | null) => {
+    const handoff = findHandoff(key)
+    const handoffAt = handoff ? statSync(handoff).mtimeMs : null
+    const log = cwd ? await runGit(cwd, ['log', '-1', '--format=%ct']) : null
+    const seconds = log?.isOk ? Number(log.out.trim()) : NaN
+    return { handoffAt, lastCommitAt: Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null }
+  })
+  let promptCache: { mtime: number; entries: PromptEntry[] } | null = null
+  const readPasteCache = (hash: string): string | null => {
+    if (!/^[0-9a-f]+$/i.test(hash)) return null
+    try {
+      return readFileSync(joinPath(homedir(), '.claude', 'paste-cache', `${hash}.txt`), 'utf8')
+    } catch {
+      return null
+    }
+  }
+  ipcMain.handle('prompt-history', () => {
+    try {
+      const file = joinPath(homedir(), '.claude', 'history.jsonl')
+      const mtime = statSync(file).mtimeMs
+      if (promptCache?.mtime !== mtime) promptCache = { mtime, entries: parseHistory(readFileSync(file, 'utf8').split(/\r?\n/), readPasteCache) }
+      return promptCache.entries
+    } catch {
+      return []
+    }
+  })
+  const folderMedia = (folder: string): ReturnType<typeof mediaFiles> =>
+    mediaFiles(readdirSync(folder, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => d.name))
+  ipcMain.handle('task-files', (_e, ticket: string) => {
+    const folder = lastTasks[ticket]?.folder
+    if (!folder) return null
+    try {
+      return folderMedia(folder)
+    } catch {
+      return null
+    }
+  })
+  ipcMain.on('open-task-file', (_e, ticket: string, name: string) => {
+    const folder = lastTasks[ticket]?.folder
+    if (!folder) return
+    try {
+      if (folderMedia(folder).some((f) => f.name === name)) void shell.openPath(joinPath(folder, name))
+    } catch {
+      return
+    }
+  })
+  ipcMain.on('viewing-session', (_e, id: string | null) => {
+    viewingSessionId = typeof id === 'string' ? id : null
+  })
+  ipcMain.on('get-jump-key', (e) => {
+    e.returnValue = isJumpKeyReady
+  })
   ipcMain.handle('ticket-description', (_e, key: string) =>
     appState.settings.jiraToken ? fetchDescription(appState.settings.jiraBase, appState.settings.jiraToken, key) : null
   )
@@ -3035,8 +3377,17 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
   ipcMain.on('task-repos', (e) => {
     e.returnValue = { roots: repoRoots(lastSessions), byPrefix: appState.repoByPrefix }
   })
+  ipcMain.handle('pick-repo', async (e) => {
+    const parent = BrowserWindow.fromWebContents(e.sender)
+    const options = { title: 'Choose the repository folder', properties: ['openDirectory' as const] }
+    const picked = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
+    const path = picked.canceled ? null : (picked.filePaths[0] ?? null)
+    if (!path) return { repo: null, error: null }
+    if (!existsSync(joinPath(path, '.git'))) return { repo: null, error: `${path} is not a git repository` }
+    return { repo: { path, name: basename(path) }, error: null }
+  })
   ipcMain.on('get-my-tasks', (e) => {
-    e.returnValue = myTasks
+    e.returnValue = { ...myTasks, syncedAt: tasksSyncedAt }
   })
   ipcMain.on('vscode-layout-status', (e) => {
     e.returnValue = usedProfiles()
@@ -3108,8 +3459,13 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
   wireSessions(mainWindow)
   buildTray(mainWindow)
   wireDock(mainWindow)
-  checkFactory()
-  setInterval(checkFactory, FACTORY_CHECK)
+  try {
+    migrateFactoryDir(LEGACY_FACTORY_DIR, INSIGHTS_DIR)
+  } catch (e) {
+    console.error('[insights] migration failed:', e)
+  }
+  checkInsights()
+  setInterval(checkInsights, INSIGHTS_CHECK)
 
   mainWindow.on('close', (e) => {
     console.log('[diag] window close event, isQuiting=', (app as never as { isQuiting?: boolean }).isQuiting)
@@ -3128,6 +3484,8 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
   globalShortcut.register('CommandOrControl+Shift+Space', () => {
     mainWindow.isVisible() ? mainWindow.hide() : mainWindow.show()
   })
+  isJumpKeyReady = globalShortcut.register('CommandOrControl+Alt+Space', jumpToInbox)
+  if (!isJumpKeyReady) console.error('[diag] Ctrl+Alt+Space is taken; the jump key is off')
 
   if (!process.argv.includes('--hidden')) openView(appState.settings.startView)
 

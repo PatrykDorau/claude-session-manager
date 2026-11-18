@@ -3,10 +3,15 @@ import { ref } from 'vue'
 import type { MenuItem } from '../types'
 import Icon from './Icon.vue'
 import type { IconName } from './icons'
+import { useEscapeClose } from './escape'
 
 defineProps<{ label: string; items: MenuItem[]; isIcon?: boolean; title?: string; icon?: IconName }>()
 
 const isOpen = ref(false)
+const closeMenu = (): void => {
+  isOpen.value = false
+}
+useEscapeClose(isOpen, closeMenu)
 const choose = (item: MenuItem): void => {
   if (item.isDisabled) return
   isOpen.value = false

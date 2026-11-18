@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import type { CodeComment, DevServer, DiffRow, MenuItem, MrCommentable, MrDraftNote, MrFile, MrReviewAction, MrRow, MrStatus, MrVersionDiff, QuickAction, Session, TerminalMode } from '../types'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick, onActivated, onDeactivated } from 'vue'
+import { followId } from './follow'
+import type { CodeComment, DevServer, DiffRow, MenuItem, MrCommentable, MrDraftNote, MrFile, MrReviewAction, MrRow, MrStatus, MrVersionDiff, QuickAction, Session, Stage, TerminalMode } from '../types'
 import { sortDrafts, draftsForThread, generalDrafts, rowsAround } from './mrreview'
 import { plainSession } from '../cards'
 import { reviewLabel, findReviewSession, findWorkSession, findAddressSession, mergeHint } from './mrs'
@@ -16,7 +17,8 @@ import { clampSize, readSize, writeSize, readFlag } from './dashboard'
 import QuickActions from './QuickActions.vue'
 import ServerPanel from './ServerPanel.vue'
 
-const props = defineProps<{ row: MrRow; sessions: Session[]; isGone: boolean; myName?: string | null; servers?: DevServer[] }>()
+const props = defineProps<{ row: MrRow; sessions: Session[]; isGone: boolean; myName?: string | null; servers?: DevServer[]; taskStage?: Stage | null }>()
+const emitViewing = defineEmits<{ viewing: [id: string | null] }>()
 
 const REVIEW_ACTIONS: QuickAction[] = [
   {
@@ -48,7 +50,7 @@ const panes = ref<HTMLDivElement | null>(null)
 const codeWidth = ref(readSize('dash.mrCodeWidth', 760))
 const resizeCode = (delta: number): void => {
   const total = panes.value?.clientWidth ?? 1400
-  codeWidth.value = clampSize(codeWidth.value + delta, 320, total - 320)
+  codeWidth.value = clampSize(codeWidth.value + delta, 320, total - 360)
 }
 const saveCodeWidth = (): void => writeSize('dash.mrCodeWidth', codeWidth.value)
 const isOverviewClaudeOpen = ref(readFlag('dash.mrOverviewClaude'))
@@ -65,7 +67,7 @@ const resizeLeft = (delta: number): void => {
     return
   }
   const total = panes.value?.clientWidth ?? 1400
-  docWidth.value = clampSize(docWidth.value + delta, 420, total - 320)
+  docWidth.value = clampSize(docWidth.value + delta, 420, total - 360)
 }
 const saveLeftWidth = (): void => {
   if (tab.value === 'changes') saveCodeWidth()
@@ -79,6 +81,15 @@ const terminalTick = ref(0)
 let remountTimer: ReturnType<typeof setTimeout> | null = null
 
 const isMine = computed(() => !!props.myName && props.row.author === props.myName)
+const actionValues = computed(() => ({
+  ticket: props.row.ticket,
+  title: props.row.title,
+  branch: props.row.sourceBranch,
+  worktree: session.value?.projectPath ?? null,
+  mr: `!${props.row.iid}`,
+  mrUrl: props.row.url,
+  server: server.value ? `http://localhost:${server.value.port}` : null
+}))
 const addressSessionId = ref<string | null>(null)
 const addressSession = computed(
   () =>
@@ -91,7 +102,7 @@ const isAddressPending = computed(
     (!!addressSessionId.value && !props.sessions.some((s) => s.id.startsWith(addressSessionId.value as string)))
 )
 const baseSession = computed(() =>
-  isMine.value ? findWorkSession(props.sessions, props.row.ticket) : findReviewSession(props.sessions, props.row.sessionId)
+  isMine.value ? findWorkSession(props.sessions, props.row.ticket) : findReviewSession(props.sessions, followId(props.sessions, props.row.sessionId))
 )
 const paneSessions = computed(() =>
   [
@@ -100,6 +111,11 @@ const paneSessions = computed(() =>
   ].filter((t): t is { label: string; session: Session } => !!t)
 )
 const pickedSessionId = ref<string | null>(null)
+const followTabs = (): void => {
+  addressSessionId.value = followId(props.sessions, addressSessionId.value)
+  pickedSessionId.value = followId(props.sessions, pickedSessionId.value)
+}
+watch(() => props.sessions, followTabs)
 const session = computed(
   () =>
     paneSessions.value.find((t) => t.session.id === pickedSessionId.value)?.session ??
@@ -107,6 +123,9 @@ const session = computed(
     baseSession.value ??
     addressSession.value
 )
+watch(() => session.value?.id ?? null, (id) => emitViewing('viewing', id), { immediate: true })
+onActivated(() => emitViewing('viewing', session.value?.id ?? null))
+onDeactivated(() => emitViewing('viewing', null))
 const repoPath = ref<string | null>(null)
 const loadRepo = async (): Promise<void> => {
   repoPath.value = await window.api.getMrRepo(props.row.key)
@@ -562,7 +581,7 @@ onBeforeUnmount(() => {
       <div class="line">
         <span class="proj">{{ row.projectName }}</span>
         <a class="iid" :href="row.url" target="_blank" title="Open in GitLab">!{{ row.iid }}</a>
-        <span class="pill" :style="{ '--c': chip.color }">{{ chip.label }}</span>
+        <span v-if="!isMine" class="pill" :style="{ '--c': chip.color }">{{ chip.label }}</span>
         <span v-if="isGone" class="pill" style="--c: #666d78">no longer in your to-do</span>
         <span v-if="isDraftMr" class="draftbadge">Draft</span>
         <button v-if="overview" class="linkbtn draftlink" :disabled="!!busyAction || isGone" :title="isDraftMr ? 'Remove the Draft prefix so it can be merged' : 'Mark as draft so it cannot be merged yet'" @click="toggleDraft">
@@ -663,7 +682,7 @@ onBeforeUnmount(() => {
     </header>
 
     <div v-show="tab !== 'server'" ref="panes" class="panes">
-      <section v-show="tab === 'changes' && isCodeOpen" class="pane code" :style="isBothOpen ? { flex: 'none', width: `${codeWidth}px` } : undefined">
+      <section v-show="tab === 'changes' && isCodeOpen" class="pane code" :style="isBothOpen ? { flex: 'none', width: `${codeWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
         <CodeView
           ref="codeView"
           :cwd="codeCwd"
@@ -680,7 +699,7 @@ onBeforeUnmount(() => {
           @file-shown="checkCommentable"
         />
       </section>
-      <section v-show="tab === 'overview'" class="pane doc" :style="isOverviewClaudeOpen ? { flex: 'none', width: `${docWidth}px` } : undefined">
+      <section v-show="tab === 'overview'" class="pane doc" :style="isOverviewClaudeOpen ? { flex: 'none', width: `${docWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
         <div class="ov">
           <div class="ovmain">
             <p v-if="status === null" class="muted">Loading…</p>
@@ -722,6 +741,7 @@ onBeforeUnmount(() => {
                 <div class="w">
                   <span class="wicon" :style="{ color: status?.approvals?.approvedBy.length ? '#3dd68c' : '#6f6f6f' }"><Icon name="user" :size="16" /></span>
                   <button
+                    v-if="!isMine || status?.approvals?.isApprovedByMe"
                     class="btn sm"
                     :class="{ approved: status?.approvals?.isApprovedByMe }"
                     :disabled="!!busyAction || isGone"
@@ -947,7 +967,7 @@ onBeforeUnmount(() => {
         <p>No review yet. Claude reviews this MR in its own worktree, so your checkout stays untouched.</p>
         <button class="btn primary" :disabled="isStarting || isGone" @click="review"><Icon name="play" :size="13" />Review</button>
       </div>
-      <QuickActions :session-id="session?.id ?? null" :mode="mode" :take-over="takeOverHere" :extra="isMine ? [] : REVIEW_ACTIONS" />
+      <QuickActions :session-id="session?.id ?? null" :mode="mode" :take-over="takeOverHere" :extra="isMine ? [] : REVIEW_ACTIONS" :values="actionValues" :stage="isMine ? (taskStage ?? 'mr') : null" />
     </section>
     </div>
 
@@ -1053,9 +1073,10 @@ onBeforeUnmount(() => {
 }
 .bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  height: 42px;
+  min-height: 42px;
 }
 .tabs {
   display: flex;

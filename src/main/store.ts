@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import type { JiraIssue } from './jira'
 import type { Placement } from './pane'
 import type { RestoreState } from './restore'
+import { STAGES, type Stage } from '../renderer/src/types'
 
 export type ClickAction =
   | 'project-cmd'
@@ -38,6 +39,7 @@ const START_VIEWS: StartView[] = ['ask', 'sidebar', 'dashboard']
 export interface QuickAction {
   label: string
   prompt: string
+  stages?: Stage[]
 }
 
 export type DockEdge = 'left' | 'right'
@@ -74,10 +76,11 @@ export interface State {
   starred: string[]
   dashboardBounds: Rect | null
   reviewedMrs: Record<string, string>
+  approvedMrs: Record<string, string>
   mrSessions: Record<string, string>
   serverCommands: Record<string, string>
   chromePorts: Record<string, number>
-  factoryLastRun: number | null
+  insightsLastRun: number | null
   settings: Settings
 }
 
@@ -91,7 +94,7 @@ const CLICK_ACTIONS: ClickAction[] = [
 ]
 
 export const DEFAULT_QUICK_ACTIONS: QuickAction[] = [
-  { label: 'Repro in browser', prompt: "Zrób repro w przeglądarce (browser-verify repro) dla tego zadania. Serwer uruchom przez node C:/Users/ASSET-17300/.claude/skills/_shared/cockpit.js server --ticket <klucz zadania>, przeglądarkę przez node C:/Users/ASSET-17300/.claude/skills/_shared/cockpit.js chrome --ticket <klucz zadania> --url <adres serwera>. Nie uruchamiaj Chrome samodzielnie. Logowanie i dojście do ekranu zostaw mnie: poczekaj na moje „gotowe”." },
+  { label: 'Repro in browser', prompt: "Zrób repro w przeglądarce (browser-verify repro) dla tego zadania. Serwer uruchom przez node C:/Users/ASSET-17300/.claude/skills/_shared/cockpit.js server --ticket {ticket}, przeglądarkę przez node C:/Users/ASSET-17300/.claude/skills/_shared/cockpit.js chrome --ticket {ticket} --url {server}. Nie uruchamiaj Chrome samodzielnie. Logowanie i dojście do ekranu zostaw mnie: poczekaj na moje „gotowe”." },
   { label: 'Amend, push, draft notes', prompt: "To moja wyraźna prośba o commit i push: w worktree tej gałęzi zrób git commit --amend --no-edit z obecnymi zmianami i git push --force-with-lease. Potem przygotuj w MR draft notes (gitlab.js mr draft-note) z odpowiedziami na nierozwiązane wątki: najpierw pokaż mi listę odpowiedzi do potwierdzenia. Niczego nie publikuj." },
   { label: 'TL;DR of the plan', prompt: "Napisz krótkie TL;DR obecnego planu i co zostało do zrobienia." },
   { label: 'Write QA test cases', prompt: "Napisz test case'y dla testerów (browser-verify qa)." }
@@ -160,7 +163,9 @@ const loadQuickActions = (v: unknown): QuickAction[] => {
   const actions = Array.isArray(v)
     ? v.filter((a): a is QuickAction => isObject(a) && typeof a.label === 'string' && typeof a.prompt === 'string')
     : []
-  return actions.length && actions.length === (v as unknown[]).length ? actions.map(({ label, prompt }) => ({ label, prompt })) : DEFAULT_QUICK_ACTIONS
+  return actions.length && actions.length === (v as unknown[]).length ? actions.map(({ label, prompt, stages }) =>
+        Array.isArray(stages) ? { label, prompt, stages: stages.filter((st): st is Stage => STAGES.includes(st)) } : { label, prompt }
+      ) : DEFAULT_QUICK_ACTIONS
 }
 
 const MIN_VISIBLE = 100
@@ -193,10 +198,11 @@ export const DEFAULT_STATE = (): State => ({
   starred: [],
   dashboardBounds: null,
   reviewedMrs: {},
+  approvedMrs: {},
   mrSessions: {},
   serverCommands: {},
   chromePorts: {},
-  factoryLastRun: null,
+  insightsLastRun: null,
   settings: { ...DEFAULT_SETTINGS }
 })
 
@@ -228,12 +234,14 @@ export function loadState(file: string): State {
       starred: stringList(o.starred),
       dashboardBounds: isRect(o.dashboardBounds) ? o.dashboardBounds : null,
       reviewedMrs: stringMap(o.reviewedMrs),
+      approvedMrs: stringMap(o.approvedMrs),
       mrSessions: stringMap(o.mrSessions),
       serverCommands: stringMap(o.serverCommands),
       chromePorts: isObject(o.chromePorts)
         ? Object.fromEntries(Object.entries(o.chromePorts).filter((e): e is [string, number] => typeof e[1] === 'number'))
         : {},
-      factoryLastRun: typeof o.factoryLastRun === 'number' ? o.factoryLastRun : null,
+      insightsLastRun:
+        typeof o.insightsLastRun === 'number' ? o.insightsLastRun : typeof o.factoryLastRun === 'number' ? o.factoryLastRun : null,
       settings: {
         jiraBase: typeof s.jiraBase === 'string' ? s.jiraBase : DEFAULT_SETTINGS.jiraBase,
         jiraToken: typeof s.jiraToken === 'string' ? s.jiraToken : DEFAULT_SETTINGS.jiraToken,

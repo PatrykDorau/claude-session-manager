@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { contextLevel, formatContext, handoffPath, handoffPrompt, clearStartPrompt, isIdleLarge, isAutoClearDue, nextClearStep, modelTag } from '../src/renderer/src/dashboard/context'
+import { contextLevel, formatContext, handoffPath, handoffPrompt, clearStartPrompt, isIdleLarge, nextClearStep, modelTag } from '../src/renderer/src/dashboard/context'
 
 const date = new Date(2026, 10, 16)
 const path = 'C:\\Users\\ASSET-17300\\Desktop\\Opis zadan\\11-2026\\SOFRMPT-1\\handoff.md'
@@ -61,21 +61,6 @@ describe('isIdleLarge', () => {
     expect(isIdleLarge({ contextTokens: 200_000, lastActive: now - 3_600_000, status: 'waiting' }, now)).toBe(false)
     expect(isIdleLarge({ contextTokens: 200_000, lastActive: now - 60_000, status: 'idle' }, now)).toBe(false)
     expect(isIdleLarge({ contextTokens: 99_000, lastActive: now - 3_600_000, status: 'idle' }, now)).toBe(false)
-  })
-})
-
-describe('isAutoClearDue', () => {
-  const now = 10_000_000_000
-  it('is true after 45 minutes idle with a used context', () => {
-    expect(isAutoClearDue({ contextTokens: 60_000, lastActive: now - 45 * 60_000, status: 'idle' }, now)).toBe(true)
-    expect(isAutoClearDue({ contextTokens: 60_000, lastActive: now - 3_600_000, status: 'checkout' }, now)).toBe(true)
-  })
-  it('is false before 45 minutes, while busy, or on a fresh context', () => {
-    expect(isAutoClearDue({ contextTokens: 200_000, lastActive: now - 44 * 60_000, status: 'idle' }, now)).toBe(false)
-    expect(isAutoClearDue({ contextTokens: 200_000, lastActive: now - 3_600_000, status: 'working' }, now)).toBe(false)
-    expect(isAutoClearDue({ contextTokens: 200_000, lastActive: now - 3_600_000, status: 'waiting' }, now)).toBe(false)
-    expect(isAutoClearDue({ contextTokens: 49_000, lastActive: now - 3_600_000, status: 'idle' }, now)).toBe(false)
-    expect(isAutoClearDue({ contextTokens: null, lastActive: now - 3_600_000, status: 'idle' }, now)).toBe(false)
   })
 })
 

@@ -13,12 +13,23 @@ export interface PooledTerminal {
 }
 
 const pool = new Map<string, PooledTerminal>()
+const keys = new Map<PooledTerminal, string>()
+const renamed = new Map<string, string>()
 let isListening = false
+const currentKey = (sessionId: string): string => renamed.get(sessionId) ?? sessionId
 
 const listen = (): void => {
   if (isListening) return
   isListening = true
   window.api.onPtyData((id, chunk) => pool.get(id)?.term.write(chunk))
+  window.api.onPtyRekey((from, to) => {
+    const entry = pool.get(from)
+    if (!entry || pool.has(to)) return
+    pool.delete(from)
+    pool.set(to, entry)
+    keys.set(entry, to)
+    renamed.set(from, to)
+  })
   window.api.onPtyExit((id, code) => {
     const entry = pool.get(id)
     if (!entry) return
@@ -45,9 +56,10 @@ export const acquireTerminal = (sessionId: string): PooledTerminal => {
   })
   const fit = new FitAddon()
   term.loadAddon(fit)
-  term.onData((data) => window.api.writeTerminal(sessionId, data))
   const entry: PooledTerminal = { term, fit, element, isAttached: false, openedAt: 0, users: 1, onExit: new Set() }
+  term.onData((data) => window.api.writeTerminal(keys.get(entry) ?? sessionId, data))
   pool.set(sessionId, entry)
+  keys.set(entry, sessionId)
   return entry
 }
 
@@ -61,12 +73,24 @@ export const showTerminalIn = (entry: PooledTerminal, host: HTMLElement): void =
 }
 
 export const releaseTerminal = (sessionId: string): void => {
-  const entry = pool.get(sessionId)
+  const key = currentKey(sessionId)
+  const entry = pool.get(key)
   if (!entry) return
   entry.users -= 1
   if (entry.users > 0) return
-  if (entry.isAttached) window.api.closeTerminal(sessionId)
+  if (key !== sessionId) {
+    setTimeout(() => disposeIdle(key, entry), 0)
+    return
+  }
+  disposeIdle(key, entry)
+}
+
+const disposeIdle = (key: string, entry: PooledTerminal): void => {
+  if (entry.users > 0 || pool.get(key) !== entry) return
+  if (entry.isAttached) window.api.closeTerminal(key)
   entry.term.dispose()
   entry.element.remove()
-  pool.delete(sessionId)
+  pool.delete(key)
+  keys.delete(entry)
+  for (const [from, to] of renamed) if (to === key) renamed.delete(from)
 }

@@ -1,7 +1,7 @@
 import { win32 } from 'node:path'
 import { normalizePath } from './lock'
 import type { JiraTicket, Session } from '../renderer/src/types'
-import type { Proposal } from './factory'
+import { METRIC_KEYS, type Proposal } from './insights'
 
 const WORKTREE_DIR = /[\\/]\.claude[\\/]worktrees[\\/]/
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, 'g')
@@ -90,14 +90,15 @@ export const taskContext = (key: string, worktree: string, repo: string, now: Da
 
 export const scoreArgs = (day: string, root: string): string[] => {
   const prompt = [
-    `Jesteś oceniającym w pętli zewnętrznej Claude Cockpit. Pracujesz w ${root}/.claude/factory.`,
-    `Do oceny czytaj pliki digests/${day}/*.json, rubric.md i dismissed.json. Poza nimi czytaj tylko pliki docelowe propozycji: ${root}/.claude/CLAUDE.md i pliki w ${root}/.claude/skills/. Nie czytaj surowych transkryptów ani ${root}/.claude/projects.`,
-    '1. Oceń każdą sesję według rubric.md (każde kryterium 1–5).',
-    '2. Pogrupuj błędy, które powtarzają się w 2 lub więcej sesjach.',
-    `3. Napisz raport w Markdown: tabela sesji (sesja, ticket, tokeny, oceny), grupy powtarzających się błędów i trend tokenów.`,
-    '   Dodaj sekcję ## Zużycie: 5 sesji z największym tokensRead, tokeny według etapów (pole stages), rozmiar i ryzyko (size, risk) wobec etapów faktycznie uruchomionych (wypisz niezgodności), udział tokenów sesji na Opusie, podejrzane oceny ryzyka (risk low, a są poprawki zachowania od użytkownika albo kilka sesji na tym samym tickecie) i 1–3 wnioski. Zmiana progów decidera rozmiaru to zwykła propozycja dla ~/.claude/CLAUDE.md.',
-    `4. Na samym końcu odpowiedzi dodaj jeden blok \`\`\`json z propozycjami: tablicą obiektów { "id", "target", "title", "evidence": string[], "find", "replace" }; id unikalne, np. ${day}-1. target to ~/.claude/CLAUDE.md albo plik w ~/.claude/skills/. Przed dodaniem każdej propozycji przeczytaj plik docelowy i skopiuj z niego pole find dosłownie, tak aby występowało w nim dokładnie raz. Pomiń wszystko, co jest już w dismissed.json. Gdy nie ma propozycji, wypisz [].`,
-    `Cała odpowiedź to raport, a po nim blok json. Nie zapisuj żadnych plików — Cockpit zapisze raport w reports/${day}.md i propozycje w proposals/${day}.json.`
+    `Jesteś analitykiem pętli zewnętrznej Claude Cockpit. Pracujesz w ${root}/.claude/insights.`,
+    `Czytaj tylko: metrics/${day}.json (metryki dnia), metrics/*.json (ostatnie 14 dni), incidents/${day}.json (fragmenty incydentów), applied.json, dismissed.json, findings/<poprzedni dzień>.json, guide.md. Poza nimi czytaj tylko pliki docelowe propozycji: ${root}/.claude/CLAUDE.md i pliki w ${root}/.claude/skills/. Nie czytaj surowych transkryptów ani ${root}/.claude/projects.`,
+    `Klucze metryk: ${METRIC_KEYS.join(', ')}.`,
+    '1. Znajdź najważniejsze problemy dnia według guide.md, metryk i incydentów. W finding.sessions i finding.incidents wpisz id z plików. Pole kind: "claude" = do naprawy w skillach/CLAUDE.md, "you" = nawyk użytkownika (wskazówka, bez zmiany pliku).',
+    '2. Dla każdej propozycji z applied.json podaj werdykt (improved, no-change, worse, too-early) na podstawie wartości jej metryki z 7 dni przed i po dniu zastosowania.',
+    '3. Zaproponuj poprawki w ~/.claude/CLAUDE.md lub ~/.claude/skills/. Przed dodaniem propozycji przeczytaj plik docelowy i skopiuj pole find dosłownie, tak aby występowało w nim dokładnie raz. Pomiń to, co jest w dismissed.json.',
+    'Limity: headline 1 zdanie; najwyżej 5 findings; cause do 2 zdań; why i expected po 1 zdaniu; detail w tips do 2 zdań.',
+    `Odpowiedz po polsku. Cała odpowiedź to dokładnie jeden blok \`\`\`json w kształcie { "headline": string, "findings": [{ "id", "kind": "claude"|"you", "severity": "high"|"medium"|"low", "title", "cause", "metric", "sessions": string[], "incidents": string[] }], "proposals": [{ "id", "finding", "target", "title", "evidence": string[], "find", "replace", "why", "expected", "metric" }], "tips": [{ "id", "finding", "title", "detail" }], "effects": [{ "proposal", "verdict", "note" }] }. Id propozycji unikalne, np. ${day}-1; finding wskazuje id findingu. Puste listy zapisz jako [].`,
+    `Nie zapisuj żadnych plików — Cockpit zapisze wynik w findings/${day}.json.`
   ].join('\n')
   const claudeDir = `//${root.charAt(0).toLowerCase()}${root.slice(2)}/.claude`
   return [
@@ -123,9 +124,53 @@ export const scoreArgs = (day: string, root: string): string[] => {
   ]
 }
 
-export const factoryTestArgs = (p: Proposal): string[] => [
+export const insightsTestArgs = (p: Proposal): string[] => [
   '--bg',
   '--name',
-  `factory-${p.id}`,
+  `insights-${p.id}`,
   `Użyj superpowers:writing-skills: przetestuj tę zmianę (baseline i green) zanim ją zastosujesz: ${JSON.stringify(p, null, 2)}`
 ]
+
+export const warmUpTask = async (steps: {
+  waitFolder: () => Promise<boolean>
+  link: () => void
+  startServer: () => Promise<{ url?: string; error?: string }>
+  waitServer: (url: string) => Promise<boolean>
+  openChrome: (url: string) => Promise<unknown>
+  log: (message: string) => void
+}): Promise<void> => {
+  try {
+    if (!(await steps.waitFolder())) {
+      steps.log('the worktree folder did not appear')
+      return
+    }
+    steps.link()
+    const server = await steps.startServer()
+    if (server.error || !server.url) {
+      steps.log(server.error ?? 'the dev server reported no URL')
+      return
+    }
+    if (!(await steps.waitServer(server.url))) {
+      steps.log('the dev server did not start answering')
+      return
+    }
+    await steps.openChrome(server.url)
+  } catch (e) {
+    steps.log(String(e))
+  }
+}
+
+const VIDEO_EXTENSIONS = ['.webm', '.mp4', '.mov']
+const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif']
+
+export const mediaFiles = (names: string[]): { name: string; kind: 'video' | 'image' }[] => {
+  const kindOf = (name: string): 'video' | 'image' | null => {
+    const ext = win32.extname(name).toLowerCase()
+    if (VIDEO_EXTENSIONS.includes(ext)) return 'video'
+    return IMAGE_EXTENSIONS.includes(ext) ? 'image' : null
+  }
+  const byName = (a: string, b: string): number => a.localeCompare(b, undefined, { sensitivity: 'base' })
+  const pick = (kind: 'video' | 'image'): { name: string; kind: 'video' | 'image' }[] =>
+    names.filter((n) => kindOf(n) === kind).sort(byName).map((name) => ({ name, kind }))
+  return [...pick('video'), ...pick('image')]
+}

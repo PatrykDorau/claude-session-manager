@@ -8,6 +8,7 @@ export interface PtyHost {
   closeAll: () => void
   isOpen: (sessionId: string) => boolean
   lastOutputAt: (sessionId: string) => number | null
+  rekey: (from: string, to: string) => void
 }
 
 const ptyEnv = (): Record<string, string> => {
@@ -19,11 +20,13 @@ const ptyEnv = (): Record<string, string> => {
 export const createPtyHost = (send: (channel: string, ...args: unknown[]) => void): PtyHost => {
   const ptys = new Map<string, IPty>()
   const outputAt = new Map<string, number>()
+  const keyOf = new Map<IPty, string>()
 
   const close = (sessionId: string): void => {
     const p = ptys.get(sessionId)
     ptys.delete(sessionId)
     outputAt.delete(sessionId)
+    if (p) keyOf.delete(p)
     try {
       p?.kill()
     } catch {
@@ -35,15 +38,20 @@ export const createPtyHost = (send: (channel: string, ...args: unknown[]) => voi
     close(sessionId)
     const p = spawn(exe, args, { name: 'xterm-256color', cols, rows, cwd, env: ptyEnv() })
     ptys.set(sessionId, p)
+    keyOf.set(p, sessionId)
     p.onData((chunk) => {
-      outputAt.set(sessionId, Date.now())
-      send('pty-data', sessionId, chunk)
+      const key = keyOf.get(p)
+      if (!key) return
+      outputAt.set(key, Date.now())
+      send('pty-data', key, chunk)
     })
     p.onExit(({ exitCode }) => {
-      if (ptys.get(sessionId) !== p) return
-      ptys.delete(sessionId)
-      outputAt.delete(sessionId)
-      send('pty-exit', sessionId, exitCode)
+      const key = keyOf.get(p)
+      if (!key || ptys.get(key) !== p) return
+      ptys.delete(key)
+      outputAt.delete(key)
+      keyOf.delete(p)
+      send('pty-exit', key, exitCode)
     })
   }
 
@@ -61,5 +69,16 @@ export const createPtyHost = (send: (channel: string, ...args: unknown[]) => voi
   const isOpen = (sessionId: string): boolean => ptys.has(sessionId)
   const lastOutputAt = (sessionId: string): number | null => outputAt.get(sessionId) ?? null
 
-  return { open, write, resize, close, closeAll, isOpen, lastOutputAt }
+  const rekey = (from: string, to: string): void => {
+    const p = ptys.get(from)
+    if (!p || ptys.has(to)) return
+    ptys.delete(from)
+    ptys.set(to, p)
+    keyOf.set(p, to)
+    const at = outputAt.get(from)
+    outputAt.delete(from)
+    if (at !== undefined) outputAt.set(to, at)
+  }
+
+  return { open, write, resize, close, closeAll, isOpen, lastOutputAt, rekey }
 }

@@ -16,12 +16,13 @@ const props = defineProps<{
 const emit = defineEmits<{ select: [page: DashboardPage]; settings: [] }>()
 
 const ENTRIES: { page: DashboardPage; label: string; icon: IconName; isSoon: boolean }[] = [
+  { page: 'today', label: 'Today', icon: 'dashboard', isSoon: false },
+  { page: 'inbox', label: 'Inbox', icon: 'bell', isSoon: false },
   { page: 'tickets', label: 'My tickets', icon: 'ticket', isSoon: false },
   { page: 'mrs', label: 'Merge requests to review', icon: 'pr', isSoon: false },
-  { page: 'starred', label: 'Starred', icon: 'star', isSoon: false },
   { page: 'tree', label: 'Agent tree', icon: 'tree', isSoon: false },
   { page: 'hosts', label: 'Local servers', icon: 'server', isSoon: false },
-  { page: 'factory', label: 'Factory', icon: 'sparkles', isSoon: false },
+  { page: 'insights', label: 'Insights', icon: 'sparkles', isSoon: false },
   { page: 'flow', label: 'Flow', icon: 'flow', isSoon: false }
 ]
 const select = (entry: (typeof ENTRIES)[number]): void => {
@@ -67,7 +68,7 @@ const showSidebar = (): void => window.api.showSidebar()
       v-for="e in ENTRIES"
       :key="e.page"
       class="nav"
-      :class="{ on: page === e.page && isListOpen, active: page === e.page }"
+      :class="{ on: page === e.page && isListOpen, active: page === e.page, ringing: e.page === 'inbox' && !!alerts?.inbox }"
       :disabled="e.isSoon"
       :title="e.label"
       @click="select(e)"
@@ -162,6 +163,9 @@ const showSidebar = (): void => window.api.showSidebar()
   font: 600 10px/1 var(--font-ui);
   color: inherit;
   opacity: 0.85;
+}
+.nav.ringing {
+  color: var(--warn);
 }
 .alert {
   position: absolute;

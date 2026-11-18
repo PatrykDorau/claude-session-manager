@@ -2,6 +2,9 @@
 import { ref, inject } from 'vue'
 import type { Ref } from 'vue'
 import { SOUNDS, playSound, type SoundName } from '../sound'
+import { STAGES, type Stage } from '../types'
+import { STAGE_LABEL } from '../display'
+import { PLACEHOLDERS } from '../quickactions'
 
 const colorblind = inject<Ref<boolean>>('colorblind', ref(false))
 const initial = window.api.getSettings()
@@ -58,7 +61,15 @@ const startView = ref(initial.startView)
 const saveStartView = (): void => window.api.setSettings({ startView: startView.value })
 const quickActions = ref(initial.quickActions.map((a) => ({ ...a })))
 const saveQuickActions = (): void =>
-  window.api.setSettings({ quickActions: quickActions.value.map((a) => ({ label: a.label, prompt: a.prompt })) })
+  window.api.setSettings({
+    quickActions: quickActions.value.map((a) => (a.stages?.length ? { label: a.label, prompt: a.prompt, stages: [...a.stages] } : { label: a.label, prompt: a.prompt }))
+  })
+const toggleStage = (index: number, stage: Stage): void => {
+  const a = quickActions.value[index]
+  const stages = a.stages ?? []
+  a.stages = stages.includes(stage) ? stages.filter((s) => s !== stage) : [...stages, stage]
+  saveQuickActions()
+}
 const addQuickAction = (): void => {
   quickActions.value = [...quickActions.value, { label: '', prompt: '' }]
 }
@@ -229,10 +240,14 @@ function copyDiag(): void {
       <div v-for="(a, i) in quickActions" :key="i" class="qa">
         <input v-model="a.label" class="inp" placeholder="Button label" @change="saveQuickActions" />
         <textarea v-model="a.prompt" class="inp" rows="2" placeholder="Prompt sent to Claude" @change="saveQuickActions" />
+        <div class="stages" title="Show this action only in these stages. None selected: show it everywhere.">
+          <button v-for="st in STAGES" :key="st" class="stage" :class="{ on: a.stages?.includes(st) }" @click="toggleStage(i, st)">{{ STAGE_LABEL[st] }}</button>
+        </div>
         <button class="btn" @click="removeQuickAction(i)">Remove</button>
       </div>
       <button class="btn" @click="addQuickAction">Add quick action</button>
-      <small class="hint">Buttons next to the Claude terminal in the dashboard. Each sends its prompt to the session.</small>
+      <small class="hint">Buttons next to the Claude terminal in the dashboard. Each sends its prompt to the session; Shift+click edits it first. Stages limit where a button shows; none selected shows it everywhere.</small>
+      <small class="hint">Placeholders: <span v-for="p in PLACEHOLDERS" :key="p.name"><code>{{ '{' + p.name + '}' }}</code> {{ p.label }}; </span>a missing value stays as written.</small>
     </div>
 
     <div class="field">
@@ -355,6 +370,24 @@ function copyDiag(): void {
 }
 .inp:focus {
   border-color: #2ef05a;
+}
+.stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.stage {
+  padding: 1px 7px;
+  border: 1px solid #3a3a3a;
+  border-radius: 10px;
+  background: none;
+  color: #9a9a9a;
+  font-size: 11px;
+  cursor: pointer;
+}
+.stage.on {
+  border-color: var(--accent, #a77bf3);
+  color: var(--accent, #a77bf3);
 }
 .qa {
   display: flex;

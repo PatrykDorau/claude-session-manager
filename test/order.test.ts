@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { orderRows, moveKey } from '../src/renderer/src/dashboard/order'
+import { orderRows, moveKey, splitStarred } from '../src/renderer/src/dashboard/order'
 
 type Row = { key: string; isActive: boolean; priority?: string }
 const rank = (r: Row): { isActive: boolean; priority: string | undefined } => ({ isActive: r.isActive, priority: r.priority })
@@ -43,5 +43,14 @@ describe('moveKey', () => {
 
   it('returns the order unchanged when dropping on itself', () => {
     expect(moveKey(['A', 'B'], 'A', 'A', true)).toEqual(['A', 'B'])
+  })
+})
+
+describe('splitStarred', () => {
+  it('puts starred rows apart and keeps the order inside both parts', () => {
+    const rows = [{ key: 'A' }, { key: 'B' }, { key: 'C' }]
+    const split = splitStarred(rows, ['C', 'A'])
+    expect(split.starred.map((r) => r.key)).toEqual(['A', 'C'])
+    expect(split.rest.map((r) => r.key)).toEqual(['B'])
   })
 })

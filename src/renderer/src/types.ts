@@ -48,6 +48,7 @@ export interface Session {
   finished?: boolean
   jiraStatus?: string | null
   manualTicket?: boolean
+  continuedAs?: string | null
 }
 
 export interface TaskMeta {
@@ -80,6 +81,24 @@ export interface JiraTicket {
 
 export type TerminalMode = 'attach' | 'resume' | 'vscode' | 'elsewhere'
 
+export interface PendingTool {
+  name: string
+  input: string
+  toolUseId: string
+}
+
+export type InboxReason = 'permission' | 'question' | 'finished'
+
+export interface InboxItem {
+  reason: InboxReason
+  pendingTool: PendingTool | null
+  isOpaqueRequest: boolean
+  question: string | null
+  questionOptions: string[]
+  messages: { role: 'user' | 'assistant'; text: string }[]
+  isWritable: boolean
+}
+
 export interface SessionDetail {
   turns: number
   messages: { role: 'user' | 'assistant'; text: string }[]
@@ -88,6 +107,7 @@ export interface SessionDetail {
 export interface QuickAction {
   label: string
   prompt: string
+  stages?: Stage[]
 }
 
 export interface MrItem {
@@ -109,10 +129,11 @@ export interface MrItem {
   notes: number
   openThreads: number
   approvals: number
+  isApprovedByMe: boolean
   isDraft: boolean
 }
 
-export type MrReviewState = 'new-changes' | 'not-reviewed' | 'reviewed'
+export type MrReviewState = 'new-changes' | 'not-reviewed' | 'reviewed' | 'approved'
 
 export interface MrRow extends MrItem {
   review: MrReviewState
@@ -173,11 +194,13 @@ export interface MyMrs {
   myName?: string | null
   isLoading?: boolean
   isAllProjects: boolean
+  syncedAt?: number | null
 }
 
 export interface MyTasks {
   tickets: JiraTicket[]
   error: 'no-token' | 'failed' | null
+  syncedAt?: number | null
 }
 
 export interface WorktreeRow {
@@ -303,6 +326,7 @@ export interface AgentNode {
   lastAt: number | null
   task: string
   depth: number
+  contextTokens: number | null
 }
 
 export interface AgentGroup {
@@ -478,14 +502,58 @@ export interface TicketMr {
   description: string
 }
 
-export interface FactoryProposal {
+export type InsightsMetricKey = 'costUnits' | 'avgContext' | 'costAbove200k' | 'corrections' | 'toolErrors' | 'ruleBreaks' | 'repeatedCommands' | 'noTests' | 'sessions'
+export type InsightsContextBucket = 'lt100k' | '100to200k' | '200to300k' | 'gt300k'
+export type InsightsDayMetrics = Record<InsightsMetricKey, number> & {
+  day: string
+  costByModel: Record<string, number>
+  costByStage: Record<string, number>
+  buckets: Record<InsightsContextBucket, { turns: number; cost: number }>
+  tickets: { ticket: string; cost: number; sessions: number; activeMinutes: number }[]
+  topSessions: { sessionId: string; ticket: string | null; cost: number }[]
+}
+export type InsightsIncident = {
+  id: string
+  sessionId: string
+  ticket: string | null
+  kind: 'correction' | 'tool-errors' | 'rule' | 'repeat' | 'big-context'
+  at: number | null
+  user: string | null
+  before: { text: string; tools: string[] }[]
+}
+export type InsightsFinding = {
+  id: string
+  kind: 'claude' | 'you'
+  severity: 'high' | 'medium' | 'low'
+  title: string
+  cause: string
+  metric: InsightsMetricKey
+  sessions: string[]
+  incidents: string[]
+}
+export type InsightsProposal = {
   id: string
   target: string
   title: string
   evidence: string[]
   find: string
   replace: string
+  finding: string
+  why: string
+  expected: string
+  metric: InsightsMetricKey
   isDismissed: boolean
+  isApplied: boolean
+}
+export type InsightsTip = { id: string; finding: string; title: string; detail: string }
+export type InsightsEffect = { proposal: string; verdict: 'improved' | 'no-change' | 'worse' | 'too-early'; note: string }
+export type InsightsApplied = { id: string; target: string; title: string; day: string; metric: InsightsMetricKey }
+export type InsightsResult = {
+  headline: string
+  findings: InsightsFinding[]
+  proposals: InsightsProposal[]
+  tips: InsightsTip[]
+  effects: InsightsEffect[]
 }
 
 export type FlowRole = { stage: string; who: string; model: string; isMain: boolean; agents: string[] }
@@ -512,12 +580,22 @@ export type FlowState = {
   boosters: FlowBooster[]
 }
 
-export interface FactoryReport {
+export interface InsightsReport {
   day: string | null
-  report: string | null
-  proposals: FactoryProposal[]
-  trend: { date: string; tokens: number }[]
+  result: InsightsResult | null
+  history: InsightsDayMetrics[]
+  incidents: InsightsIncident[]
+  applied: InsightsApplied[]
   isRunning: boolean
   lastRun: number | null
   lastError: string | null
+}
+
+export interface PromptEntry {
+  text: string
+  at: number
+  ticket: string | null
+  project: string
+  sessionId: string | null
+  isIncomplete: boolean
 }

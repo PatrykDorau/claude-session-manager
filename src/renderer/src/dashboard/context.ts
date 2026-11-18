@@ -37,12 +37,6 @@ export const clearStartPrompt = (ticket: string, now: Date): string =>
 export const isIdleLarge = (s: { contextTokens: number | null; lastActive: number; status: string }, now: number): boolean =>
   (s.contextTokens ?? 0) >= IDLE_LARGE_TOKENS && now - s.lastActive >= IDLE_LARGE_MS && s.status !== 'working' && s.status !== 'waiting'
 
-export const AUTO_CLEAR_MS = 45 * 60_000
-export const AUTO_CLEAR_TOKENS = 50_000
-
-export const isAutoClearDue = (s: { contextTokens: number | null; lastActive: number; status: string }, now: number): boolean =>
-  (s.contextTokens ?? 0) >= AUTO_CLEAR_TOKENS && now - s.lastActive >= AUTO_CLEAR_MS && s.status !== 'working' && s.status !== 'waiting'
-
 export type ClearPhase = 'none' | 'handoff' | 'blocked'
 
 const isTurnOver = (status: string): boolean => status === 'idle' || status === 'checkout'

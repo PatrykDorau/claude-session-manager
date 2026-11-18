@@ -6,16 +6,11 @@ export const uncommittedCount = (sessions: Session[]): number => {
   return [...byFolder.values()].reduce((sum, n) => sum + n, 0)
 }
 
-export type DashboardPage = 'tickets' | 'mrs' | 'starred' | 'tree' | 'hosts' | 'factory' | 'flow'
+export type DashboardPage = 'today' | 'inbox' | 'tickets' | 'mrs' | 'tree' | 'hosts' | 'insights' | 'flow'
 
-export const filterRows = (rows: TaskRow[], query: string, starred: string[], isStarredOnly: boolean): TaskRow[] => {
+export const filterRows = (rows: TaskRow[], query: string): TaskRow[] => {
   const needle = query.trim().toLowerCase()
-  const starredKeys = new Set(starred)
-  return rows.filter(
-    (r) =>
-      (!isStarredOnly || starredKeys.has(r.key)) &&
-      (!needle || r.key.toLowerCase().includes(needle) || r.summary.toLowerCase().includes(needle))
-  )
+  return rows.filter((r) => !needle || r.key.toLowerCase().includes(needle) || r.summary.toLowerCase().includes(needle))
 }
 
 const CHIPS: Partial<Record<Status, { label: string; color: string }>> = {

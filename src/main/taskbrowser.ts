@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs'
 import { mkdir, readdir, copyFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -14,6 +14,13 @@ export const claudeProjectKey = (path: string): string => path.replace(/\\/g, '/
 
 export const taskChromeProfile = (key: string): string => join('C:\\Chrome dev session', 'tasks', key)
 
+const playwrightServer = (port: number, configPath: string): object => ({
+  type: 'stdio',
+  command: 'npx',
+  args: ['-y', '@playwright/mcp@latest', '--config', configPath, '--cdp-endpoint', `http://localhost:${port}`],
+  env: {}
+})
+
 export const withTaskMcp = (config: any, folder: string, port: number, configPath: string): any => {
   const key = claudeProjectKey(folder)
   const projects = config?.projects && typeof config.projects === 'object' ? config.projects : {}
@@ -27,12 +34,7 @@ export const withTaskMcp = (config: any, folder: string, port: number, configPat
         ...project,
         mcpServers: {
           ...servers,
-          playwright: {
-            type: 'stdio',
-            command: 'npx',
-            args: ['-y', '@playwright/mcp@latest', '--config', configPath, '--cdp-endpoint', `http://localhost:${port}`],
-            env: {}
-          }
+          playwright: playwrightServer(port, configPath)
         }
       }
     }
@@ -51,6 +53,19 @@ export const writeTaskMcp = (claudeJson: string, folder: string, port: number, c
     return false
   }
 }
+
+export const writeTaskMcpFile = (dir: string, key: string, port: number, configPath: string): string | null => {
+  try {
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, `${key}.json`)
+    writeFileSync(file, JSON.stringify({ mcpServers: { playwright: playwrightServer(port, configPath) } }, null, 2), 'utf8')
+    return file
+  } catch {
+    return null
+  }
+}
+
+export const taskMcpArgs = (args: string[], configFile: string | null): string[] => (configFile ? [...args, '--mcp-config', configFile] : args)
 
 const SKIPPED = new Set([
   'tasks',

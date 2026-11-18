@@ -4,6 +4,14 @@ import { join } from 'node:path'
 import { parseTranscriptHead, parseTail, countTurns, lastMessages, createDetailCache } from '../src/main/transcript'
 
 describe('parseTranscriptHead', () => {
+  it('keeps the first custom title so an explain session stays named after a restart', () => {
+    const lines = [
+      JSON.stringify({ type: 'custom-title', customTitle: 'SOFRMPT-1 explain', sessionId: 's' }),
+      JSON.stringify({ type: 'user', cwd: 'C:/x', message: { role: 'user', content: 'go' } })
+    ]
+    expect(parseTranscriptHead(lines).title).toBe('SOFRMPT-1 explain')
+  })
+
   const lines = readFileSync(join(__dirname, 'fixtures/session-sample.jsonl'), 'utf8')
     .split(/\r?\n/).filter(Boolean)
 
@@ -197,5 +205,63 @@ describe('lastMessages filtering', () => {
       { role: 'user', text: '/review-mr 42' },
       { role: 'assistant', text: 'done' }
     ])
+  })
+})
+
+describe('parseTail pending tool', () => {
+  const toolMessage = (blocks: unknown[]): string =>
+    JSON.stringify({ type: 'assistant', message: { stop_reason: 'tool_use', content: blocks } })
+  const use = (id: string, name: string, input: unknown): unknown => ({ type: 'tool_use', id, name, input })
+
+  it('reads the command of a pending Bash call', () => {
+    const tail = parseTail([toolMessage([use('t1', 'Bash', { command: 'npm run build' })])])
+    expect(tail.pendingTool).toEqual({ name: 'Bash', input: 'npm run build', toolUseId: 't1' })
+    expect(tail.isOpaqueRequest).toBe(false)
+  })
+  it('reads the path of file tools', () => {
+    for (const name of ['Edit', 'Write', 'Read']) {
+      expect(parseTail([toolMessage([use('t2', name, { file_path: 'src/x.ts', old_string: 'a' })])]).pendingTool?.input).toBe('src/x.ts')
+    }
+  })
+  it('shows other tools as compact JSON', () => {
+    expect(parseTail([toolMessage([use('t3', 'Grep', { a: 1 })])]).pendingTool?.input).toBe('{"a":1}')
+  })
+  it('treats subagent calls and several calls as opaque', () => {
+    const agent = parseTail([toolMessage([use('t4', 'Agent', { prompt: 'x' })])])
+    expect(agent.pendingTool).toBeNull()
+    expect(agent.isOpaqueRequest).toBe(true)
+    const many = parseTail([toolMessage([use('t5', 'Bash', { command: 'a' }), use('t6', 'Bash', { command: 'b' })])])
+    expect(many.pendingTool).toBeNull()
+    expect(many.isOpaqueRequest).toBe(true)
+  })
+  it('lists the options of an AskUserQuestion question', () => {
+    const ask = use('t7', 'AskUserQuestion', { questions: [{ question: 'Which?', options: [{ label: 'A' }, { label: 'B' }] }] })
+    expect(parseTail([toolMessage([ask])]).questionOptions).toEqual(['A', 'B'])
+  })
+  it('treats parallel calls written as separate lines of one message as opaque', () => {
+    const line = (id: string, command: string): string =>
+      JSON.stringify({ type: 'assistant', message: { id: 'm1', stop_reason: 'tool_use', content: [use(id, 'Bash', { command })] } })
+    const tail = parseTail([line('t1', 'rm -rf build'), line('t2', 'ls')])
+    expect(tail.pendingTool).toBeNull()
+    expect(tail.isOpaqueRequest).toBe(true)
+  })
+  it('reads a single call that follows a text line of the same message', () => {
+    const text = JSON.stringify({ type: 'assistant', message: { id: 'm2', content: [{ type: 'text', text: 'Running' }] } })
+    const call = JSON.stringify({ type: 'assistant', message: { id: 'm2', stop_reason: 'tool_use', content: [use('t9', 'Bash', { command: 'ls' })] } })
+    expect(parseTail([text, call]).pendingTool?.toolUseId).toBe('t9')
+  })
+  it('does not answer plan approvals or multi-part questions inline', () => {
+    expect(parseTail([toolMessage([use('p1', 'ExitPlanMode', { plan: 'x' })])]).isOpaqueRequest).toBe(true)
+    const two = use('q1', 'AskUserQuestion', { questions: [{ question: 'A?', options: [{ label: 'a' }] }, { question: 'B?', options: [{ label: 'b' }] }] })
+    expect(parseTail([toolMessage([two])]).isOpaqueRequest).toBe(true)
+    const multi = use('q2', 'AskUserQuestion', { questions: [{ question: 'A?', multiSelect: true, options: [{ label: 'a' }] }] })
+    expect(parseTail([toolMessage([multi])]).isOpaqueRequest).toBe(true)
+  })
+  it('has nothing pending after a tool result', () => {
+    const result = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1' }] } })
+    const tail = parseTail([toolMessage([use('t1', 'Bash', { command: 'ls' })]), result])
+    expect(tail.pendingTool).toBeNull()
+    expect(tail.isOpaqueRequest).toBe(false)
+    expect(tail.questionOptions).toEqual([])
   })
 })

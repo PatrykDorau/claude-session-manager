@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { safeRelPath, parseStatus, isNoisePath, parseNameStatus, isSafeRef, worktreeForBranch, parseStatusPaths, countChanges } from '../src/main/ide'
+import { safeRelPath, parseStatus, isNoisePath, parseNameStatus, isSafeRef, worktreeForBranch, parseStatusPaths, countChanges, parseGrep } from '../src/main/ide'
 import { languageOf, buildTree } from '../src/renderer/src/dashboard/code'
 
 describe('safeRelPath', () => {
@@ -123,5 +123,19 @@ describe('parseStatusPaths', () => {
   it('lists paths with uncommitted changes, including renamed targets', () => {
     const out = [' M src/a.ts', '?? src/new.ts', 'R  src/old.ts -> src/moved.ts', ''].join(String.fromCharCode(10))
     expect(parseStatusPaths(out)).toEqual(['src/a.ts', 'src/new.ts', 'src/moved.ts'])
+  })
+})
+
+describe('parseGrep', () => {
+  it('splits path, line and text and keeps colons inside the text', () => {
+    const out = ['src/a.ts:12:  const x = { a: 1 }', 'src/b.vue:3:<div>', 'Binary file c.png matches', ''].join(String.fromCharCode(10))
+    expect(parseGrep(out, 10)).toEqual([
+      { path: 'src/a.ts', line: 12, text: 'const x = { a: 1 }' },
+      { path: 'src/b.vue', line: 3, text: '<div>' }
+    ])
+  })
+
+  it('stops at the limit', () => {
+    expect(parseGrep(['a:1:x', 'b:2:y'].join(String.fromCharCode(10)), 1)).toHaveLength(1)
   })
 })

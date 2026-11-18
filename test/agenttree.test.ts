@@ -12,7 +12,8 @@ const agent = (id: string, state: AgentNode['state']): AgentNode => ({
   lastText: '',
   lastAt: 1,
   task: '',
-  depth: 1
+  depth: 1,
+  contextTokens: null
 })
 const groups: AgentGroup[] = [
   { sessionId: 's1', agents: [agent('a', 'working'), agent('b', 'finished')] },

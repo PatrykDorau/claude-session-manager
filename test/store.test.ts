@@ -34,10 +34,11 @@ const base: State = {
   starred: [],
   dashboardBounds: null,
   reviewedMrs: {},
+  approvedMrs: {},
   mrSessions: {},
   serverCommands: {},
   chromePorts: {},
-  factoryLastRun: null,
+  insightsLastRun: null,
   settings: {
     jiraBase: 'https://jira.redge.com/browse/',
     jiraToken: '',
@@ -85,7 +86,7 @@ describe('ticket-level state', () => {
     expect(s.pane).toEqual({})
     expect(s.restore).toEqual({ snapshot: [], pendingRemoval: {}, lastScanAt: 0 })
     expect(s.repoByPrefix).toEqual({})
-    expect(s.factoryLastRun).toBeNull()
+    expect(s.insightsLastRun).toBeNull()
     expect(s.settings.taskJql).toBe(base.settings.taskJql)
     expect(s.settings.startPrompt).toBe(base.settings.startPrompt)
     rmSync(dir, { recursive: true, force: true })
@@ -163,10 +164,11 @@ describe('store io', () => {
       starred: ['SOFNJJ-1'],
       dashboardBounds: { x: 10, y: 20, width: 1400, height: 860 },
       reviewedMrs: { '7!1': 'abc' },
+      approvedMrs: { '7!2': 'def' },
       mrSessions: { '7!1': 'sid' },
       serverCommands: { repo: 'npm run serve -- --port {port}' },
       chromePorts: { 'A-1': 9301 },
-      factoryLastRun: 1700000000000,
+      insightsLastRun: 1700000000000,
       settings: {
         jiraBase: 'http://jira.local/',
         jiraToken: 'tok',
@@ -209,8 +211,15 @@ describe('dashboard state', () => {
     expect(s.settings.quickActions).toEqual(DEFAULT_QUICK_ACTIONS)
     expect(DEFAULT_QUICK_ACTIONS.map((a) => a.label)).toEqual(['Repro in browser', 'Amend, push, draft notes', 'TL;DR of the plan', 'Write QA test cases'])
   })
+  it('reads the legacy factoryLastRun when insightsLastRun is missing', () => {
+    expect(load({ factoryLastRun: 1700000000000 }).insightsLastRun).toBe(1700000000000)
+  })
   it('drops non-string starred keys', () => {
     expect(load({ starred: ['A-1', 3] }).starred).toEqual(['A-1'])
+  })
+  it('keeps valid stages of quick actions and old entries without stages', () => {
+    expect(load({ settings: { quickActions: [{ label: 'x', prompt: 'p', stages: ['qa', 'nope'] }] } }).settings.quickActions).toEqual([{ label: 'x', prompt: 'p', stages: ['qa'] }])
+    expect(load({ settings: { quickActions: [{ label: 'y', prompt: 'q' }] } }).settings.quickActions).toEqual([{ label: 'y', prompt: 'q' }])
   })
   it('falls back to the default quick actions when the saved list is invalid or empty', () => {
     expect(load({ settings: { quickActions: [{ label: 'x' }] } }).settings.quickActions).toEqual(DEFAULT_QUICK_ACTIONS)
@@ -251,11 +260,13 @@ describe('gitlab settings and review state', () => {
     expect(s.settings.gitlabToken).toBe('')
     expect(s.settings.mrProjects).toBe('tigo-fo-web, tigo-fo-smarttv')
     expect(s.reviewedMrs).toEqual({})
+    expect(s.approvedMrs).toEqual({})
     expect(s.mrSessions).toEqual({})
   })
   it('drops review entries whose value is not a string', () => {
     const s = load({ reviewedMrs: { '7!1': 'abc', '7!2': 3 }, mrSessions: { '7!1': 'id', x: null } })
     expect(s.reviewedMrs).toEqual({ '7!1': 'abc' })
+    expect(load({ approvedMrs: { '7!1': 'abc', '7!2': 3 } }).approvedMrs).toEqual({ '7!1': 'abc' })
     expect(s.mrSessions).toEqual({ '7!1': 'id' })
   })
 })

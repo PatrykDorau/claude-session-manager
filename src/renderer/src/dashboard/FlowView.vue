@@ -274,9 +274,9 @@ const agentTitle = (name: string): string => agentOf(name)?.description ?? name
 }
 .lane {
   display: flex;
+  flex-wrap: wrap;
   align-items: stretch;
-  gap: 4px;
-  overflow-x: auto;
+  gap: 8px 4px;
   padding-bottom: 6px;
 }
 .arrow {
@@ -418,6 +418,9 @@ const agentTitle = (name: string): string => agentOf(name)?.description ?? name
   border: 1px solid var(--line-2);
   border-radius: 12px;
   cursor: pointer;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
 }
 .chip b {
   font-weight: 600;

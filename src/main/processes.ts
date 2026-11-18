@@ -8,6 +8,7 @@ const RESUME =
 export function extractResumeIds(commandLines: string[]): string[] {
   const ids = new Set<string>()
   for (const line of commandLines) {
+    if (line.includes('--fork-session')) continue
     RESUME.lastIndex = 0
     let m: RegExpExecArray | null
     while ((m = RESUME.exec(line)) !== null) ids.add(m[1])
@@ -155,14 +156,15 @@ export async function listAgents(): Promise<AgentInfo[] | null> {
   })
 }
 
-interface ClaudeProcess {
+export interface ClaudeProcess {
   pid: number
   commandLine: string
+  startedAt: number
 }
 
-const claudeProcesses = (): Promise<ClaudeProcess[]> => {
+export const claudeProcesses = (): Promise<ClaudeProcess[]> => {
   const ps =
-    "ConvertTo-Json -Compress @(Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | ForEach-Object { @{ p = $_.ProcessId; c = [string]$_.CommandLine } })"
+    "ConvertTo-Json -Compress @(Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | ForEach-Object { @{ p = $_.ProcessId; c = [string]$_.CommandLine; s = $(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }) } })"
   return new Promise((resolve) => {
     let out = ''
     const p = spawn('powershell.exe', ['-NoProfile', '-Command', ps], { windowsHide: true })
@@ -170,8 +172,8 @@ const claudeProcesses = (): Promise<ClaudeProcess[]> => {
     p.on('error', () => resolve([]))
     p.on('close', () => {
       try {
-        const rows: { p: number; c: string | null }[] = JSON.parse(out)
-        resolve(rows.map((r) => ({ pid: r.p, commandLine: r.c ?? '' })))
+        const rows: { p: number; c: string | null; s?: number }[] = JSON.parse(out)
+        resolve(rows.map((r) => ({ pid: r.p, commandLine: r.c ?? '', startedAt: r.s ?? 0 })))
       } catch {
         resolve([])
       }

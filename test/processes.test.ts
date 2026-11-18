@@ -2,6 +2,10 @@ import { describe, it, expect } from 'vitest'
 import { extractResumeIds, extractAttachIds, extractAttachPids, extractResumePids, probeCommand, mergedListHas, branchTickets } from '../src/main/processes'
 
 describe('extractResumeIds', () => {
+  it('ignores the headless background handoff fork', () => {
+    expect(extractResumeIds(['claude -p P --resume 3367d315-46a2-4000-bc43-7e3a5c0a43a5 --fork-session --no-session-persistence'])).toEqual([])
+  })
+
   it('pulls a single resume id', () => {
     expect(extractResumeIds(['claude --resume 3367d315-46a2-4000-bc43-7e3a5c0a43a5'])).toEqual([
       '3367d315-46a2-4000-bc43-7e3a5c0a43a5'

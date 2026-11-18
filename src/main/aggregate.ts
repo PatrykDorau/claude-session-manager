@@ -16,6 +16,7 @@ export interface RawSession {
   model: string | null
   contextTokens: number | null
   stages?: Stage[]
+  title?: string | null
 }
 
 function projectName(cwd: string | null): string {
@@ -114,7 +115,7 @@ export function buildSessions(
         workingWindowMs
       }),
       watched: false,
-      name: null,
+      name: r.title ?? null,
       model: r.model,
       contextTokens: r.contextTokens,
       dirty: false,

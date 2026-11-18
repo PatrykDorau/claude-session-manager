@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { mrKey, parseTodos, parseReviewMrs, mergeMrs, mentionPath, countOpenThreads, countApprovals, isInProjects, reviewState, sortMrs, parseDiffStats, parseMrSha } from '../src/main/gitlab'
-import type { MrRow } from '../src/renderer/src/types'
+import { mrKey, parseTodos, parseReviewMrs, mergeMrs, mentionPath, countOpenThreads, countApprovals, isApprovedBy, approvalState, carryEnrichment, pruneApproved, isInProjects, reviewState, sortMrs, parseDiffStats, parseMrSha } from '../src/main/gitlab'
+import type { MrItem, MrRow } from '../src/renderer/src/types'
 
 const mrTodo = {
   target_type: 'MergeRequest',
@@ -42,6 +42,7 @@ describe('parseTodos', () => {
         notes: 0,
         openThreads: 0,
         approvals: 0,
+        isApprovedByMe: false,
         isDraft: false
       }
     ])
@@ -77,7 +78,27 @@ describe('reviewState', () => {
   })
 })
 
+describe('approvalState', () => {
+  it('is null when I have not approved', () => {
+    expect(approvalState('a', false, 'a')).toBeNull()
+  })
+  it('is approved without a stored sha or when the head is unchanged', () => {
+    expect(approvalState('a', true, undefined)).toBe('approved')
+    expect(approvalState('a', true, 'a')).toBe('approved')
+  })
+  it('is new-changes when commits landed after my approve', () => {
+    expect(approvalState('b', true, 'a')).toBe('new-changes')
+  })
+})
+
 describe('sortMrs', () => {
+  it('puts approved after reviewed', () => {
+    const sorted = sortMrs([
+      { key: 'a', review: 'approved', updatedAt: '2026-11-10' } as MrRow,
+      { key: 'r', review: 'reviewed', updatedAt: '2026-11-09' } as MrRow
+    ])
+    expect(sorted.map((r) => r.key)).toEqual(['r', 'a'])
+  })
   const row = (key: string, review: MrRow['review'], updatedAt: string): MrRow =>
     ({ key, review, updatedAt }) as MrRow
   it('puts new changes first, then not reviewed, then reviewed, newest first inside', () => {
@@ -189,6 +210,36 @@ describe('countOpenThreads', () => {
   })
   it('returns zero for a bad answer', () => {
     expect(countOpenThreads(null)).toBe(0)
+  })
+})
+
+describe('carryEnrichment', () => {
+  it('keeps approvals, threads and my approval from the previous poll until enrichment ends', () => {
+    const fresh = [{ key: '7!1', approvals: 0, openThreads: 0, isApprovedByMe: false } as MrItem, { key: '7!2', approvals: 0, openThreads: 0, isApprovedByMe: false } as MrItem]
+    const previous = [{ key: '7!1', approvals: 2, openThreads: 1, isApprovedByMe: true } as MrItem]
+    expect(carryEnrichment(fresh, previous).map((m) => [m.key, m.approvals, m.openThreads, m.isApprovedByMe])).toEqual([
+      ['7!1', 2, 1, true],
+      ['7!2', 0, 0, false]
+    ])
+  })
+})
+
+describe('pruneApproved', () => {
+  it('drops stored approve shas of MRs I no longer approve', () => {
+    const items = [{ key: '7!1', isApprovedByMe: true } as MrItem, { key: '7!2', isApprovedByMe: false } as MrItem]
+    expect(pruneApproved({ '7!1': 'a', '7!2': 'b', '7!3': 'c' }, items)).toEqual({ '7!1': 'a', '7!3': 'c' })
+  })
+})
+
+describe('isApprovedBy', () => {
+  it('matches the current user by name', () => {
+    expect(isApprovedBy({ approved_by: [{ user: { name: 'Ann' } }, { user: { name: 'Bob' } }] }, 'Bob')).toBe(true)
+    expect(isApprovedBy({ approved_by: [{ user: { name: 'Ann' } }] }, 'Bob')).toBe(false)
+  })
+  it('is false without a known user or a usable list', () => {
+    expect(isApprovedBy({ approved_by: [{ user: { name: 'Bob' } }] }, null)).toBe(false)
+    expect(isApprovedBy({ approved_by: [{}, { user: {} }] }, 'Bob')).toBe(false)
+    expect(isApprovedBy(null, 'Bob')).toBe(false)
   })
 })
 

@@ -34,6 +34,7 @@ const mrItem = (t: any, projectId: number | null, projectPath: string, projectNa
       notes: asNumber(t.user_notes_count) ?? 0,
       openThreads: 0,
       approvals: 0,
+      isApprovedByMe: false,
       isDraft
     }
   ]
@@ -86,7 +87,12 @@ export const reviewState = (sha: string, reviewedSha: string | undefined): MrRev
   return reviewedSha === sha ? 'reviewed' : 'new-changes'
 }
 
-const REVIEW_ORDER: Record<MrReviewState, number> = { 'new-changes': 0, 'not-reviewed': 1, reviewed: 2 }
+export const approvalState = (sha: string, isApprovedByMe: boolean, approvedSha: string | undefined): MrReviewState | null => {
+  if (!isApprovedByMe) return null
+  return approvedSha === undefined || approvedSha === sha ? 'approved' : 'new-changes'
+}
+
+const REVIEW_ORDER: Record<MrReviewState, number> = { 'new-changes': 0, 'not-reviewed': 1, reviewed: 2, approved: 3 }
 
 export const sortMrs = (rows: MrRow[]): MrRow[] =>
   [...rows].sort((a, b) => REVIEW_ORDER[a.review] - REVIEW_ORDER[b.review] || b.updatedAt.localeCompare(a.updatedAt))
@@ -167,23 +173,43 @@ export const countApprovals = (json: unknown): number => {
   return Array.isArray(list) ? list.length : 0
 }
 
-const approvalCache = new Map<string, { at: string; count: number }>()
+export const isApprovedBy = (json: unknown, me: string | null): boolean => {
+  const list = (json as { approved_by?: unknown } | null)?.approved_by
+  if (!me || !Array.isArray(list)) return false
+  return list.some((a) => (a as { user?: { name?: unknown } } | null)?.user?.name === me)
+}
+
+export const carryEnrichment = (items: MrItem[], previous: MrItem[]): MrItem[] => {
+  const byKey = new Map(previous.map((m) => [m.key, m]))
+  return items.map((m) => {
+    const old = byKey.get(m.key)
+    return old ? { ...m, approvals: old.approvals, openThreads: old.openThreads, isApprovedByMe: old.isApprovedByMe } : m
+  })
+}
+
+export const pruneApproved = (approvedMrs: Record<string, string>, items: MrItem[]): Record<string, string> => {
+  const notMine = new Set(items.filter((m) => !m.isApprovedByMe).map((m) => m.key))
+  return Object.fromEntries(Object.entries(approvedMrs).filter(([key]) => !notMine.has(key)))
+}
+
+const approvalCache = new Map<string, { at: string; count: number; isApprovedByMe: boolean }>()
 
 export const forgetApprovals = (key?: string): void => {
   if (key) approvalCache.delete(key)
   else approvalCache.clear()
 }
 
-const withApprovals = async (base: string, token: string, items: MrItem[]): Promise<MrItem[]> =>
+const withApprovals = async (base: string, token: string, items: MrItem[], me: string | null): Promise<MrItem[]> =>
   Promise.all(
     items.map(async (item) => {
       const cached = approvalCache.get(item.key)
-      if (cached && cached.at === item.updatedAt) return { ...item, approvals: cached.count }
+      if (cached && cached.at === item.updatedAt) return { ...item, approvals: cached.count, isApprovedByMe: cached.isApprovedByMe }
       const json = await apiGet(base, token, `/projects/${item.projectId}/merge_requests/${item.iid}/approvals`)
       if (json === null) return item
       const count = countApprovals(json)
-      approvalCache.set(item.key, { at: item.updatedAt, count })
-      return { ...item, approvals: count }
+      const isApprovedByMe = isApprovedBy(json, me)
+      approvalCache.set(item.key, { at: item.updatedAt, count, isApprovedByMe })
+      return { ...item, approvals: count, isApprovedByMe }
     })
   )
 
@@ -216,7 +242,7 @@ export const fetchMrsToReview = async (
 }
 
 export const enrichMrs = async (base: string, token: string, items: MrItem[], me: string | null): Promise<MrItem[]> =>
-  withApprovals(base, token, await withThreadCounts(base, token, items, me))
+  withApprovals(base, token, await withThreadCounts(base, token, items, me), me)
 
 export const fetchDiffStats = async (base: string, token: string, projectId: number, iid: number): Promise<MrFile[] | null> => {
   const json = await apiGet(base, token, `/projects/${projectId}/merge_requests/${iid}/diffs?per_page=100`)

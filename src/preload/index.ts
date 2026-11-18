@@ -11,7 +11,7 @@ import type {
   ChangedFile,
   DevServer,
   ExplainFile,
-  FactoryReport,
+  InsightsReport,
   FlowState,
   JiraTransition,
   ServerProfile,
@@ -23,7 +23,9 @@ import type {
   QuickAction,
   Session,
   SessionDetail,
+  InboxItem,
   TerminalMode,
+  PromptEntry,
   TaskMeta,
   UsageResult,
   VscodeProfile,
@@ -88,6 +90,7 @@ const api = {
   },
   getTaskRepos: (): { roots: { path: string; name: string }[]; byPrefix: Record<string, string> } =>
     ipcRenderer.sendSync('task-repos'),
+  pickRepo: (): Promise<{ repo: { path: string; name: string } | null; error: string | null }> => ipcRenderer.invoke('pick-repo'),
   getVscodeLayout: (): VscodeProfile[] => ipcRenderer.sendSync('vscode-layout-status'),
   applyVscodeLayout: (): VscodeProfile[] => ipcRenderer.sendSync('vscode-layout-apply'),
   openSession: (s: Session): void => {
@@ -222,6 +225,21 @@ const api = {
     ipcRenderer.invoke('terminal-take-over', id, cols, rows),
   openInVscode: (id: string): Promise<void> => ipcRenderer.invoke('terminal-open-vscode', id),
   getSessionDetail: (id: string): Promise<SessionDetail> => ipcRenderer.invoke('session-detail', id),
+  getInboxItem: (id: string): Promise<InboxItem | null> => ipcRenderer.invoke('inbox-item', id),
+  answerInbox: (id: string, toolUseId: string, key: string): Promise<{ error: string | null }> =>
+    ipcRenderer.invoke('inbox-answer', id, toolUseId, key),
+  dismissInbox: (id: string): void => ipcRenderer.send('inbox-dismiss', id),
+  getTicketReadiness: (key: string, cwd: string | null): Promise<{ handoffAt: number | null; lastCommitAt: number | null }> =>
+    ipcRenderer.invoke('ticket-readiness', key, cwd),
+  getPromptHistory: (): Promise<PromptEntry[]> => ipcRenderer.invoke('prompt-history'),
+  getTaskFiles: (ticket: string): Promise<{ name: string; kind: 'video' | 'image' }[] | null> =>
+    ipcRenderer.invoke('task-files', ticket),
+  openTaskFile: (ticket: string, name: string): void => ipcRenderer.send('open-task-file', ticket, name),
+  setViewingSession: (id: string | null): void => ipcRenderer.send('viewing-session', id),
+  onInboxNext: (cb: () => void): void => {
+    ipcRenderer.on('inbox-next', () => cb())
+  },
+  isJumpKeyReady: (): boolean => ipcRenderer.sendSync('get-jump-key'),
   getTicketDescription: (key: string): Promise<string | null> => ipcRenderer.invoke('ticket-description', key),
   copyResume: (id: string): void => ipcRenderer.send('copy-resume', id),
   postJiraComment: (key: string, body: string): Promise<{ error: string | null }> =>
@@ -230,6 +248,11 @@ const api = {
     const onData = (_e: unknown, id: string, chunk: string): void => cb(id, chunk)
     ipcRenderer.on('pty-data', onData)
     return () => ipcRenderer.removeListener('pty-data', onData)
+  },
+  onPtyRekey: (cb: (from: string, to: string) => void): (() => void) => {
+    const onRekey = (_e: unknown, from: string, to: string): void => cb(from, to)
+    ipcRenderer.on('pty-rekey', onRekey)
+    return () => ipcRenderer.removeListener('pty-rekey', onRekey)
   },
   onPtyExit: (cb: (id: string, code: number) => void): (() => void) => {
     const onExit = (_e: unknown, id: string, code: number): void => cb(id, code)
@@ -247,6 +270,7 @@ const api = {
   ): Promise<{ error: string | null; port?: number }> => ipcRenderer.invoke('server-start', key, cwd, spec, port, cols, rows),
   getServerProfile: (cwd: string): ServerProfile => ipcRenderer.sendSync('server-profile', cwd),
   listFiles: (cwd: string): Promise<string[]> => ipcRenderer.invoke('ide-files', cwd),
+  searchCode: (cwd: string, query: string): Promise<{ path: string; line: number; text: string }[]> => ipcRenderer.invoke('ide-search', cwd, query),
   listChanges: (cwd: string): Promise<ChangedFile[]> => ipcRenderer.invoke('ide-status', cwd),
   listBranchChanges: (cwd: string): Promise<BranchChanges> => ipcRenderer.invoke('ide-changes', cwd),
   getExplainDoc: (key: string): Promise<ExplainFile | null> => ipcRenderer.invoke('explain-doc', key),
@@ -293,17 +317,17 @@ const api = {
   getMrRepo: (key: string): Promise<string | null> => ipcRenderer.invoke('mr-repo', key),
   refreshLists: (): Promise<boolean> => ipcRenderer.invoke('refresh-lists'),
   getLocalHosts: (): Promise<LocalHost[]> => ipcRenderer.invoke('local-hosts'),
-  getFactoryReport: (): Promise<FactoryReport> => ipcRenderer.invoke('factory-report'),
+  getInsightsReport: (): Promise<InsightsReport> => ipcRenderer.invoke('insights-report'),
   getFlow: (keys: string[]): Promise<FlowState> => ipcRenderer.invoke('flow-state', keys),
   openFlowSkill: (): void => ipcRenderer.send('flow-open-skill'),
-  runFactoryNow: (): Promise<{ error: string | null }> => ipcRenderer.invoke('factory-run-now'),
-  applyFactoryProposal: (id: string): Promise<{ error: string | null }> => ipcRenderer.invoke('factory-apply', id),
-  dismissFactoryProposal: (id: string): Promise<{ error: string | null }> => ipcRenderer.invoke('factory-dismiss', id),
-  testFactoryProposal: (id: string): Promise<{ error: string | null; sessionId?: string }> => ipcRenderer.invoke('factory-test', id),
-  onFactoryChanged: (cb: () => void): (() => void) => {
+  runInsightsNow: (): Promise<{ error: string | null }> => ipcRenderer.invoke('insights-run-now'),
+  applyInsightsProposal: (id: string): Promise<{ error: string | null }> => ipcRenderer.invoke('insights-apply', id),
+  dismissInsightsProposal: (id: string): Promise<{ error: string | null }> => ipcRenderer.invoke('insights-dismiss', id),
+  testInsightsProposal: (id: string): Promise<{ error: string | null; sessionId?: string }> => ipcRenderer.invoke('insights-test', id),
+  onInsightsChanged: (cb: () => void): (() => void) => {
     const onChanged = (): void => cb()
-    ipcRenderer.on('factory-changed', onChanged)
-    return () => ipcRenderer.removeListener('factory-changed', onChanged)
+    ipcRenderer.on('insights-changed', onChanged)
+    return () => ipcRenderer.removeListener('insights-changed', onChanged)
   },
   closeChrome: (key: string | null): Promise<{ error: string | null }> => ipcRenderer.invoke('close-chrome', key),
   startTicketServer: (key: string, cwd: string | null): Promise<{ error?: string; url?: string }> => ipcRenderer.invoke('ticket-server', key, cwd),

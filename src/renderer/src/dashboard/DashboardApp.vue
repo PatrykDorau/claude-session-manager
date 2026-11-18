@@ -15,28 +15,34 @@ import SettingsPanel from '../components/SettingsPanel.vue'
 import AgentList from './AgentList.vue'
 import AgentView from './AgentView.vue'
 import HostsView from './HostsView.vue'
-import FactoryView from './FactoryView.vue'
+import InsightsView from './InsightsView.vue'
 import FlowView from './FlowView.vue'
+import TodayView from './TodayView.vue'
+import { buildToday, type TodayTarget } from './today'
+import InboxPopup from './InboxPopup.vue'
+import { buildInboxRows, buildLiveRows, nextInboxId, type InboxRow, type LiveOrder } from './inbox'
+import StatusBar from './StatusBar.vue'
+import PromptSearch from './PromptSearch.vue'
 import { treeCounts, filterGroups } from './agenttree'
 import { clampSize, readSize, writeSize, readFlag } from './dashboard'
+import { useEscapeClose } from './escape'
 
 const sessions = ref<Session[]>([])
 const tasks = ref<Record<string, TaskMeta>>({})
 const usage = ref<UsageResult | null>(window.api.getUsage())
 const myTasks = ref<MyTasks>(window.api.getMyTasks())
 const starred = ref<string[]>(window.api.getStarred())
-const page = ref<DashboardPage>('tickets')
+const page = ref<DashboardPage>('today')
 const selectedKey = ref<string | null>(null)
 const myMrs = ref<MyMrs>(window.api.getMyMrs())
 const selectedMrKey = ref<string | null>(null)
-const starredTab = ref<'tickets' | 'mrs'>('tickets')
 const servers = ref<DevServer[]>(window.api.getServers())
 const agentGroups = ref<AgentGroup[]>([])
 const selectedSupervisor = ref<string | null>(null)
 const isMovingOnly = ref(false)
 const isFinishedHidden = ref(false)
 const isTreePage = computed(() => page.value === 'tree')
-const isHostsPage = computed(() => page.value === 'hosts' || page.value === 'factory' || page.value === 'flow')
+const isHostsPage = computed(() => page.value === 'hosts' || page.value === 'insights' || page.value === 'flow' || page.value === 'today')
 const visibleGroups = computed(() =>
   filterGroups(agentGroups.value, { isMovingOnly: isMovingOnly.value, isFinishedHidden: isFinishedHidden.value })
 )
@@ -86,26 +92,102 @@ const rows = computed(() => buildTaskRows(myTasks.value.tickets, sessions.value,
 const selectedRow = computed(() => rows.value.find((r) => r.key === selectedKey.value) ?? null)
 const lastSelectedMr = ref<MrRow | null>(null)
 const liveSelectedMr = computed(() => myMrs.value.items.find((m) => m.key === selectedMrKey.value) ?? null)
-const selectedMr = computed(() =>
-  liveSelectedMr.value ?? (lastSelectedMr.value?.key === selectedMrKey.value ? lastSelectedMr.value : null)
-)
+const selectedMr = computed(() => liveSelectedMr.value ?? (lastSelectedMr.value?.key === selectedMrKey.value ? lastSelectedMr.value : null))
 watch(liveSelectedMr, (row) => {
   if (row) lastSelectedMr.value = row
 })
-const isMrPage = computed(() => page.value === 'mrs' || (page.value === 'starred' && starredTab.value === 'mrs'))
+const isMrPage = computed(() => page.value === 'mrs')
+const inboxRows = computed(() => buildInboxRows(sessions.value, titles.value, myMrs.value.items))
+const isInboxOpen = ref(false)
+const inboxOrder = ref<LiveOrder>(readFlag('dash.inboxNewest') ? 'newest' : 'attention')
+const setInboxOrder = (next: LiveOrder): void => {
+  inboxOrder.value = next
+  writeSize('dash.inboxNewest', next === 'newest')
+}
+const liveRows = computed(() => buildLiveRows(sessions.value, titles.value, myMrs.value.items, inboxOrder.value))
+const lastJumpId = ref<string | null>(null)
+const viewedTabId = ref<string | null>(null)
+const viewingId = computed(() => {
+  return page.value === 'tickets' || page.value === 'mrs' ? viewedTabId.value : null
+})
+watch(viewingId, (id) => window.api.setViewingSession(id), { immediate: true })
+const isPromptSearchOpen = ref(false)
+const onGlobalKey = (ev: KeyboardEvent): void => {
+  if (!ev.ctrlKey || ev.altKey || ev.shiftKey || ev.key.toLowerCase() !== 'k') return
+  ev.preventDefault()
+  ev.stopPropagation()
+  promptTargetId.value = viewingId.value
+  isPromptSearchOpen.value = !isPromptSearchOpen.value
+}
+const promptTargetId = ref<string | null>(null)
+const promptTargetLabel = computed(() => {
+  const s = sessions.value.find((x) => x.id === promptTargetId.value)
+  return s ? (s.name ?? s.ticket ?? s.id.slice(0, 8)) : null
+})
+const openPage = (next: DashboardPage): void => {
+  if (next === 'inbox') {
+    isInboxOpen.value = !isInboxOpen.value
+    return
+  }
+  page.value = next
+  if (isListHidden.value) toggleList()
+}
+const openInboxRow = (row: InboxRow): void => {
+  isInboxOpen.value = false
+  if (isListHidden.value) toggleList()
+  if (row.mrKey) {
+    openMr(row.mrKey)
+    return
+  }
+  focusSession({ sessionId: row.sessionId, ticket: row.ticket })
+  if (isTreePage.value) void loadTree()
+}
+const jumpToNext = (): void => {
+  lastJumpId.value = nextInboxId(inboxRows.value, lastJumpId.value)
+  const row = inboxRows.value.find((r) => r.sessionId === lastJumpId.value)
+  if (row) openInboxRow(row)
+}
+const todayItems = computed(() =>
+  buildToday({
+    inbox: inboxRows.value,
+    sessions: sessions.value,
+    titles: titles.value,
+    mrs: myMrs.value.items,
+    myName: myMrs.value.myName ?? null,
+    tickets: myTasks.value.tickets
+  })
+)
+const openToday = (target: TodayTarget): void => {
+  if (isListHidden.value) toggleList()
+  if (target.kind === 'inbox') {
+    const row = inboxRows.value.find((r) => r.sessionId === target.sessionId)
+    if (row) openInboxRow(row)
+    else {
+      const ticket = sessions.value.find((s) => s.id === target.sessionId)?.ticket ?? null
+      focusSession({ sessionId: target.sessionId, ticket })
+    }
+  } else if (target.kind === 'ticket') openTicket(target.key)
+  else if (target.kind === 'mr') openMr(target.key)
+  else if (target.ticket) openTicket(target.ticket)
+  else if (target.mrKey) openMr(target.mrKey)
+  else {
+    focusSession(target)
+    void loadTree()
+  }
+}
 const counts = computed<Record<DashboardPage, number>>(() => ({
+  today: todayItems.value.onMe.length,
+  inbox: inboxRows.value.length,
   tickets: rows.value.length,
   mrs: myMrs.value.items.length,
-  starred:
-    rows.value.filter((r) => starred.value.includes(r.key)).length +
-    myMrs.value.items.filter((m) => starred.value.includes(m.key)).length,
   tree: agentGroups.value.length,
   hosts: servers.value.length,
-  factory: 0,
+  insights: 0,
   flow: 0
 }))
 
 const alerts = computed(() => ({
+  inbox: inboxRows.value.filter((r) => r.status === 'waiting').length,
   tickets: rows.value.filter((r) => r.sessions.some((s) => s.isLive && s.status === 'waiting')).length,
   mrs: myMrs.value.items.filter((m) => sessions.value.some((s) => s.isLive && s.status === 'waiting' && (s.id === m.sessionId || (!!m.ticket && s.ticket === m.ticket)))).length
 }))
@@ -120,13 +202,18 @@ const refreshLists = async (): Promise<void> => {
 }
 const isListHidden = ref(readFlag('dash.listHidden'))
 const isSettingsOpen = ref(false)
+const closeSettings = (): void => {
+  isSettingsOpen.value = false
+}
+useEscapeClose(isSettingsOpen, closeSettings)
 const PAGE_TITLES: Record<DashboardPage, string> = {
+  today: 'Today',
+  inbox: 'Inbox',
   tickets: 'My tickets',
   mrs: 'Merge requests',
-  starred: 'Starred',
   tree: 'Agent tree',
   hosts: 'Local servers',
-  factory: 'Factory',
+  insights: 'Insights',
   flow: 'Flow'
 }
 const listWidth = ref(clampSize(readSize('dash.listWidth', 320), 220, 640))
@@ -140,6 +227,10 @@ const resizeList = (delta: number): void => {
 const saveListWidth = (): void => writeSize('dash.listWidth', listWidth.value)
 
 const selectPage = (next: DashboardPage): void => {
+  if (next === 'inbox') {
+    openPage(next)
+    return
+  }
   if (next === page.value) {
     toggleList()
     return
@@ -164,9 +255,12 @@ onMounted(() => {
   window.api.onMyMrs((mrs) => (myMrs.value = mrs))
   window.api.onServers((list) => (servers.value = list))
   window.api.onFocusSession(focusSession)
+  window.api.onInboxNext(jumpToNext)
+  window.addEventListener('keydown', onGlobalKey, true)
   void loadTree()
 })
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKey, true)
   if (treeTimer) clearTimeout(treeTimer)
 })
 </script>
@@ -190,10 +284,6 @@ onBeforeUnmount(() => {
         <button class="iconbtn" :class="{ spinning: isRefreshing }" title="Refresh tickets and merge requests now" :disabled="isRefreshing" @click="refreshLists"><Icon name="refresh" /></button>
         <button class="iconbtn" title="Hide the list" @click="toggleList"><Icon name="panelClose" /></button>
       </header>
-      <div v-if="page === 'starred'" class="tabs">
-        <button :class="{ on: starredTab === 'tickets' }" @click="starredTab = 'tickets'">Tickets</button>
-        <button :class="{ on: starredTab === 'mrs' }" @click="starredTab = 'mrs'">Merge requests</button>
-      </div>
       <AgentList
         v-if="isTreePage"
         v-model:is-moving-only="isMovingOnly"
@@ -208,7 +298,6 @@ onBeforeUnmount(() => {
         v-else-if="isMrPage"
         :rows="myMrs.items"
         :starred="starred"
-        :is-starred-only="page === 'starred'"
         :selected-key="selectedMrKey"
         :error="myMrs.error"
         :error-detail="myMrs.errorDetail"
@@ -223,7 +312,6 @@ onBeforeUnmount(() => {
         v-else
         :rows="rows"
         :starred="starred"
-        :is-starred-only="page === 'starred'"
         :selected-key="selectedKey"
         :jira-error="myTasks.error"
         :mrs="myMrs.items"
@@ -234,8 +322,9 @@ onBeforeUnmount(() => {
       />
     </div>
     <Splitter v-if="!isListHidden && !isHostsPage" @resize="resizeList" @done="saveListWidth" />
-    <FlowView v-if="page === 'flow'" :rows="rows" @open-ticket="openTicket" />
-    <FactoryView v-else-if="page === 'factory'" />
+    <TodayView v-if="page === 'today'" :items="todayItems" @open="openToday" />
+    <FlowView v-else-if="page === 'flow'" :rows="rows" @open-ticket="openTicket" />
+    <InsightsView v-else-if="page === 'insights'" />
     <HostsView v-else-if="isHostsPage" :sessions="sessions" @open-ticket="openTicket" />
     <AgentView
       v-else-if="isTreePage && selectedGroup"
@@ -257,6 +346,8 @@ onBeforeUnmount(() => {
         :is-gone="!liveSelectedMr"
         :my-name="myMrs.myName"
         :servers="servers"
+        :task-stage="selectedMr.ticket ? (tasks[selectedMr.ticket]?.stage ?? null) : null"
+        @viewing="viewedTabId = $event"
       />
       <TicketView
         v-else-if="!isMrPage && !isTreePage && !isHostsPage && selectedRow"
@@ -265,7 +356,10 @@ onBeforeUnmount(() => {
         :servers="servers"
         :mr-url="tasks[selectedRow.key]?.mrUrl ?? null"
         :mr="mrForTicket(selectedRow.key)"
+        :stage="tasks[selectedRow.key]?.stage ?? null"
+        :reached="tasks[selectedRow.key]?.reached ?? []"
         @open-mr="openMr"
+        @viewing="viewedTabId = $event"
       />
     </KeepAlive>
     <div v-if="isMrPage && !selectedMr" class="empty">
@@ -279,6 +373,9 @@ onBeforeUnmount(() => {
       <p>Pick a ticket from the list to work on it with Claude, see the code and run its server.</p>
     </div>
 
+    <InboxPopup v-if="isInboxOpen" :rows="liveRows" :order="inboxOrder" @open="openInboxRow" @close="isInboxOpen = false" @order="setInboxOrder" />
+    <PromptSearch v-if="isPromptSearchOpen" :session-id="promptTargetId" :target-label="promptTargetLabel" @close="isPromptSearchOpen = false" />
+    <StatusBar :sessions="sessions" :servers="servers" :my-tasks="myTasks" :my-mrs="myMrs" @open="openPage" />
     <div v-if="isSettingsOpen" class="scrim" @click="isSettingsOpen = false" />
     <aside v-if="isSettingsOpen" class="drawer">
       <header class="dhead">
@@ -297,7 +394,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .dash {
   display: flex;
-  height: 100vh;
+  height: calc(100vh - 22px);
   overflow: hidden;
   background: var(--bg-1);
   color: var(--text-2);

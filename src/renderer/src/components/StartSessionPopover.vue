@@ -7,19 +7,35 @@ const props = defineProps<{ row: TaskRow; isBackgroundOnly?: boolean }>()
 const emit = defineEmits<{ close: []; started: [sessionId: string | null] }>()
 
 const repos = window.api.getTaskRepos()
+const toKey = (p: string): string => p.toLowerCase().replace(/\\/g, '/').replace(/\/+$/, '')
+const knownRoots = (): { path: string; name: string }[] => {
+  const extra = [...new Set(Object.values(repos.byPrefix))]
+    .filter((p) => !repos.roots.some((r) => toKey(r.path) === toKey(p)))
+    .map((p) => ({ path: p, name: p.split(/[\\/]/).filter(Boolean).pop() ?? p }))
+  return [...repos.roots, ...extra]
+}
+const roots = ref(knownRoots())
 const prefix = props.row.key.split('-')[0].toUpperCase()
 const findSessionRoot = (): string | undefined => {
   const path = props.row.sessions[0]?.projectPath
   if (!path) return undefined
   const cut = path.search(/[\\/]\.claude[\\/]worktrees[\\/]/)
-  const toKey = (p: string): string => p.toLowerCase().replace(/\\/g, '/')
   const root = toKey(cut >= 0 ? path.slice(0, cut) : path)
-  return repos.roots.find((r) => toKey(r.path) === root)?.path
+  return roots.value.find((r) => toKey(r.path) === root)?.path
 }
-const repo = ref(findSessionRoot() ?? repos.byPrefix[prefix] ?? repos.roots[0]?.path ?? '')
+const repo = ref(findSessionRoot() ?? repos.byPrefix[prefix] ?? roots.value[0]?.path ?? '')
 const mode = ref<'vscode' | 'background'>(props.isBackgroundOnly ? 'background' : 'vscode')
 const isStarting = ref(false)
 const error = ref<string | null>(null)
+
+const pickOtherRepo = async (): Promise<void> => {
+  const result = await window.api.pickRepo()
+  error.value = result.error
+  const picked = result.repo
+  if (!picked) return
+  if (!roots.value.some((r) => toKey(r.path) === toKey(picked.path))) roots.value = [...roots.value, picked]
+  repo.value = picked.path
+}
 
 const resumeLatest = (): void => {
   window.api.openSession(plainSession(props.row.sessions[0]))
@@ -51,8 +67,9 @@ const start = async (): Promise<void> => {
     <label class="field">
       <span>Repo</span>
       <select v-model="repo" :disabled="isStarting">
-        <option v-for="r in repos.roots" :key="r.path" :value="r.path">{{ r.name }}</option>
+        <option v-for="r in roots" :key="r.path" :value="r.path">{{ r.name }}</option>
       </select>
+      <button class="db ghost" :disabled="isStarting" title="Choose a repository folder that is not on the list" @click="pickOtherRepo">Other…</button>
     </label>
     <div v-if="!isBackgroundOnly" class="modes">
       <label><input v-model="mode" type="radio" value="vscode" :disabled="isStarting" /> VS Code</label>

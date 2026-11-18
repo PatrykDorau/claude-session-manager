@@ -5,8 +5,6 @@ export interface MrFilter {
   project: string
   author: string
   isUnreviewedOnly: boolean
-  starred: string[]
-  isStarredOnly: boolean
   myName: string | null
   isMineHidden: boolean
   isMineOnly?: boolean
@@ -18,20 +16,18 @@ const isQueryMatch = (row: MrRow, needle: string): boolean =>
 
 export const filterMrs = (rows: MrRow[], f: MrFilter): MrRow[] => {
   const needle = f.query.trim().toLowerCase()
-  const starred = new Set(f.starred)
   return rows.filter(
     (r) =>
       isQueryMatch(r, needle) &&
       (!f.project || r.projectName === f.project) &&
       (!f.author || r.author === f.author) &&
-      (!f.isUnreviewedOnly || r.review !== 'reviewed') &&
-      (!f.isStarredOnly || starred.has(r.key)) &&
+      (!f.isUnreviewedOnly || (r.review !== 'reviewed' && r.review !== 'approved')) &&
       (!f.isMineHidden || !f.myName || r.author !== f.myName) &&
       (!f.isMineOnly || (!!f.myName && r.author === f.myName))
   )
 }
 
-const GROUP_ORDER: MrReviewState[] = ['new-changes', 'not-reviewed', 'reviewed']
+const GROUP_ORDER: MrReviewState[] = ['new-changes', 'not-reviewed', 'reviewed', 'approved']
 
 export const groupMrs = (rows: MrRow[]): { state: MrReviewState; rows: MrRow[] }[] =>
   GROUP_ORDER.map((state) => ({ state, rows: rows.filter((r) => r.review === state) })).filter((g) => g.rows.length)
@@ -39,7 +35,8 @@ export const groupMrs = (rows: MrRow[]): { state: MrReviewState; rows: MrRow[] }
 const LABELS: Record<MrReviewState, { label: string; color: string }> = {
   'new-changes': { label: 'new changes since your review', color: '#f0883e' },
   'not-reviewed': { label: 'not reviewed', color: '#9a9a9a' },
-  reviewed: { label: 'reviewed', color: '#2ea043' }
+  reviewed: { label: 'reviewed', color: '#2ea043' },
+  approved: { label: 'approved by me', color: '#3dd68c' }
 }
 
 export const reviewLabel = (state: MrReviewState): { label: string; color: string } => LABELS[state]

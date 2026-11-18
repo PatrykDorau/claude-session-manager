@@ -13,7 +13,9 @@ import {
   taskContext,
   addressArgs,
   scoreArgs,
-  factoryTestArgs
+  insightsTestArgs,
+  warmUpTask,
+  mediaFiles
 } from '../src/main/tasks'
 import type { Session } from '../src/renderer/src/types'
 
@@ -182,10 +184,11 @@ describe('taskContext', () => {
 })
 
 describe('scoreArgs', () => {
-  it('asks for a usage section with stages, size and risk', () => {
+  it('points at the metrics, incidents, applied and guide files and lists the metric keys', () => {
     const prompt = scoreArgs('2026-11-16', 'C:/Users/me')[1]
-    expect(prompt).toContain('## Zużycie')
-    expect(prompt).toContain('risk')
+    ;['metrics/2026-11-16.json', 'incidents/2026-11-16.json', 'applied.json', 'guide.md', 'costAbove200k', '```json'].forEach((part) => expect(prompt).toContain(part))
+    expect(prompt).not.toContain('## Zużycie')
+    expect(prompt).not.toContain('rubric.md')
   })
   it('runs one headless sonnet pass that reads the day digests and writes the day proposals', () => {
     const args = scoreArgs('2026-11-16', 'C:/Users/me')
@@ -203,8 +206,7 @@ describe('scoreArgs', () => {
     expect(args).toContain('--strict-mcp-config')
     expect(args[args.indexOf('--add-dir') + 1]).toBe('C:/Users/me/.claude/skills')
     const prompt = args[args.indexOf('-p') + 1]
-    expect(prompt).toContain('digests/2026-11-16')
-    expect(prompt).toContain('proposals/2026-11-16.json')
+    expect(prompt).toContain('metrics/2026-11-16.json')
     expect(prompt).toContain('```json')
     expect(prompt).toContain('Nie zapisuj żadnych plików')
     expect(prompt).toContain('dismissed.json')
@@ -213,12 +215,83 @@ describe('scoreArgs', () => {
   })
 })
 
-describe('factoryTestArgs', () => {
+describe('insightsTestArgs', () => {
   it('starts a background session that tests the proposal with writing-skills before applying it', () => {
     const p = { id: 'p1', target: 'C:/h/.claude/CLAUDE.md', title: 'Shorter rule', evidence: ['s1'], find: 'old', replace: 'new' }
-    const args = factoryTestArgs(p)
-    expect(args.slice(0, 3)).toEqual(['--bg', '--name', 'factory-p1'])
+    const args = insightsTestArgs(p)
+    expect(args.slice(0, 3)).toEqual(['--bg', '--name', 'insights-p1'])
     expect(args[3]).toContain('Użyj superpowers:writing-skills: przetestuj tę zmianę (baseline i green) zanim ją zastosujesz: ')
     expect(args[3]).toContain('"find": "old"')
+  })
+})
+
+describe('warmUpTask', () => {
+  const run = (over: Partial<Parameters<typeof warmUpTask>[0]> = {}): { calls: string[]; logs: string[]; done: Promise<void> } => {
+    const calls: string[] = []
+    const logs: string[] = []
+    const done = warmUpTask({
+      waitFolder: async () => (calls.push('wait'), true),
+      link: () => void calls.push('link'),
+      startServer: async () => (calls.push('server'), { url: 'http://localhost:5173' }),
+      waitServer: async () => (calls.push('ready'), true),
+      openChrome: async (url) => calls.push(`chrome:${url}`),
+      log: (m) => void logs.push(m),
+      ...over
+    })
+    return { calls, logs, done }
+  }
+  it('starts the server and then Chrome on its URL', async () => {
+    const r = run()
+    await r.done
+    expect(r.calls).toEqual(['wait', 'link', 'server', 'ready', 'chrome:http://localhost:5173'])
+  })
+  it('stops when the folder never appears', async () => {
+    const r = run({ waitFolder: async () => false })
+    await r.done
+    expect(r.calls).toEqual([])
+    expect(r.logs).toHaveLength(1)
+  })
+  it('stops when the server fails or has no URL', async () => {
+    const failed = run({ startServer: async () => (failed.calls.push('server'), { error: 'x' }) })
+    await failed.done
+    expect(failed.calls).toEqual(['wait', 'link', 'server'])
+    expect(failed.logs).toHaveLength(1)
+    const noUrl = run({ startServer: async () => (noUrl.calls.push('server'), {}) })
+    await noUrl.done
+    expect(noUrl.calls.some((c) => c.startsWith('chrome'))).toBe(false)
+  })
+  it('skips Chrome when the server never starts answering', async () => {
+    const r = run({ waitServer: async () => false })
+    await r.done
+    expect(r.calls).toEqual(['wait', 'link', 'server'])
+    expect(r.logs).toHaveLength(1)
+  })
+  it('logs a thrown error instead of rejecting', async () => {
+    const r = run({
+      link: () => {
+        throw new Error('boom')
+      }
+    })
+    await expect(r.done).resolves.toBeUndefined()
+    expect(r.logs).toHaveLength(1)
+  })
+})
+
+describe('mediaFiles', () => {
+  it('lists videos then images by name, ignoring case and other files', () => {
+    expect(mediaFiles(['b.png', 'repro.webm', 'plan.md', 'A.PNG', 'fix.mp4', 'x.mov', 's.JPG', 'g.gif', 'c.jpeg'])).toEqual([
+      { name: 'fix.mp4', kind: 'video' },
+      { name: 'repro.webm', kind: 'video' },
+      { name: 'x.mov', kind: 'video' },
+      { name: 'A.PNG', kind: 'image' },
+      { name: 'b.png', kind: 'image' },
+      { name: 'c.jpeg', kind: 'image' },
+      { name: 'g.gif', kind: 'image' },
+      { name: 's.JPG', kind: 'image' }
+    ])
+  })
+
+  it('returns nothing for other files', () => {
+    expect(mediaFiles(['notes.txt'])).toEqual([])
   })
 })

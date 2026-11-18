@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue'
-import type { Session, TerminalMode } from '../types'
-import { contextLevel, formatContext, handoffPrompt, clearStartPrompt, isIdleLarge, isAutoClearDue, nextClearStep, type ClearPhase } from './context'
+import type { AgentNode, Session, TerminalMode } from '../types'
+import { contextLevel, formatContext, handoffPrompt, clearStartPrompt, isIdleLarge, nextClearStep, type ClearPhase } from './context'
 
 const props = defineProps<{ session: Session; mode: TerminalMode | null }>()
 
@@ -11,14 +11,13 @@ const tick = (): void => {
 }
 const clock = setInterval(tick, 60_000)
 const phase = ref<ClearPhase>('none')
-const autoFiredFor = ref<number | null>(null)
 const stopClock = (): void => clearInterval(clock)
 onUnmounted(stopClock)
 
 const isIdle = computed(() => isIdleLarge(props.session, now.value))
 const level = computed(() => (isIdle.value && contextLevel(props.session.contextTokens) === 'ok' ? 'warn' : contextLevel(props.session.contextTokens)))
 const isDanger = computed(() => level.value === 'danger')
-const isClearShown = computed(() => props.mode === 'attach' && !!props.session.ticket && (isDanger.value || isIdle.value || phase.value !== 'none'))
+const isClearShown = computed(() => props.mode === 'attach' && !!props.session.ticket && !/\bexplain$/.test(props.session.name ?? '') && (isDanger.value || isIdle.value || phase.value !== 'none'))
 const isBusy = computed(() => props.session.status === 'working' || props.session.status === 'waiting')
 const isClearDisabled = computed(() => phase.value === 'blocked' || (phase.value === 'none' && isBusy.value))
 const clearLabel = computed(() => {
@@ -59,14 +58,6 @@ const clearThenStart = (id: string, ticket: string): void => {
   setTimeout(sendStart, 1500)
 }
 
-const isAutoDue = computed(() => props.mode === 'attach' && !!props.session.ticket && phase.value === 'none' && autoFiredFor.value !== props.session.lastActive && isAutoClearDue(props.session, now.value))
-const autoClear = (isDue: boolean): void => {
-  if (!isDue) return
-  autoFiredFor.value = props.session.lastActive
-  clearAndHandOff()
-}
-watch(isAutoDue, autoClear, { immediate: true })
-
 const sessionState = (): [string, string] => [props.session.id, props.session.status]
 const onSessionState = ([id, status]: [string, string], [prevId, prev]: [string, string]): void => {
   if (id !== prevId) {
@@ -80,6 +71,20 @@ const onSessionState = ([id, status]: [string, string], [prevId, prev]: [string,
 }
 watch(sessionState, onSessionState)
 
+const isPeekOpen = ref(false)
+const activeAgents = ref<AgentNode[]>([])
+const isAgentsLoaded = ref(false)
+const openPeek = async (): Promise<void> => {
+  isPeekOpen.value = true
+  const groups = (await window.api.getAgentTree()) ?? []
+  const group = groups.find((g) => g.sessionId === props.session.id)
+  activeAgents.value = (group?.agents ?? []).filter((a) => a.state === 'working' || a.state === 'stuck')
+  isAgentsLoaded.value = true
+}
+const closePeek = (): void => {
+  isPeekOpen.value = false
+}
+
 const compact = (): void => window.api.writeTerminal(props.session.id, '/compact\r')
 const handOff = (): void => {
   if (props.session.ticket) void window.api.sendPrompt(props.session.id, handoffPrompt(props.session.ticket, new Date()))
@@ -88,7 +93,22 @@ const handOff = (): void => {
 
 <template>
   <span v-if="level !== 'none'" class="context">
-    <span class="chip" :class="level" :title="chipTitle">{{ formatContext(session.contextTokens) }} context</span>
+    <span class="peek" @mouseenter="openPeek" @mouseleave="closePeek">
+      <span class="chip" :class="level">{{ formatContext(session.contextTokens) }} context</span>
+      <span v-if="isPeekOpen" class="pop">
+        <span class="prow main"><b>Main session</b><em>{{ formatContext(session.contextTokens) }}</em></span>
+        <span class="hint">{{ chipTitle }}</span>
+        <span v-if="!isAgentsLoaded" class="hint">Loading subagents…</span>
+        <span v-else-if="!activeAgents.length" class="hint">No active subagents.</span>
+        <template v-else>
+          <span class="sub">Active subagents</span>
+          <span v-for="a in activeAgents" :key="a.id" class="prow" :title="a.task">
+            <b>{{ a.agentType }}</b><i>{{ a.model }}{{ a.state === 'stuck' ? ' · quiet 5+ min' : '' }}</i><em>{{ formatContext(a.contextTokens) || '–' }}</em>
+            <span class="desc">{{ a.description || a.task }}</span>
+          </span>
+        </template>
+      </span>
+    </span>
     <button v-if="isDanger && mode === 'attach'" class="act" title="Run /compact in this session" @click="compact">Compact</button>
     <button v-if="isDanger && session.ticket" class="act" title="Write handoff.md for a fresh session" @click="handOff">Hand off</button>
     <button v-if="isClearShown" class="act" :title="clearTitle" :disabled="isClearDisabled" @click="clearAndHandOff">{{ clearLabel }}</button>
@@ -103,7 +123,68 @@ const handOff = (): void => {
   gap: 6px;
   margin-right: 6px;
 }
+.peek {
+  position: relative;
+  display: inline-flex;
+}
+.pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 320px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.prow {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 2px 8px;
+  align-items: baseline;
+}
+.prow b {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prow i {
+  font-style: normal;
+  color: var(--text-4);
+}
+.prow em {
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.prow .desc {
+  grid-column: 1 / -1;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sub {
+  margin-top: 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-4);
+}
+.hint {
+  color: var(--text-4);
+}
 .chip {
+  cursor: default;
   font-size: 12px;
   white-space: nowrap;
 }

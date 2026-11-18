@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import type { DevServer, MrRow, Session, SessionDetail, TerminalMode, TicketMr } from '../types'
+import { ref, computed, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated } from 'vue'
+import { followId, followIds } from './follow'
+import type { DevServer, MrRow, Session, SessionDetail, TerminalMode, TicketMr, Stage } from '../types'
 import type { TaskRow } from '../taskview'
 import { splitTag, statusLane } from '../taskview'
 import { plainSession } from '../cards'
 import { ago } from '../display'
 import { rowChip } from './dashboard'
+import { readiness, CREATE_MR_PROMPT } from './readiness'
 import ClaudeTerminal from './ClaudeTerminal.vue'
 import QuickActions from './QuickActions.vue'
 import TicketPanel from './TicketPanel.vue'
@@ -21,8 +23,9 @@ import Icon from './Icon.vue'
 import type { MenuItem } from '../types'
 import StartSessionPopover from '../components/StartSessionPopover.vue'
 
-const props = defineProps<{ row: TaskRow; servers: DevServer[]; mrUrl: string | null; mr?: MrRow | null }>()
-const emit = defineEmits<{ 'open-mr': [key: string] }>()
+const props = defineProps<{ row: TaskRow; servers: DevServer[]; mrUrl: string | null; mr?: MrRow | null; stage?: Stage | null; reached?: Stage[] }>()
+const emit = defineEmits<{ 'open-mr': [key: string]; viewing: [id: string | null] }>()
+const emitViewing = (name: 'viewing', id: string | null): void => emit(name, id)
 
 const DETAIL_INTERVAL_MS = 5000
 
@@ -55,7 +58,7 @@ const panes = ref<HTMLDivElement | null>(null)
 const codeWidth = ref(readSize('dash.codeWidth', 760))
 const resizeCode = (delta: number): void => {
   const total = panes.value?.clientWidth ?? 1400
-  codeWidth.value = clampSize(codeWidth.value + delta, 320, total - 320)
+  codeWidth.value = clampSize(codeWidth.value + delta, 320, total - 360)
 }
 const saveCodeWidth = (): void => writeSize('dash.codeWidth', codeWidth.value)
 const pickedId = ref<string | null>(null)
@@ -69,8 +72,20 @@ let detailLoadedAt = 0
 let detailTimer: ReturnType<typeof setTimeout> | null = null
 let remountTimer: ReturnType<typeof setTimeout> | null = null
 
-const defaultSession = (): Session | undefined => props.row.sessions.find((s) => s.isLive) ?? props.row.sessions[0]
+const followTabs = (): void => {
+  const opened = followIds(props.row.sessions, openedIds.value)
+  if (opened.join() !== openedIds.value.join()) openedIds.value = opened
+  pickedId.value = followId(props.row.sessions, pickedId.value)
+}
+watch(() => props.row.sessions, followTabs)
+const defaultSession = (): Session | undefined => {
+  const main = props.row.sessions.filter((s) => !/\bexplain$/.test(s.name ?? ''))
+  return main.find((s) => s.isLive) ?? props.row.sessions.find((s) => s.isLive) ?? main[0] ?? props.row.sessions[0]
+}
 const session = computed(() => props.row.sessions.find((s) => s.id === pickedId.value) ?? defaultSession())
+watch(() => session.value?.id ?? null, (id) => emitViewing('viewing', id), { immediate: true })
+onActivated(() => emitViewing('viewing', session.value?.id ?? null))
+onDeactivated(() => emitViewing('viewing', null))
 const mode = computed(() => (session.value ? (modes.value[session.value.id] ?? null) : null))
 const setMode = (id: string, next: TerminalMode | null): void => {
   modes.value = { ...modes.value, [id]: next }
@@ -87,7 +102,8 @@ const STATUS_DOT: Record<string, string> = {
 }
 const tabSessions = computed(() => {
   const shown = props.row.sessions.filter((s) => s.isLive || openedIds.value.includes(s.id))
-  return shown.length ? shown : props.row.sessions.slice(0, 1)
+  const fallback = defaultSession()
+  return shown.length ? shown : fallback ? [fallback] : []
 })
 const isExplain = (s: Session): boolean => /\bexplain$/.test(s.name ?? '')
 const sessionLabel = (s: Session): string => {
@@ -102,6 +118,15 @@ const chip = computed(() => rowChip(props.row))
 const server = computed(() => props.servers.find((s) => s.key === props.row.key) ?? null)
 const lane = computed(() => statusLane(props.row.status))
 const title = computed(() => splitTag(props.row.summary))
+const actionValues = computed(() => ({
+  ticket: props.row.key,
+  title: title.value.text,
+  branch: session.value?.gitBranch ?? null,
+  worktree: session.value?.projectPath ?? null,
+  mr: props.mr ? `!${props.mr.iid}` : null,
+  mrUrl: props.mr?.url ?? props.mrUrl,
+  server: server.value ? `http://localhost:${server.value.port}` : null
+}))
 const facts = computed(() => {
   const list: string[] = []
   if (session.value?.model) list.push(session.value.model.replace(/^claude-/, ''))
@@ -111,8 +136,60 @@ const facts = computed(() => {
 
 const openJira = (): void => window.api.openTicket(props.row.key)
 const openCode = (): void => window.api.openTaskCode(props.row.key)
-const openMr = (): void => window.api.openMr(props.row.key)
 const ticketMr = ref<TicketMr | null>(null)
+const readyTimes = ref<{ handoffAt: number | null; lastCommitAt: number | null }>({ handoffAt: null, lastCommitAt: null })
+const ready = computed(() => readiness(props.reached ?? [], readyTimes.value))
+const isReadyOpen = ref(false)
+const isReadyConfirming = ref(false)
+const readyConfirmAt = ref(0)
+const isMrRequested = ref(false)
+const isMrSending = ref(false)
+const mrSendError = ref<string | null>(null)
+const isMrMissing = computed(() => !props.mr && !ticketMr.value)
+const taskFiles = ref<{ name: string; kind: 'video' | 'image' }[] | null>(null)
+const MAX_FILE_CHIPS = 6
+const fileLabel = (name: string): string => name.replace(/\.[^.]+$/, '')
+const openFolder = (): void => window.api.openTaskFolder(props.row.key)
+const openFile = (name: string): void => window.api.openTaskFile(props.row.key, name)
+const loadReadiness = async (): Promise<void> => {
+  void window.api.getTaskFiles(props.row.key).then((files) => (taskFiles.value = files))
+  const cwd = session.value?.projectPath ?? null
+  const times = await window.api.getTicketReadiness(props.row.key, cwd)
+  if (cwd === (session.value?.projectPath ?? null)) readyTimes.value = times
+}
+watch([() => props.row.key, () => props.reached?.length, changes, () => session.value?.projectPath], () => void loadReadiness(), { immediate: true })
+const toggleReady = (): void => {
+  isReadyOpen.value = !isReadyOpen.value
+  isReadyConfirming.value = false
+  mrSendError.value = null
+}
+const createMr = async (): Promise<void> => {
+  const id = session.value?.id
+  if (!id || isMrSending.value || isMrRequested.value || mode.value !== 'attach') return
+  if (ready.value.done < ready.value.total && !isReadyConfirming.value) {
+    isReadyConfirming.value = true
+    readyConfirmAt.value = Date.now()
+    return
+  }
+  if (isReadyConfirming.value && Date.now() - readyConfirmAt.value < 600) return
+  isMrSending.value = true
+  mrSendError.value = null
+  try {
+    mrSendError.value = (await window.api.sendPrompt(id, CREATE_MR_PROMPT.replace('{ticket}', props.row.key))).error
+    if (!mrSendError.value) {
+      isReadyOpen.value = false
+      isMrRequested.value = true
+    }
+  } finally {
+    isMrSending.value = false
+    isReadyConfirming.value = false
+  }
+}
+const knownMrUrl = computed(() => props.mr?.url ?? ticketMr.value?.url ?? null)
+const openMr = (): void => {
+  if (knownMrUrl.value) window.open(knownMrUrl.value, '_blank')
+  else window.api.openMr(props.row.key)
+}
 const loadTicketMr = async (): Promise<void> => {
   if (props.mr) return
   ticketMr.value = await window.api.getTicketMr(props.row.key)
@@ -183,7 +260,7 @@ const openItems = computed<MenuItem[]>(() => [
     isDisabled: !session.value,
     run: () => void openInVscode()
   },
-  { label: 'Merge request', hint: props.mrUrl ?? 'No merge request yet', icon: 'pr', isDisabled: !props.mrUrl, run: openMr },
+  { label: 'Merge request', hint: knownMrUrl.value ?? props.mrUrl ?? 'No merge request yet', icon: 'pr', isDisabled: !knownMrUrl.value && !props.mrUrl, run: openMr },
   { label: 'Jira', hint: props.row.key, icon: 'ticket', run: openJira }
 ])
 const moreItems = computed<MenuItem[]>(() => [
@@ -284,6 +361,16 @@ onBeforeUnmount(() => {
         </button>
         <h1 class="title" :title="title.text">{{ title.text || 'No title' }}</h1>
         <button v-if="changes" class="unc" :title="`${changes} uncommitted ${changes === 1 ? 'file' : 'files'}. Show the code`" @click="showCode"><Icon name="diff" :size="13" />{{ changes }} uncommitted</button>
+        <template v-if="taskFiles">
+          <button class="file" title="Open the task folder" @click="openFolder"><Icon name="folder" :size="13" />Folder</button>
+          <button v-for="f in taskFiles.slice(0, MAX_FILE_CHIPS)" :key="f.name" class="file" :title="f.name" @click="openFile(f.name)">
+            <Icon :name="f.kind === 'video' ? 'play' : 'file'" :size="12" /><span class="fname">{{ fileLabel(f.name) }}</span>
+          </button>
+          <button v-if="taskFiles.length > MAX_FILE_CHIPS" class="file" title="Open the task folder" @click="openFolder">+{{ taskFiles.length - MAX_FILE_CHIPS }}</button>
+        </template>
+        <button v-if="isMrMissing" class="ready" :class="{ full: ready.done === ready.total }" title="What is done before the merge request" @click="toggleReady">
+          <Icon name="check" :size="13" />Ready for MR {{ ready.done }}/{{ ready.total }}
+        </button>
         <button v-if="server" class="srv" title="Show the dev server" @click="tab = 'server'"><i />localhost:{{ server.port }}</button>
         <span v-if="chip" class="state" :style="{ color: chip.color }"><i :style="{ background: chip.color }" />{{ chip.label }}</span>
       </div>
@@ -306,6 +393,23 @@ onBeforeUnmount(() => {
         <MenuButton label="Open in" icon="external" :items="openItems" />
         <MenuButton label="More actions" icon="more" is-icon title="More actions" :items="moreItems" />
       </div>
+      <template v-if="isReadyOpen && isMrMissing">
+        <div class="scrim" @click="isReadyOpen = false" />
+        <div class="readybox">
+          <ul>
+            <li v-for="item in ready.items" :key="item.id" :class="{ done: item.isDone }">{{ item.isDone ? '✓' : '○' }} {{ item.label }}</li>
+          </ul>
+          <p v-if="isReadyConfirming" class="open">Still open: {{ ready.items.filter((i) => !i.isDone).map((i) => i.label).join(', ') }}</p>
+          <p v-if="mode !== 'attach'" class="open">{{ session ? 'Attach the session here to send from the dashboard.' : 'Start a session to ask Claude for the MR.' }}</p>
+          <p v-if="mrSendError" class="open">{{ mrSendError }}</p>
+          <div class="readybtns">
+            <button class="btn" @click="isReadyOpen = false">Cancel</button>
+            <button class="btn primary" :disabled="isMrSending || isMrRequested || mode !== 'attach'" @click="createMr">
+              <Icon name="pr" :size="13" />{{ isMrRequested ? 'MR requested' : isReadyConfirming ? 'Create anyway' : 'Create MR' }}
+            </button>
+          </div>
+        </div>
+      </template>
       <template v-if="isStartOpen">
         <div class="scrim" @click="isStartOpen = false" />
         <div class="startbox">
@@ -315,7 +419,7 @@ onBeforeUnmount(() => {
     </header>
 
     <div v-show="tab === 'work'" ref="panes" class="panes">
-      <section v-show="isCodeOpen" class="pane code" :style="isBothOpen ? { flex: 'none', width: `${codeWidth}px` } : undefined">
+      <section v-show="isCodeOpen" class="pane code" :style="isBothOpen ? { flex: 'none', width: `${codeWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
         <CodeView
           :cwd="session?.projectPath ?? null"
           :ticket-key="row.key"
@@ -379,7 +483,7 @@ onBeforeUnmount(() => {
           <p>No Claude session for {{ row.key }} yet.</p>
           <button class="btn primary" @click="isStartOpen = true"><Icon name="play" :size="13" />Start session</button>
         </div>
-        <QuickActions :session-id="session?.id ?? null" :mode="mode" :take-over="takeOverHere" />
+        <QuickActions :session-id="session?.id ?? null" :mode="mode" :take-over="takeOverHere" :values="actionValues" :stage="stage ?? null" />
       </section>
     </div>
 
@@ -522,6 +626,31 @@ onBeforeUnmount(() => {
 }
 .srv:hover {
   border-color: var(--ok);
+}
+.file {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 150px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  font: 600 11.5px var(--font-ui);
+  color: var(--text-2);
+  background: none;
+  border: 1px solid var(--line-2);
+  border-radius: 11px;
+  cursor: pointer;
+}
+.fname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file:hover {
+  color: var(--text);
+  border-color: var(--text-2);
 }
 .unc {
   flex: none;
@@ -669,6 +798,57 @@ onBeforeUnmount(() => {
   position: fixed;
   inset: 0;
   z-index: 19;
+}
+.ready {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  font: 600 11.5px var(--font-ui);
+  color: var(--text-3);
+  background: none;
+  border: 1px solid var(--line-2);
+  border-radius: 11px;
+  cursor: pointer;
+}
+.ready.full {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.readybox {
+  position: absolute;
+  top: calc(100% - 4px);
+  right: 16px;
+  z-index: 20;
+  width: 320px;
+  padding: 12px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.readybox ul {
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+  color: var(--text-4);
+}
+.readybox li {
+  padding: 2px 0;
+}
+.readybox li.done {
+  color: var(--ok);
+}
+.readybox .open {
+  margin: 0 0 8px;
+  color: var(--warn);
+}
+.readybtns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 .startbox {
   position: absolute;

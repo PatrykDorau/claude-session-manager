@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import type { JiraTransition } from '../types'
+import { useEscapeClose } from './escape'
 
 const props = defineProps<{ ticketKey: string; status: string; color: string; isFromJira: boolean }>()
 
@@ -24,6 +25,7 @@ const close = (): void => {
   isOpen.value = false
   picked.value = null
 }
+useEscapeClose(isOpen, close)
 const move = async (): Promise<void> => {
   if (!picked.value) return
   isMoving.value = true

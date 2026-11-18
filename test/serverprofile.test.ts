@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { stvOptions, webOptions, mergeEnvLocal, stvCommand, serverHost, chromeArgs } from '../src/main/serverprofile'
+import { stvOptions, webOptions, mergeEnvLocal, stvCommand, serverHost, chromeArgs, isChoiceMismatch } from '../src/main/serverprofile'
 
 describe('stvOptions', () => {
   it('lists tenants and environments from config/<tenant>/.env.<env>', () => {
@@ -52,5 +52,15 @@ describe('chromeArgs', () => {
       '--disable-web-security',
       'http://a.localhost:8081'
     ])
+  })
+})
+
+describe('isChoiceMismatch', () => {
+  it('flags a running server started for another tenant or environment', () => {
+    expect(isChoiceMismatch('krs · dev · web · 1080', 'kan', '')).toBe(true)
+    expect(isChoiceMismatch('krs · dev · web · 1080', 'krs', 'uat')).toBe(true)
+    expect(isChoiceMismatch('krs · dev · web · 1080', 'krs', 'dev')).toBe(false)
+    expect(isChoiceMismatch('krs · dev', '', '')).toBe(false)
+    expect(isChoiceMismatch('custom', 'kan', 'uat')).toBe(false)
   })
 })

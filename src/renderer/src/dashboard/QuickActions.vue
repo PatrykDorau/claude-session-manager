@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import type { QuickAction, TerminalMode } from '../types'
+import { ref, computed, watch } from 'vue'
+import type { QuickAction, Stage, TerminalMode } from '../types'
+import { actionsForStage, fillPrompt, type PlaceholderName } from '../quickactions'
 
 const props = defineProps<{
   sessionId: string | null
   mode: TerminalMode | null
   extra?: QuickAction[]
   takeOver?: () => Promise<boolean>
+  values?: Partial<Record<PlaceholderName, string | null>>
+  stage?: Stage | null
 }>()
 
 const NO_ASK_KEY = 'dashboard.takeOverWithoutAsking'
@@ -22,7 +25,23 @@ const isNoAsk = ref(readNoAsk())
 const isDontAskChecked = ref(false)
 
 const settingsActions = window.api.getSettings().quickActions
-const actions = computed(() => [...(props.extra ?? []), ...settingsActions])
+const actions = computed(() => [...(props.extra ?? []), ...actionsForStage(settingsActions, props.stage ?? null)])
+const draft = ref<string | null>(null)
+watch(
+  () => props.sessionId,
+  () => (draft.value = null)
+)
+const pick = (a: QuickAction, e: MouseEvent): void => {
+  const text = fillPrompt(a.prompt, props.values ?? {})
+  if (e.shiftKey) {
+    draft.value = text
+    return
+  }
+  void send(text)
+}
+const sendDraft = async (): Promise<void> => {
+  if (draft.value !== null && (await send(draft.value))) draft.value = null
+}
 const isSending = ref(false)
 const error = ref<string | null>(null)
 const lastSent = ref<{ text: string; at: number } | null>(null)
@@ -59,7 +78,7 @@ const confirmTakeOver = async (): Promise<void> => {
       isNoAsk.value = true
     }
   }
-  await takeOverThenSend(text)
+  if (await takeOverThenSend(text)) draft.value = null
 }
 
 const send = async (text: string): Promise<boolean> => {
@@ -115,11 +134,21 @@ const timeOf = (at: number): string => new Date(at).toLocaleTimeString([], { hou
         :key="a.label + a.prompt"
         class="chip"
         :disabled="!!blockedReason || isSending"
-        :title="a.prompt"
-        @click="send(a.prompt)"
+        :title="`${fillPrompt(a.prompt, values ?? {})}
+
+Shift+click to edit before sending`"
+        @click="pick(a, $event)"
       >
         {{ a.label }}
       </button>
+    </div>
+    <div v-if="draft !== null" class="draft">
+      <textarea v-model="draft" rows="4" spellcheck="false" />
+      <div class="askrow">
+        <span class="grow" />
+        <button class="chip" @click="draft = null">Cancel</button>
+        <button class="send small" :disabled="!!blockedReason || isSending || !draft.trim()" @click="sendDraft">Send</button>
+      </div>
     </div>
     <div v-if="blockedReason && sessionId" class="hint">{{ blockedReason }}</div>
     <div v-if="error" class="warn">{{ error }}</div>
@@ -128,6 +157,22 @@ const timeOf = (at: number): string => new Date(at).toLocaleTimeString([], { hou
 </template>
 
 <style scoped>
+.draft {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.draft textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: var(--bg-3);
+  color: var(--text);
+  font: 12px var(--font-ui);
+  resize: vertical;
+}
 .composer {
   flex: none;
   padding: 8px 14px;
