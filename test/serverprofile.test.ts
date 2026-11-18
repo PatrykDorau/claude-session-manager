@@ -53,6 +53,16 @@ describe('chromeArgs', () => {
       'http://a.localhost:8081'
     ])
   })
+
+  it('names the window after the ticket so the taskbar tells the Chromes apart', () => {
+    expect(chromeArgs('C:\\p', 9301, 'http://a.localhost:8081', 'SOFRMPT-3958')).toEqual([
+      '--user-data-dir=C:\\p',
+      '--remote-debugging-port=9301',
+      '--disable-web-security',
+      '--window-name=SOFRMPT-3958',
+      'http://a.localhost:8081'
+    ])
+  })
 })
 
 describe('isChoiceMismatch', () => {

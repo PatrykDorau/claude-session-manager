@@ -84,3 +84,52 @@ export const parseGrep = (out: string, limit: number): CodeMatch[] =>
       return match ? [{ path: match[1], line: Number(match[2]), text: match[3].trim().slice(0, 200) }] : []
     })
     .slice(0, limit)
+
+export interface LineCounts {
+  added: number | null
+  removed: number | null
+}
+
+const renamedPath = (path: string): string => {
+  const braces = /^(.*)\{[^{}]* => ([^{}]*)\}(.*)$/.exec(path)
+  if (braces) return `${braces[1]}${braces[2]}${braces[3]}`.replace(/\/\//g, '/')
+  return path.includes(' => ') ? (path.split(' => ').pop() ?? path) : path
+}
+
+export const parseNumstat = (out: string): Map<string, LineCounts> => {
+  const stats = new Map<string, LineCounts>()
+  for (const row of out.split(/\r?\n/)) {
+    const [added, removed, ...rest] = row.split('\t')
+    if (!rest.length) continue
+    const toCount = (value: string): number | null => (value === '-' ? null : Number(value))
+    stats.set(renamedPath(rest.join('\t')), { added: toCount(added), removed: toCount(removed) })
+  }
+  return stats
+}
+
+export const parseRawBlobs = (out: string): Map<string, string> => {
+  const blobs = new Map<string, string>()
+  for (const row of out.split(/\r?\n/)) {
+    const [meta, ...paths] = row.split('\t')
+    const blob = meta.split(' ')[3]
+    if (blob && paths.length) blobs.set(paths[paths.length - 1], blob)
+  }
+  return blobs
+}
+
+const scopePathspec = (scope: string): string | null => {
+  const path = scope.trim().replace(/\\/g, '/').replace(/^\.\//, '')
+  if (!path) return null
+  if (!/[/*.]/.test(path)) return `:(glob)**/${path}/**`
+  return path.includes('**') ? `:(glob)${path}` : path
+}
+
+export const searchArgs = (query: string, scope: string, isWord: boolean): string[] => {
+  const pathspec = scopePathspec(scope)
+  return [
+    'grep', '-n', '-I', '-i', '-F', '--untracked', '--full-name',
+    ...(isWord ? ['-w'] : []),
+    '-e', query,
+    ...(pathspec ? ['--', pathspec] : [])
+  ]
+}

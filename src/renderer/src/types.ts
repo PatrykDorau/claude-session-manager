@@ -236,6 +236,9 @@ export type UsageResult =
 export interface ChangedFile {
   path: string
   state: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked'
+  added?: number | null
+  removed?: number | null
+  contentId?: string | null
 }
 
 export interface TicketComment {
@@ -269,6 +272,7 @@ export interface BranchChanges {
   isReadOnly?: boolean
   folder?: string
   uncommitted?: string[]
+  uncommittedCounts?: Record<string, { added: number | null; removed: number | null }>
 }
 
 

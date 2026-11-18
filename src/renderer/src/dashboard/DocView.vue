@@ -2,6 +2,7 @@
 import { ref, watch, nextTick, onMounted } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { escapeListLabels } from './mermaidtext'
 
 const props = defineProps<{ text: string }>()
 
@@ -19,7 +20,7 @@ const renderDiagrams = async (): Promise<void> => {
     const box = document.createElement('div')
     box.className = 'diagram'
     try {
-      const { svg } = await mermaid.render(`doc-diagram-${renderCount}`, code.textContent ?? '')
+      const { svg } = await mermaid.render(`doc-diagram-${renderCount}`, escapeListLabels(code.textContent ?? ''))
       box.innerHTML = svg
     } catch {
       box.textContent = 'This diagram could not be drawn.'

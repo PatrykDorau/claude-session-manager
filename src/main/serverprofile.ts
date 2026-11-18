@@ -61,10 +61,11 @@ export const serverHost = (key: string, tenant: string | null, environment: stri
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '')}.localhost`
 
-export const chromeArgs = (profileDir: string, debugPort: number, url: string): string[] => [
+export const chromeArgs = (profileDir: string, debugPort: number, url: string, windowName?: string): string[] => [
   `--user-data-dir=${profileDir}`,
   `--remote-debugging-port=${debugPort}`,
   '--disable-web-security',
+  ...(windowName ? [`--window-name=${windowName}`] : []),
   url
 ]
 

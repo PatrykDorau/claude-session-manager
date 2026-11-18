@@ -2,7 +2,7 @@
 import { ref, computed, shallowRef, watch, onMounted, onBeforeUnmount, onActivated, nextTick } from 'vue'
 import { EditorView, basicSetup } from 'codemirror'
 import { EditorState, Compartment, RangeSet, type Extension } from '@codemirror/state'
-import { keymap, gutter, GutterMarker, Decoration, WidgetType, BlockType } from '@codemirror/view'
+import { keymap, gutter, GutterMarker, Decoration, WidgetType, BlockType, hoverTooltip, type Tooltip } from '@codemirror/view'
 import { darkPlus } from './darkplus'
 import { javascript } from '@codemirror/lang-javascript'
 import { vue } from '@codemirror/lang-vue'
@@ -20,6 +20,9 @@ import MenuButton from './MenuButton.vue'
 import type { MenuItem } from '../types'
 import { search } from '@codemirror/search'
 import { searchPanel } from './searchpanel'
+import { barCells, type BarCell, type LineCounts } from './diffstat'
+import { changeSignature, isFileViewed, toggleViewed } from './viewed'
+import { importAt, wordAt, listImports, importLineOf, definitionLine, defaultExportLine, resolveImport, isIdentifierQuery, groupHits, peekTarget, memberSites, snippetAt } from './codenav'
 import { parseVersionLink } from './mrhtml'
 import { clampSize, readSize, writeSize, readFlag } from './dashboard'
 
@@ -71,13 +74,20 @@ const surface = EditorView.theme(
     '.cm-cursor': { borderLeftColor: '#aeafad' },
     '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': { backgroundColor: '#264f78 !important' },
     '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'rgba(255, 255, 255, 0.03)' },
-    '.cm-changedLine': { backgroundColor: 'rgba(61, 214, 140, 0.1) !important' },
-    '.cm-changedText': { background: 'rgba(61, 214, 140, 0.28) !important', borderRadius: '2px' },
-    '.cm-deletedChunk': { backgroundColor: 'rgba(242, 112, 106, 0.1) !important', paddingLeft: '6px' },
-    '.cm-deletedChunk .cm-deletedText, .cm-deletedChunk del': { background: 'rgba(242, 112, 106, 0.28)', textDecoration: 'none' },
-    '.cm-changeGutter': { width: '3px', paddingLeft: '0' },
-    '.cm-changedLineGutter': { background: 'var(--ok)' },
+    '.cm-changedLine': { backgroundColor: 'rgba(46, 200, 110, 0.2) !important' },
+    '.cm-changedText': { background: 'rgba(46, 220, 110, 0.5) !important', borderRadius: '2px', boxShadow: 'inset 0 -2px 0 #3ee07f' },
+    '.cm-deletedChunk': { backgroundColor: 'rgba(240, 70, 70, 0.2) !important', paddingLeft: '18px', position: 'relative' },
+    '.cm-deletedChunk .cm-deletedLine::before': { content: '"−"', position: 'absolute', left: '5px', color: '#ff7b72', fontWeight: '700' },
+    '.cm-deletedChunk .cm-deletedText, .cm-deletedChunk del': { background: 'rgba(240, 70, 70, 0.5)', textDecoration: 'none', boxShadow: 'inset 0 -2px 0 #ff6b6b' },
+    '.cm-changeGutter': { width: '14px', paddingLeft: '0' },
+    '.cm-changedLineGutter': { background: 'rgba(46, 200, 110, 0.35)' },
+    '.cm-changedLineGutter::after': { content: '"+"', display: 'block', textAlign: 'center', color: '#3ee07f', fontWeight: '700' },
     '.cm-deletedLineGutter': { background: 'var(--danger)' },
+    '.cm-tooltip.cm-tooltip-hover': { background: 'var(--bg-2)', border: '1px solid var(--line-2)', borderRadius: '8px', boxShadow: '0 8px 24px rgba(0, 0, 0, 0.45)' },
+    '.cp-peek': { maxWidth: '640px', maxHeight: '360px', overflow: 'auto', padding: '6px 10px' },
+    '.cp-peek-head': { display: 'block', padding: '2px 0', font: '12px var(--font-ui)', color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' },
+    '.cp-peek-head:hover': { textDecoration: 'underline' },
+    '.cp-peek pre': { margin: '2px 0 8px', font: '12px/1.5 var(--font-mono)', color: '#d4d4d4', whiteSpace: 'pre' },
     '.cm-collapsedLines': { color: 'var(--text-3)', background: 'var(--bg-2)', padding: '4px 12px', cursor: 'pointer', fontFamily: 'var(--font-ui)', fontSize: '12px' },
     '.cm-why-gutter': { width: '22px' },
     '.cm-searchMatch': { backgroundColor: 'rgba(232, 184, 74, 0.22)', outline: '1px solid rgba(232, 184, 74, 0.75)', borderRadius: '2px' },
@@ -140,11 +150,14 @@ const runSearch = async (): Promise<void> => {
     return
   }
   isSearching.value = true
-  const results = await window.api.searchCode(workCwd.value ?? props.cwd ?? '', query)
+  const scope = searchScope.value
+  const results = await window.api.searchCode(workCwd.value ?? props.cwd ?? '', query, scope, isIdentifierQuery(query))
   isSearching.value = false
-  if (query !== searchQuery.value.trim()) return
+  if (query !== searchQuery.value.trim() || scope !== searchScope.value) return
   searchResults.value = results
   searchedFor.value = query
+  isImportsOpen.value = false
+  isUsagesOpen.value = !grouped.value?.definitions.length
 }
 const startSearch = (): void => {
   void runSearch()
@@ -153,6 +166,30 @@ const scheduleSearch = (): void => {
   if (searchTimer) clearTimeout(searchTimer)
   searchTimer = setTimeout(startSearch, 400)
 }
+const readScope = (): string => {
+  try {
+    return localStorage.getItem('dash.searchScope') ?? ''
+  } catch {
+    return ''
+  }
+}
+const searchScope = ref(readScope())
+const setScope = (scope: string): void => {
+  searchScope.value = scope
+}
+const saveScope = (scope: string): void => {
+  scheduleSearch()
+  try {
+    localStorage.setItem('dash.searchScope', scope)
+  } catch {
+    return
+  }
+}
+watch(searchScope, saveScope)
+const isImportsOpen = ref(false)
+const isUsagesOpen = ref(false)
+const grouped = computed(() => (isIdentifierQuery(searchedFor.value) ? groupHits(searchResults.value, searchedFor.value, files.value) : null))
+const openFolder = computed(() => (openPath.value?.includes('/') ? `${openPath.value.split('/').slice(0, -1).join('/')}/` : null))
 const files = ref<string[]>([])
 const branch = ref<BranchChanges | null>(null)
 const openPath = ref<string | null>(null)
@@ -172,6 +209,8 @@ const languageSlot = new Compartment()
 const diffSlot = new Compartment()
 const whySlot = new Compartment()
 let baseText = ''
+let savedText = ''
+const peekCache = new Map<string, { path: string; line: number; snippet: string } | null>()
 
 const workCwd = computed(() => (branch.value?.isReadOnly ? props.cwd : (branch.value?.folder ?? props.cwd)))
 const isUncommittedOnly = ref(false)
@@ -205,6 +244,41 @@ const flow = computed(() => explain.value?.doc.flow ?? [])
 const changesOfStep = (step: number): { file: string; line: number; title: string }[] =>
   (explain.value?.doc.changes ?? []).filter((c) => c.step === step)
 const isWhyOpen = ref(true)
+const countsOf = (file: ChangedFile): LineCounts => {
+  const own = { added: file.added ?? null, removed: file.removed ?? null }
+  return isUncommittedOnly.value ? (branch.value?.uncommittedCounts?.[file.path] ?? { added: 0, removed: 0 }) : own
+}
+const totals = computed(() => {
+  const sum = (key: keyof LineCounts): number => changes.value.reduce((n, c) => n + (countsOf(c)[key] ?? 0), 0)
+  return { added: sum('added'), removed: sum('removed') }
+})
+const biggestChange = computed(() => Math.max(1, ...changes.value.map((c) => (countsOf(c).added ?? 0) + (countsOf(c).removed ?? 0))))
+const cellsOf = (file: ChangedFile): BarCell[] => barCells(countsOf(file).added, countsOf(file).removed, biggestChange.value)
+const openCounts = computed(() => {
+  const file = changes.value.find((c) => c.path === openPath.value) ?? branch.value?.files.find((c) => c.path === openPath.value)
+  return file ? countsOf(file) : null
+})
+const viewedKey = computed(() => (branch.value ? `dash.viewed.${branch.value.branch}` : null))
+const viewed = ref<Record<string, string>>({})
+const loadViewed = (key: string | null): void => {
+  try {
+    viewed.value = key ? (JSON.parse(localStorage.getItem(key) ?? '{}') as Record<string, string>) : {}
+  } catch {
+    viewed.value = {}
+  }
+}
+watch(viewedKey, loadViewed, { immediate: true })
+const signatureOf = (file: ChangedFile): string => changeSignature(file)
+const isViewed = (file: ChangedFile): boolean => isFileViewed(viewed.value, file.path, signatureOf(file))
+const viewedCount = computed(() => changes.value.filter(isViewed).length)
+const flipViewed = (file: ChangedFile): void => {
+  viewed.value = toggleViewed(viewed.value, file.path, signatureOf(file))
+  try {
+    if (viewedKey.value) localStorage.setItem(viewedKey.value, JSON.stringify(viewed.value))
+  } catch {
+    return
+  }
+}
 const sideWidth = ref(clampSize(readSize('dash.codeSide', 280), 180, 520))
 const resizeSide = (delta: number): void => {
   sideWidth.value = clampSize(sideWidth.value + delta, 180, 520)
@@ -239,6 +313,8 @@ const goToLine = (line: number): void => {
   const v = editor.value
   if (!v) return
   const target = v.state.doc.line(Math.min(Math.max(line, 1), v.state.doc.lines))
+  const block = v.lineBlockAt(target.from)
+  if (block.type === BlockType.WidgetRange) v.dispatch({ effects: uncollapseUnchanged.of(block.from) })
   v.dispatch({ selection: { anchor: target.from }, effects: EditorView.scrollIntoView(target.from, { y: 'center' }) })
   v.focus()
 }
@@ -635,6 +711,7 @@ const diffExtension = (): Extension =>
 
 const refresh = async (): Promise<void> => {
   if (!props.cwd) return
+  peekCache.clear()
   const ref = props.branchRef
   const changed = ref ? await window.api.listRefChanges(props.cwd, ref.source, ref.target) : await window.api.listBranchChanges(props.cwd)
   branch.value = changed
@@ -645,14 +722,17 @@ const save = async (): Promise<void> => {
   const cwd = workCwd.value
   if (!cwd || !openPath.value || !editor.value || isSaving.value) return
   isSaving.value = true
-  const result = await window.api.writeFile(cwd, openPath.value, editor.value.state.doc.toString())
+  const text = editor.value.state.doc.toString()
+  const path = openPath.value
+  const result = await window.api.writeFile(cwd, path, text)
   isSaving.value = false
   error.value = result.error
-  if (!result.error) {
-    isDirty.value = false
-    void refresh()
-    emit('fileShown', openPath.value, branch.value?.folder ?? null, !!branch.value?.isReadOnly)
-  }
+  if (result.error) return
+  void refresh()
+  if (openPath.value !== path || !editor.value) return
+  savedText = text
+  isDirty.value = editor.value.state.doc.toString() !== text
+  emit('fileShown', path, branch.value?.folder ?? null, !!branch.value?.isReadOnly)
 }
 
 const open = async (path: string): Promise<void> => {
@@ -689,11 +769,14 @@ const open = async (path: string): Promise<void> => {
       languageSlot.of(LANGS[languageOf(path)]()),
       diffSlot.of(diffExtension()),
       keymap.of([{ key: 'Mod-s', run: () => (void save(), true) }]),
+      EditorView.domEventHandlers({ mousedown: onCtrlClick }),
+      hoverTooltip(peekSource, { hoverTime: 500 }),
       EditorView.updateListener.of((u) => {
-        if (u.docChanged) isDirty.value = true
+        if (u.docChanged) isDirty.value = u.state.doc.length !== savedText.length || u.state.doc.toString() !== savedText
       })
     ]
   })
+  savedText = state.doc.toString()
   await nextTick()
   if (editor.value) editor.value.setState(state)
   else editor.value = new EditorView({ state, parent: host.value as HTMLDivElement })
@@ -765,6 +848,119 @@ const runExplain = async (): Promise<void> => {
   }
   emit('explain', result.sessionId)
   waitForExplain(since)
+}
+
+const PEEK_LINES = 12
+interface PeekBlock {
+  path: string
+  line: number
+  snippet: string
+}
+const readText = async (path: string): Promise<string | null> => {
+  const ref = props.branchRef
+  if (ref && branch.value?.isReadOnly && props.cwd) return window.api.readRefFile(props.cwd, ref.source, ref.target, path, false)
+  return workCwd.value ? (await window.api.readFile(workCwd.value, path)).text : null
+}
+const blockFrom = async (path: string, line: number | null): Promise<PeekBlock | null> => {
+  const text = await readText(path)
+  const at = line ?? 1
+  return text === null ? null : { path, line: at, snippet: snippetAt(text, at, PEEK_LINES) }
+}
+const definitionBlock = async (name: string, from: string, doc: string): Promise<PeekBlock | null> => {
+  const imported = listImports(doc).find((i) => i.defaultName === name || i.namespace === name || i.named.some((n) => n.local === name))
+  if (imported) {
+    const target = resolveImport(from, imported.spec, files.value)
+    const text = target ? await readText(target) : null
+    if (!target || text === null) return null
+    const original = imported.named.find((n) => n.local === name)?.imported
+    const line = (original ? definitionLine(text, original) : defaultExportLine(text)) ?? 1
+    return { path: target, line, snippet: snippetAt(text, line, PEEK_LINES) }
+  }
+  const local = definitionLine(doc, name)
+  if (local) return { path: from, line: local, snippet: snippetAt(doc, local, PEEK_LINES) }
+  return repoDefinition(name)
+}
+const repoDefinition = async (name: string): Promise<PeekBlock | null> => {
+  if (branch.value?.isReadOnly) return null
+  const cached = peekCache.get(name)
+  if (cached !== undefined) return cached
+  const hits = await window.api.searchCode(workCwd.value ?? props.cwd ?? '', name, '', true)
+  const found = groupHits(hits, name, files.value).definitions[0]
+  const block = found ? await blockFrom(found.path, found.line) : null
+  peekCache.set(name, block)
+  return block
+}
+const memberBlocks = async (name: string, from: string, doc: string): Promise<PeekBlock[]> => {
+  const sites = memberSites(doc, name)
+  const declared = sites.declarations.slice(0, 2).map((line) => ({ path: from, line, snippet: snippetAt(doc, line, PEEK_LINES) }))
+  const lines = doc.split('\n')
+  const assigned = sites.assignments.slice(0, 3).map((line) => ({ path: from, line, snippet: lines[line - 1].trim() }))
+  const built = sites.constructedFrom ? await definitionBlock(sites.constructedFrom, from, doc) : null
+  const found = [...declared, ...assigned, ...(built ? [built] : [])]
+  if (found.length) return found
+  const elsewhere = await repoDefinition(name)
+  return elsewhere ? [elsewhere] : []
+}
+const peekDom = (blocks: PeekBlock[]): HTMLElement => {
+  const dom = document.createElement('div')
+  dom.className = 'cp-peek'
+  for (const block of blocks) {
+    const head = document.createElement('button')
+    head.className = 'cp-peek-head'
+    head.textContent = `${block.path}:${block.line}`
+    head.title = 'Go to definition'
+    const goToBlock = (): void => void openStepChange(block.path, block.line)
+    head.addEventListener('click', goToBlock)
+    const pre = document.createElement('pre')
+    pre.textContent = block.snippet
+    dom.append(head, pre)
+  }
+  return dom
+}
+const peekSource = async (view: EditorView, pos: number): Promise<Tooltip | null> => {
+  const doc = view.state.doc.toString()
+  const target = peekTarget(doc, pos)
+  const from = openPath.value
+  if (!target || !from) return null
+  const blocks = target.isMember ? await memberBlocks(target.name, from, doc) : [await definitionBlock(target.name, from, doc)].flatMap((b) => (b ? [b] : []))
+  const hoveredLine = view.state.doc.lineAt(pos).number
+  const shown = blocks.filter((b) => !(b.path === from && b.line === hoveredLine))
+  if (!shown.length) return null
+  const createPeek = (): { dom: HTMLElement } => ({ dom: peekDom(shown) })
+  return { pos: target.from, end: target.to, above: true, create: createPeek }
+}
+
+let followedName: string | null = null
+const followImportPath = async (from: string, imported: NonNullable<ReturnType<typeof importAt>>): Promise<void> => {
+  const target = resolveImport(from, imported.spec, files.value)
+  if (!target) {
+    error.value = `${imported.spec} is not a file in this repository`
+    return
+  }
+  const named = imported.named.find((n) => n.imported === followedName) ?? (imported.defaultName ? null : imported.named[0])
+  if (openPath.value !== target) await open(target)
+  if (openPath.value !== target) return
+  const text = editor.value?.state.doc.toString() ?? ''
+  goToLine((named ? definitionLine(text, named.imported) : defaultExportLine(text)) ?? 1)
+}
+const followAt = async (view: EditorView, pos: number): Promise<void> => {
+  const doc = view.state.doc.toString()
+  const imported = importAt(doc, pos)
+  if (imported && openPath.value) return followImportPath(openPath.value, imported)
+  const word = wordAt(doc, pos)
+  if (!word) return
+  const importLine = importLineOf(doc, word)
+  followedName = importLine ? (listImports(doc).flatMap((i) => i.named).find((n) => n.local === word)?.imported ?? null) : null
+  const line = importLine ?? definitionLine(doc, word)
+  if (line) goToLine(line)
+}
+const onCtrlClick = (e: MouseEvent, view: EditorView): boolean => {
+  if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return false
+  const pos = view.posAtCoords({ x: e.clientX, y: e.clientY })
+  if (pos === null) return false
+  e.preventDefault()
+  void followAt(view, pos)
+  return true
 }
 
 const openStepChange = async (file: string, line: number): Promise<void> => {
@@ -899,40 +1095,107 @@ onBeforeUnmount(() => {
         </button>
         <button v-if="explain" class="mdlink" @click="openMd"><Icon name="fileText" :size="12" />Read the explanation</button>
         <p v-if="!changes.length" class="muted">{{ isUncommittedOnly ? 'Nothing uncommitted.' : 'No code changes on this branch yet.' }}</p>
-        <button
+        <div v-else class="totals">
+          <span>{{ changes.length }} {{ changes.length === 1 ? 'file' : 'files' }}</span>
+          <b class="plus">+{{ totals.added }}</b><b class="minus">−{{ totals.removed }}</b>
+          <span class="viewedn" :class="{ done: viewedCount === changes.length }">Viewed {{ viewedCount }}/{{ changes.length }}</span>
+        </div>
+        <div
           v-for="c in changes"
           :key="c.path"
           class="row"
-          :class="{ on: openPath === c.path }"
+          role="button"
+          tabindex="0"
+          :class="{ on: openPath === c.path, viewed: isViewed(c) }"
           :title="c.path"
           @click="open(c.path)"
+          @keydown.enter.self="open(c.path)"
         >
-          <Icon name="file" :size="13" class="ficon" />
+          <input type="checkbox" class="viewbox" :checked="isViewed(c)" title="Mark as viewed" :aria-label="`Mark ${c.path} as viewed`" @click.stop="flipViewed(c)" />
           <span class="name">{{ c.path.split('/').pop() }}</span>
           <span class="dir">{{ c.path.split('/').slice(0, -1).join('/') }}</span>
           <i v-if="isUncommitted(c.path)" class="uncdot" title="Changed locally, not committed yet" />
           <em v-if="commentCount(c.path)" class="cmtn" title="Unresolved comments"><Icon name="message" :size="11" />{{ commentCount(c.path) }}</em>
           <em v-if="whyCount(c.path)" class="whyn" title="Explained changes"><Icon name="info" :size="11" />{{ whyCount(c.path) }}</em>
+          <span class="stat" :title="`${countsOf(c).added ?? '?'} lines added, ${countsOf(c).removed ?? '?'} removed`">
+            <template v-if="countsOf(c).added === null && countsOf(c).removed === null">bin</template>
+            <template v-else><i v-if="countsOf(c).added" class="plus">+{{ countsOf(c).added }}</i><i v-if="countsOf(c).removed" class="minus">−{{ countsOf(c).removed }}</i></template>
+            <span class="bar"><span v-for="(cell, i) in cellsOf(c)" :key="i" :class="cell" /></span>
+          </span>
           <b :style="{ color: STATE_MARK[c.state].color }">{{ STATE_MARK[c.state].mark }}</b>
-        </button>
+        </div>
         </template>
       </template>
       <template v-else-if="view === 'search'">
         <label class="filter"><Icon name="search" :size="13" /><input v-model="searchQuery" placeholder="Search the code" spellcheck="false" @input="scheduleSearch" @keydown.enter="runSearch" /></label>
+        <div class="scope">
+          <span>Where</span>
+          <input v-model.lazy="searchScope" placeholder="whole repository" spellcheck="false" title="A folder or a git pathspec, e.g. src/javascript/app, *.vue, **/store/**" />
+          <button :class="{ on: searchScope === 'src' }" @click="setScope('src')">src</button>
+          <button :class="{ on: searchScope === 'components' }" @click="setScope('components')">components</button>
+          <button :class="{ on: !!openFolder && searchScope === openFolder }" :disabled="!openFolder" :title="openFolder ?? 'Open a file first'" @click="setScope(openFolder ?? '')">this folder</button>
+          <button v-if="searchScope" title="Search the whole repository" @click="setScope('')">×</button>
+        </div>
         <p v-if="isSearching" class="muted">Searching…</p>
         <p v-else-if="searchedFor && !searchResults.length" class="muted">No matches for “{{ searchedFor }}”.</p>
-        <p v-else-if="searchResults.length" class="muted">{{ searchResults.length >= 300 ? 'First 300 matches' : `${searchResults.length} matches` }}</p>
-        <button
-          v-for="m in searchResults"
-          :key="`${m.path}:${m.line}`"
-          class="row hit"
-          :class="{ on: openPath === m.path }"
-          :title="`${m.path}:${m.line}`"
-          @click="openStepChange(m.path, m.line)"
-        >
-          <span class="hitpath"><span class="name">{{ m.path.split('/').pop() }}:{{ m.line }}</span><span class="dir">{{ m.path.split('/').slice(0, -1).join('/') }}</span></span>
-          <code class="hittext">{{ m.text }}</code>
-        </button>
+        <p v-else-if="searchResults.length && !grouped" class="muted">{{ searchResults.length >= 300 ? 'First 300 matches' : `${searchResults.length} matches` }}</p>
+        <template v-if="grouped && searchResults.length">
+          <div class="hithead">Definitions ({{ grouped.definitions.length }})</div>
+          <p v-if="!grouped.definitions.length" class="muted">No definition found.</p>
+          <button
+            v-for="m in grouped.definitions"
+            :key="`d:${m.path}:${m.line}`"
+            class="row hit"
+            :class="{ on: openPath === m.path }"
+            :title="`${m.path}:${m.line}`"
+            @click="openStepChange(m.path, m.line)"
+          >
+            <span class="hitpath"><span class="name">{{ m.path.split('/').pop() }}:{{ m.line }}</span><span class="dir">{{ m.path.split('/').slice(0, -1).join('/') }}</span></span>
+            <code class="hittext">{{ m.text || m.path }}</code>
+          </button>
+          <button class="hithead toggle" @click="isImportsOpen = !isImportsOpen"><Icon :name="isImportsOpen ? 'chevronDown' : 'chevronRight'" :size="12" />Imports ({{ grouped.imports.length }})</button>
+          <template v-if="isImportsOpen">
+            <button
+              v-for="m in grouped.imports"
+              :key="`i:${m.path}:${m.line}`"
+              class="row hit"
+              :class="{ on: openPath === m.path }"
+              :title="`${m.path}:${m.line}`"
+              @click="openStepChange(m.path, m.line)"
+            >
+              <span class="hitpath"><span class="name">{{ m.path.split('/').pop() }}:{{ m.line }}</span><span class="dir">{{ m.path.split('/').slice(0, -1).join('/') }}</span></span>
+              <code class="hittext">{{ m.text }}</code>
+            </button>
+          </template>
+          <button class="hithead toggle" @click="isUsagesOpen = !isUsagesOpen"><Icon :name="isUsagesOpen ? 'chevronDown' : 'chevronRight'" :size="12" />Usages ({{ grouped.usages.length }})</button>
+          <template v-if="isUsagesOpen">
+            <button
+              v-for="m in grouped.usages"
+              :key="`u:${m.path}:${m.line}`"
+              class="row hit"
+              :class="{ on: openPath === m.path }"
+              :title="`${m.path}:${m.line}`"
+              @click="openStepChange(m.path, m.line)"
+            >
+              <span class="hitpath"><span class="name">{{ m.path.split('/').pop() }}:{{ m.line }}</span><span class="dir">{{ m.path.split('/').slice(0, -1).join('/') }}</span></span>
+              <code class="hittext">{{ m.text }}</code>
+            </button>
+          </template>
+          <p v-if="searchResults.length >= 300" class="muted">Only the first 300 matches were read. Narrow the search with “Where”.</p>
+        </template>
+        <template v-else>
+          <button
+            v-for="m in searchResults"
+            :key="`${m.path}:${m.line}`"
+            class="row hit"
+            :class="{ on: openPath === m.path }"
+            :title="`${m.path}:${m.line}`"
+            @click="openStepChange(m.path, m.line)"
+          >
+            <span class="hitpath"><span class="name">{{ m.path.split('/').pop() }}:{{ m.line }}</span><span class="dir">{{ m.path.split('/').slice(0, -1).join('/') }}</span></span>
+            <code class="hittext">{{ m.text }}</code>
+          </button>
+        </template>
       </template>
       <template v-else>
         <label class="filter"><Icon name="search" :size="13" /><input v-model="filter" placeholder="Find a file" spellcheck="false" /></label>
@@ -965,7 +1228,7 @@ onBeforeUnmount(() => {
 
     <section class="main">
       <div v-if="openPath" class="tabbar">
-        <span class="path"><Icon name="file" :size="13" /><span class="pdir">{{ openPath.split('/').slice(0, -1).join('/') }}{{ openPath.includes('/') ? '/' : '' }}</span><b>{{ openPath.split('/').pop() }}</b><i v-if="isDirty" class="dirty" title="Unsaved changes" /></span>
+        <span class="path"><Icon name="file" :size="13" /><span class="pdir">{{ openPath.split('/').slice(0, -1).join('/') }}{{ openPath.includes('/') ? '/' : '' }}</span><b>{{ openPath.split('/').pop() }}</b><i v-if="isDirty" class="dirty" title="Unsaved changes" /><span v-if="openCounts && (openCounts.added || openCounts.removed)" class="fstat"><i class="plus">+{{ openCounts.added ?? 0 }}</i><i class="minus">−{{ openCounts.removed ?? 0 }}</i></span></span>
         <span class="grow" />
         <span v-if="error" class="warn">{{ error }}</span>
         <span v-else-if="review && commentable && !commentable.isAllowed" class="nocmt" :title="`Commenting is off: ${commentable.reason ?? ''}`"><Icon name="message" :size="14" /><i class="off" /></span>
@@ -1101,6 +1364,69 @@ onBeforeUnmount(() => {
   height: auto;
   padding-top: 4px;
   padding-bottom: 4px;
+}
+.scope {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+  font-size: 11.5px;
+  color: var(--text-4);
+}
+.scope input {
+  flex: 1 1 120px;
+  min-width: 0;
+  height: 24px;
+  padding: 0 7px;
+  font: 12px var(--font-ui);
+  color: var(--text);
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  outline: none;
+}
+.scope input:focus {
+  border-color: var(--accent);
+}
+.scope button {
+  height: 24px;
+  padding: 0 8px;
+  font: 11.5px var(--font-ui);
+  color: var(--text-3);
+  background: none;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.scope button.on {
+  color: var(--text);
+  background: var(--bg-3);
+  border-color: var(--accent);
+}
+.scope button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.hithead {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 8px 0 2px;
+  padding: 0 8px;
+  font: 600 11px var(--font-ui);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-4);
+  background: none;
+  border: none;
+}
+.hithead.toggle {
+  width: 100%;
+  cursor: pointer;
+}
+.hithead.toggle:hover {
+  color: var(--text-2);
 }
 .hitpath {
   display: flex;
@@ -1238,6 +1564,76 @@ onBeforeUnmount(() => {
   color: var(--text);
   background: var(--bg-3);
   box-shadow: inset 2px 0 0 var(--accent);
+}
+.row.viewed .name,
+.row.viewed .dir {
+  opacity: 0.45;
+}
+.viewbox {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.plus {
+  font-style: normal;
+  font-weight: 600;
+  color: #3ee07f;
+}
+.minus {
+  font-style: normal;
+  font-weight: 600;
+  color: #ff7b72;
+}
+.totals {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 6px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.viewedn {
+  margin-left: auto;
+}
+.viewedn.done {
+  color: #3ee07f;
+}
+.stat {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-4);
+}
+.bar {
+  display: inline-flex;
+  gap: 1px;
+}
+.bar span {
+  width: 6px;
+  height: 8px;
+  border-radius: 1px;
+  background: var(--bg-4);
+}
+.bar span.a {
+  background: #3ee07f;
+}
+.bar span.r {
+  background: #ff7b72;
+}
+.fstat {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: 10px;
+  font-family: var(--font-ui);
+  font-size: 12px;
 }
 .ficon {
   color: var(--text-4);

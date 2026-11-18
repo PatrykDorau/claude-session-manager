@@ -170,7 +170,7 @@ declare global {
       getServerLog: (key: string) => string
       getServerProfile: (cwd: string) => ServerProfile
       listFiles: (cwd: string) => Promise<string[]>
-      searchCode: (cwd: string, query: string) => Promise<{ path: string; line: number; text: string }[]>
+      searchCode: (cwd: string, query: string, scope: string, isWord: boolean) => Promise<{ path: string; line: number; text: string }[]>
       listChanges: (cwd: string) => Promise<ChangedFile[]>
       listBranchChanges: (cwd: string) => Promise<BranchChanges>
       getExplainDoc: (key: string) => Promise<ExplainFile | null>

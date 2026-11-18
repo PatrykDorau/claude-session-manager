@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { safeRelPath, parseStatus, isNoisePath, parseNameStatus, isSafeRef, worktreeForBranch, parseStatusPaths, countChanges, parseGrep } from '../src/main/ide'
+import { safeRelPath, parseStatus, isNoisePath, parseNameStatus, isSafeRef, worktreeForBranch, parseStatusPaths, countChanges, parseGrep, searchArgs, parseNumstat, parseRawBlobs } from '../src/main/ide'
 import { languageOf, buildTree } from '../src/renderer/src/dashboard/code'
 
 describe('safeRelPath', () => {
@@ -137,5 +137,43 @@ describe('parseGrep', () => {
 
   it('stops at the limit', () => {
     expect(parseGrep(['a:1:x', 'b:2:y'].join(String.fromCharCode(10)), 1)).toHaveLength(1)
+  })
+})
+
+describe('searchArgs', () => {
+  const base = ['grep', '-n', '-I', '-i', '-F', '--untracked', '--full-name']
+  it('searches the whole repository by default', () => {
+    expect(searchArgs('foo', '', false)).toEqual([...base, '-e', 'foo'])
+  })
+  it('adds whole-word matching for names', () => {
+    expect(searchArgs('load', '', true)).toEqual([...base, '-w', '-e', 'load'])
+  })
+  it('turns a scope into a pathspec', () => {
+    expect(searchArgs('foo', ' ./src/javascript/ ', false)).toEqual([...base, '-e', 'foo', '--', 'src/javascript/'])
+    expect(searchArgs('foo', 'components', false)).toEqual([...base, '-e', 'foo', '--', ':(glob)**/components/**'])
+    expect(searchArgs('foo', '**/store/**', false)).toEqual([...base, '-e', 'foo', '--', ':(glob)**/store/**'])
+    expect(searchArgs('foo', '*.vue', false)).toEqual([...base, '-e', 'foo', '--', '*.vue'])
+    expect(searchArgs('foo', 'src/', false)).toEqual([...base, '-e', 'foo', '--', 'src/'])
+    expect(searchArgs('foo', 'src\\javascript\\app', false)).toEqual([...base, '-e', 'foo', '--', 'src/javascript/app'])
+  })
+})
+
+describe('parseRawBlobs', () => {
+  it('maps each path to its new blob id', () => {
+    const out = [':100644 100644 1111111 2222222 M\tsrc/a.ts', ':100644 100644 3333333 4444444 R087\tsrc/old.ts\tsrc/new.ts', ''].join('\n')
+    const blobs = parseRawBlobs(out)
+    expect(blobs.get('src/a.ts')).toBe('2222222')
+    expect(blobs.get('src/new.ts')).toBe('4444444')
+  })
+})
+
+describe('parseNumstat', () => {
+  it('reads added and removed lines per file, binary files and renames', () => {
+    const out = ['12\t3\tsrc/a.ts', '-\t-\timg/x.png', '4\t1\tsrc/{old => new}/b.ts', '2\t2\told.ts => new.ts', ''].join('\n')
+    const stats = parseNumstat(out)
+    expect(stats.get('src/a.ts')).toEqual({ added: 12, removed: 3 })
+    expect(stats.get('img/x.png')).toEqual({ added: null, removed: null })
+    expect(stats.get('src/new/b.ts')).toEqual({ added: 4, removed: 1 })
+    expect(stats.get('new.ts')).toEqual({ added: 2, removed: 2 })
   })
 })

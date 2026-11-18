@@ -30,6 +30,7 @@ import type { LocalHost, BranchChanges, ChangedFile, ExplainFile, ServerProfile,
 import { terminalMode, attachArgs, resumeBackgroundArgs, pasteInput, STOP_TURN, createOpenGuard, isHandedOff, type TerminalMode } from './terminal'
 import { readdir } from 'node:fs/promises'
 import { join as joinPath, dirname, basename } from 'node:path'
+import { createHash } from 'node:crypto'
 import { spawn, execFile, execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { release } from 'node:os'
@@ -109,7 +110,7 @@ import {
 import { worktreeRows, parseCount, isLinkedWorktreeGitFile, branchToDelete, nodeModulesAction } from './worktrees'
 import { taskContext, startPrompt, parseBgId, ticketPrefix, repoRoots, startArgs, claudeExeCandidates, attachCommand, repoForProject, reviewArgs, addressArgs, scoreArgs, insightsTestArgs, warmUpTask, mediaFiles } from './tasks'
 import { searchIssues, fetchDescription, postComment, fetchTransitions, doTransition, fetchTicketDetail, fetchPriority, releaseTransition } from './jira'
-import { isSafeRef, worktreeForBranch, parseStatusPaths, safeRelPath, parseStatus, isNoisePath, parseNameStatus, countChanges, parseGrep, type CodeMatch } from './ide'
+import { isSafeRef, worktreeForBranch, parseStatusPaths, safeRelPath, parseStatus, isNoisePath, parseNameStatus, countChanges, parseGrep, searchArgs, parseNumstat, parseRawBlobs, type CodeMatch, type LineCounts } from './ide'
 import { parseExplainDoc, explainArgs } from './explaindoc'
 import { fetchMrsToReview, enrichMrs, forgetApprovals, fetchDiffStats, fetchMrSha, isInProjects, reviewState, approvalState, carryEnrichment, pruneApproved, sortMrs } from './gitlab'
 import type { JiraTicket, MrFile, MrItem, MyMrs } from '../renderer/src/types'
@@ -1362,9 +1363,9 @@ const ideFiles = async (cwd: string): Promise<string[]> => {
 
 const MAX_SEARCH_MATCHES = 300
 
-const ideSearch = async (cwd: string, query: string): Promise<CodeMatch[]> => {
+const ideSearch = async (cwd: string, query: string, scope: string, isWord: boolean): Promise<CodeMatch[]> => {
   if (!query.trim()) return []
-  const res = await runGit(cwd, ['grep', '-n', '-I', '-i', '-F', '--untracked', '--full-name', '-e', query])
+  const res = await runGit(cwd, searchArgs(query, scope, isWord))
   return res.isOk ? parseGrep(res.out, MAX_SEARCH_MATCHES) : []
 }
 
@@ -1394,20 +1395,55 @@ const diffBase = async (cwd: string): Promise<{ base: string; target: string; br
 
 const ideChanges = async (cwd: string): Promise<BranchChanges> => {
   const { base, target, branch } = await diffBase(cwd)
-  const [tracked, untracked, status] = await Promise.all([
+  const [tracked, untracked, status, numstat, headNumstat] = await Promise.all([
     runGit(cwd, ['diff', '--name-status', base]),
     runGit(cwd, ['ls-files', '-o', '--exclude-standard']),
-    runGit(cwd, ['status', '--porcelain', '--untracked-files=all'])
+    runGit(cwd, ['status', '--porcelain', '--untracked-files=all']),
+    runGit(cwd, ['diff', '--numstat', base]),
+    runGit(cwd, ['diff', '--numstat', 'HEAD'])
   ])
+  const counts = parseNumstat(numstat.out)
+  const untrackedFiles = untracked.out
+    .split(/\r?\n/)
+    .filter((path) => path && !isNoisePath(path))
+    .map((path) => ({ path, state: 'untracked' as const, ...untrackedCounts(cwd, path), contentId: contentIdOf(cwd, path) }))
   const files = [
-    ...parseNameStatus(tracked.out),
-    ...untracked.out
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((path) => ({ path, state: 'untracked' as const }))
-  ].filter((f) => !isNoisePath(f.path))
+    ...parseNameStatus(tracked.out)
+      .filter((f) => !isNoisePath(f.path))
+      .map((f) => ({ ...f, ...(counts.get(f.path) ?? { added: null, removed: null }), contentId: contentIdOf(cwd, f.path) })),
+    ...untrackedFiles
+  ]
   const uncommitted = parseStatusPaths(status.out).filter((p) => !isNoisePath(p))
-  return { branch, target: target.replace(/^origin\//, ''), base: base.slice(0, 8), files, folder: cwd, uncommitted }
+  const uncommittedCounts = Object.fromEntries([
+    ...parseNumstat(headNumstat.out),
+    ...untrackedFiles.map((f): [string, LineCounts] => [f.path, { added: f.added, removed: f.removed }])
+  ])
+  return { branch, target: target.replace(/^origin\//, ''), base: base.slice(0, 8), files, folder: cwd, uncommitted, uncommittedCounts }
+}
+
+const contentIdOf = (cwd: string, path: string): string => {
+  const full = safeRelPath(cwd, path)
+  try {
+    if (!full) return 'unknown'
+    const info = statSync(full)
+    if (info.size > MAX_FILE_BYTES) return `${info.size}:${info.mtimeMs}`
+    return createHash('sha1').update(readFileSync(full)).digest('hex')
+  } catch {
+    return 'gone'
+  }
+}
+
+const untrackedCounts = (cwd: string, path: string): LineCounts => {
+  const full = safeRelPath(cwd, path)
+  try {
+    if (!full || statSync(full).size > MAX_FILE_BYTES) return { added: null, removed: 0 }
+    const bytes = readFileSync(full)
+    if (bytes.subarray(0, 8000).includes(0)) return { added: null, removed: null }
+    const text = bytes.toString('utf8')
+    return { added: text ? text.split(/\r?\n/).length - (/\r?\n$/.test(text) ? 1 : 0) : 0, removed: 0 }
+  } catch {
+    return { added: null, removed: 0 }
+  }
 }
 
 const refFetchedAt = new Map<string, number>()
@@ -1434,8 +1470,17 @@ const ideRefChanges = async (cwd: string, source: string, target: string): Promi
   await fetchRefs(cwd, source, target)
   const base = await refBase(cwd, source, target)
   if (!base) return { branch: source, target, base: '', files: [], isReadOnly: true }
-  const diff = await runGit(cwd, ['diff', '--name-status', base, `origin/${source}`])
-  return { branch: source, target, base: base.slice(0, 8), files: parseNameStatus(diff.out).filter((f) => !isNoisePath(f.path)), isReadOnly: true }
+  const [diff, numstat, raw] = await Promise.all([
+    runGit(cwd, ['diff', '--name-status', base, `origin/${source}`]),
+    runGit(cwd, ['diff', '--numstat', base, `origin/${source}`]),
+    runGit(cwd, ['diff', '--raw', base, `origin/${source}`])
+  ])
+  const counts = parseNumstat(numstat.out)
+  const blobs = parseRawBlobs(raw.out)
+  const files = parseNameStatus(diff.out)
+    .filter((f) => !isNoisePath(f.path))
+    .map((f) => ({ ...f, ...(counts.get(f.path) ?? { added: null, removed: null }), contentId: blobs.get(f.path) ?? null }))
+  return { branch: source, target, base: base.slice(0, 8), files, isReadOnly: true }
 }
 
 const ideReadRef = async (cwd: string, source: string, target: string, rel: string, isBase: boolean): Promise<string | null> => {
@@ -1935,7 +1980,7 @@ const prepareTaskBrowser = (key: string, folder: string): string | null => {
 const openInChrome = async (url: string, key?: string | null): Promise<void> => {
   const exe = existsSync(CHROME_PATH) ? CHROME_PATH : 'chrome.exe'
   if (key) await seedProfile(CHROME_PROFILE, taskChromeProfile(key))
-  const args = key ? chromeArgs(taskChromeProfile(key), chromePortFor(key), url) : chromeArgs(CHROME_PROFILE, CHROME_DEBUG_PORT, url)
+  const args = key ? chromeArgs(taskChromeProfile(key), chromePortFor(key), url, key.toUpperCase()) : chromeArgs(CHROME_PROFILE, CHROME_DEBUG_PORT, url)
   spawn(exe, args, { detached: true, stdio: 'ignore', shell: false }).unref()
 }
 
@@ -2478,13 +2523,6 @@ const loadRenderer = (win: BrowserWindow, hash?: string): void => {
   else void win.loadFile(join(__dirname, '../renderer/index.html'), hash ? { hash } : undefined)
 }
 
-const jumpToInbox = (): void => {
-  const isLoaded = !!dashboardWindow && !dashboardWindow.isDestroyed() && !dashboardWindow.webContents.isLoading()
-  openDashboard()
-  if (isLoaded) dashboardWindow?.webContents.send('inbox-next')
-  else pendingInboxNext = true
-}
-
 const openDashboard = (): void => {
   if (dashboardWindow) {
     if (dashboardWindow.isMinimized()) dashboardWindow.restore()
@@ -3006,7 +3044,7 @@ if (!app.requestSingleInstanceLock()) {
       startServer(key, cwd, spec, port, cols, rows)
   )
   ipcMain.handle('ide-files', (_e, cwd: string) => ideFiles(cwd))
-  ipcMain.handle('ide-search', (_e, cwd: string, query: string) => ideSearch(cwd, query))
+  ipcMain.handle('ide-search', (_e, cwd: string, query: string, scope: string, isWord: boolean) => ideSearch(cwd, query, scope, isWord))
   ipcMain.handle('ide-status', (_e, cwd: string) => ideStatus(cwd))
   ipcMain.handle('ide-changes', (_e, cwd: string) => ideChanges(cwd))
   ipcMain.handle('ide-ref-changes', (_e, cwd: string, source: string, target: string) => ideRefChanges(cwd, source, target))
@@ -3484,8 +3522,6 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
   globalShortcut.register('CommandOrControl+Shift+Space', () => {
     mainWindow.isVisible() ? mainWindow.hide() : mainWindow.show()
   })
-  isJumpKeyReady = globalShortcut.register('CommandOrControl+Alt+Space', jumpToInbox)
-  if (!isJumpKeyReady) console.error('[diag] Ctrl+Alt+Space is taken; the jump key is off')
 
   if (!process.argv.includes('--hidden')) openView(appState.settings.startView)
 
