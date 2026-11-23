@@ -5,6 +5,8 @@ import {
   addLog,
   adoptJob,
   withAdopted,
+  withAutonomy,
+  type Autonomy,
   isAdopted,
   handAddressToLiveTicket,
   handoffStopAction,
@@ -65,6 +67,20 @@ describe('orchestrator pure helpers', () => {
     for (let i = 1; i <= 25; i++) job = addLog(job, `entry ${i}`, i)
     expect(job.log.length).toBe(LOG_LIMIT)
     expect(job.log[job.log.length - 1].text).toBe('entry 25')
+  })
+})
+
+describe('withAutonomy', () => {
+  it('switches any job between the three levels and logs it', () => {
+    const job = withAutonomy({ ...validJob, autonomy: 'manual' }, 'routine', 9)
+    expect(job.autonomy).toBe('routine')
+    expect(job.log.at(-1)).toEqual({ at: 9, text: 'autonomy: routine' })
+    expect(withAutonomy({ ...validJob, kind: 'review', autonomy: 'routine' }, 'autonomous', 9).autonomy).toBe('autonomous')
+  })
+
+  it('returns the same job when nothing changes or the level is unknown', () => {
+    expect(withAutonomy(validJob, validJob.autonomy, 9)).toBe(validJob)
+    expect(withAutonomy(validJob, 'bogus' as Autonomy, 9)).toBe(validJob)
   })
 })
 
@@ -265,8 +281,8 @@ describe('newJob', () => {
     expect(job).toMatchObject({ id: 'ticket:SOFKRS-1', state: 'queued', autonomy: 'autonomous', lastSeenNoteId: null, createdAt: 5 })
   })
 
-  it('never gives a ticket the routine level', () => {
-    expect(newJob({ kind: 'ticket', key: 'K', title: '', repo: null, autonomy: 'routine' }, 1, false).autonomy).toBe('manual')
+  it('gives a ticket the permissions-only routine level when asked', () => {
+    expect(newJob({ kind: 'ticket', key: 'K', title: '', repo: null, autonomy: 'routine' }, 1, false).autonomy).toBe('routine')
   })
 
   it('sets MR jobs to routine', () => {

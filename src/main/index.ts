@@ -181,6 +181,7 @@ import {
   isJobOver,
   adoptJob,
   withAdopted,
+  withAutonomy,
   isAdopted,
   isPromptSkipping,
   jobId,
@@ -2387,11 +2388,7 @@ const startJobs = (requests: unknown): { error: string | null } => {
 }
 
 const setJobAutonomy = (id: string, autonomy: Autonomy): void =>
-  updateJob(id, (j) =>
-    j.kind !== 'ticket' || (autonomy !== 'manual' && autonomy !== 'autonomous') || j.autonomy === autonomy
-      ? j
-      : addLog({ ...j, autonomy }, `autonomy: ${autonomy}`, Date.now())
-  )
+  updateJob(id, (j) => withAutonomy(j, autonomy, Date.now()))
 
 const forgetJob = (id: string): void => {
   for (const map of [launchingJobs, jobStatus, turnStarts, phaseSince, clearSentAt, clearMarks, waitMarks]) map.delete(id)
@@ -2415,6 +2412,17 @@ const adoptSession = (sessionId: string): { error: string | null } => {
   if (!next) return { error: `A running job already handles ${ticket}` }
   forgetJob(job.id)
   setJobs(next)
+  return { error: null }
+}
+
+const setSessionAutonomy = (sessionId: string, autonomy: Autonomy): { error: string | null } => {
+  const jobOfSession = (): Job | undefined => appState.orchestrator.jobs.find((j) => j.sessionId === sessionId)
+  if (!jobOfSession()) {
+    const adopted = adoptSession(sessionId)
+    if (adopted.error) return adopted
+  }
+  const job = jobOfSession()
+  if (job) setJobAutonomy(job.id, autonomy)
   return { error: null }
 }
 
@@ -3769,6 +3777,7 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle('orchestrator-set-autonomy', (_e, id: string, autonomy: Autonomy) => setJobAutonomy(id, autonomy))
   ipcMain.handle('orchestrator-remove', (_e, id: string) => removeJob(id))
   ipcMain.handle('orchestrator-adopt', (_e, sessionId: string) => adoptSession(sessionId))
+  ipcMain.handle('orchestrator-session-autonomy', (_e, sessionId: string, autonomy: Autonomy) => setSessionAutonomy(sessionId, autonomy))
   ipcMain.handle('orchestrator-get', () => appState.orchestrator)
   ipcMain.handle('local-hosts', () => listLocalHosts())
   ipcMain.handle('close-chrome', async (_e, key: string | null) => ({ error: await closeChrome(typeof key === 'string' ? key : null) }))

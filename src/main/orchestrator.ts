@@ -218,7 +218,7 @@ export const newJob = (request: JobRequest, now: number, isThreadOpen: boolean):
   key: request.key,
   title: request.title,
   repo: request.repo,
-  autonomy: request.kind !== 'ticket' ? 'routine' : request.autonomy === 'autonomous' ? 'autonomous' : 'manual',
+  autonomy: request.kind !== 'ticket' ? 'routine' : AUTONOMIES.includes(request.autonomy) ? request.autonomy : 'manual',
   state: request.kind === 'watch' ? 'working' : 'queued',
   sessionId: null,
   handoffPhase: 'none',
@@ -249,7 +249,10 @@ export const adoptJob = (session: { id: string; ticket: string; repo: string | n
   }
 }
 
-export const isAdopted = (jobs: Job[], sessionId: string): boolean => jobs.some((j) => j.sessionId === sessionId)
+export const withAutonomy = (job: Job, autonomy: Autonomy, now: number): Job =>
+  !AUTONOMIES.includes(autonomy) || job.autonomy === autonomy ? job : addLog({ ...job, autonomy }, `autonomy: ${autonomy}`, now)
+
+export const isAdopted =(jobs: Job[], sessionId: string): boolean => jobs.some((j) => j.sessionId === sessionId)
 
 export const withAdopted = (jobs: Job[], job: Job): Job[] | null => {
   const existing = jobs.find((j) => j.id === job.id)

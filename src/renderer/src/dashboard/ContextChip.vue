@@ -19,25 +19,28 @@ onUnmounted(stopClock)
 const isIdle = computed(() => isIdleLarge(props.session, now.value))
 const level = computed(() => (isIdle.value && contextLevel(props.session.contextTokens) === 'ok' ? 'warn' : contextLevel(props.session.contextTokens)))
 const isDanger = computed(() => level.value === 'danger')
-const isClearShown = computed(() => props.mode === 'attach' && !!props.session.ticket && !isSideSessionName(props.session.name) && (isDanger.value || isIdle.value || phase.value !== 'none'))
+const isClearPossible = computed(() => props.mode === 'attach' && !!props.session.ticket && !isSideSessionName(props.session.name))
+const isUrgent = computed(() => isDanger.value || isIdle.value || phase.value !== 'none')
 const isBusy = computed(() => props.session.status === 'working' || props.session.status === 'waiting')
-const isClearDisabled = computed(() => phase.value === 'blocked' || (phase.value === 'none' && isBusy.value))
+const isClearDisabled = computed(() => !isClearPossible.value || phase.value === 'blocked' || (phase.value === 'none' && isBusy.value))
 const clearLabel = computed(() => {
   if (phase.value === 'handoff') return 'Writing handoff… (cancel)'
   if (phase.value === 'blocked') return 'Handoff needs you'
   return 'Clear + handoff'
 })
-const isCompactShown = computed(() => isDanger.value && props.mode === 'attach')
-const isHandOffShown = computed(() => isDanger.value && !!props.session.ticket)
-const isMenuAvailable = computed(() => isCompactShown.value || isHandOffShown.value || isClearShown.value)
+const isCompactPossible = computed(() => props.mode === 'attach')
+const isHandOffPossible = computed(() => !!props.session.ticket)
 const isMenuOpen = ref(false)
+const ATTACH_HINT = 'Open the session in this app first'
+const compactTitle = computed(() => (isCompactPossible.value ? 'Run /compact in this session' : ATTACH_HINT))
+const handOffTitle = computed(() => (isHandOffPossible.value ? 'Write handoff.md for a fresh session' : 'The session has no ticket'))
 const phaseText = computed(() => {
   if (phase.value === 'handoff') return 'Writing handoff…'
   if (phase.value === 'blocked') return 'Handoff needs you'
   return ''
 })
 const toggleMenu = (): void => {
-  if (isMenuAvailable.value) isMenuOpen.value = !isMenuOpen.value
+  isMenuOpen.value = !isMenuOpen.value
 }
 const closeMenu = (): void => {
   isMenuOpen.value = false
@@ -49,6 +52,7 @@ const runItem = (run: () => void): void => {
 }
 const clearTitle = computed(() => {
   if (phase.value === 'handoff') return 'Cancel: do not /clear after the handoff'
+  if (!isClearPossible.value) return props.session.ticket ? ATTACH_HINT : 'The session has no ticket'
   if (isBusy.value && phase.value === 'none') return 'Wait until the session is idle'
   return 'Write handoff.md, /clear, then start again from the handoff'
 })
@@ -116,15 +120,15 @@ const handOff = (): void => {
 <template>
   <span v-if="level !== 'none'" class="context">
     <span class="peek" @mouseenter="openPeek" @mouseleave="closePeek">
-      <button class="chip" :class="[level, { menu: isMenuAvailable }]" :title="chipTitle" :disabled="!isMenuAvailable" @click="toggleMenu">
+      <button class="chip menu" :class="level" :title="chipTitle" @click="toggleMenu">
         {{ formatContext(session.contextTokens) }} context<template v-if="phaseText"> · {{ phaseText }}</template>
-        <span v-if="isMenuAvailable" class="dot" />
+        <span v-if="isUrgent" class="dot" />
       </button>
       <span v-if="isMenuOpen" class="scrim" @click="closeMenu" />
       <span v-if="isMenuOpen" class="actions">
-        <button v-if="isCompactShown" class="item" title="Run /compact in this session" @click="runItem(compact)">Compact</button>
-        <button v-if="isHandOffShown" class="item" title="Write handoff.md for a fresh session" @click="runItem(handOff)">Hand off</button>
-        <button v-if="isClearShown" class="item" :title="clearTitle" :disabled="isClearDisabled" @click="runItem(clearAndHandOff)">{{ clearLabel }}</button>
+        <button class="item" :title="compactTitle" :disabled="!isCompactPossible" @click="runItem(compact)">Compact</button>
+        <button class="item" :title="handOffTitle" :disabled="!isHandOffPossible" @click="runItem(handOff)">Hand off</button>
+        <button class="item" :title="clearTitle" :disabled="isClearDisabled && phase !== 'handoff'" @click="runItem(clearAndHandOff)">{{ clearLabel }}</button>
       </span>
       <span v-if="isPeekOpen && !isMenuOpen" class="pop">
         <span class="prow main"><b>Main session</b><em>{{ formatContext(session.contextTokens) }}</em></span>

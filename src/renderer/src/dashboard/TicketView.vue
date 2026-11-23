@@ -24,6 +24,9 @@ import ServerPanel from './ServerPanel.vue'
 import StatusMenu from './StatusMenu.vue'
 import Splitter from './Splitter.vue'
 import ContextChip from './ContextChip.vue'
+import AutonomySwitch from './AutonomySwitch.vue'
+import type { Autonomy, Job, OrchestratorState } from '../../../main/orchestrator'
+import { readPins, togglePin, writePins } from './commandpanel'
 import { clampSize, readSize, writeSize, readFlag, uncommittedCount } from './dashboard'
 import MenuButton from './MenuButton.vue'
 import Icon from './Icon.vue'
@@ -110,6 +113,30 @@ const allSessions = computed(() =>
 )
 const roleOf = (s: Session): SessionRole => sessionRole(s, props.row.key, mrSession.value?.id ?? null)
 const session = computed(() => allSessions.value.find((s) => s.id === followId(allSessions.value, pickedId.value)) ?? defaultSession())
+const panelPins = ref<string[]>(readPins())
+const isPinned = computed(() => !!session.value && panelPins.value.includes(session.value.id))
+const refreshPins = (): void => {
+  panelPins.value = readPins()
+}
+onActivated(refreshPins)
+const togglePanelPin = (): void => {
+  if (!session.value) return
+  panelPins.value = togglePin(readPins(), session.value.id)
+  writePins(panelPins.value)
+}
+const orchJobs = ref<Job[]>([])
+const sessionJob = computed(() => orchJobs.value.find((j) => !!session.value && j.sessionId === session.value.id) ?? null)
+const autonomyError = ref<string | null>(null)
+const applyOrchestrator = (state: OrchestratorState): void => {
+  orchJobs.value = state.jobs
+}
+const stopOrchestrator = window.api.onOrchestrator(applyOrchestrator)
+void window.api.getOrchestrator().then(applyOrchestrator)
+onBeforeUnmount(stopOrchestrator)
+const setSessionAutonomy = async (autonomy: Autonomy): Promise<void> => {
+  if (!session.value) return
+  autonomyError.value = (await window.api.setSessionAutonomy(session.value.id, autonomy)).error
+}
 watch(() => session.value?.id ?? null, (id) => emitViewing('viewing', id), { immediate: true })
 onActivated(() => emitViewing('viewing', session.value?.id ?? null))
 onDeactivated(() => emitViewing('viewing', null))
@@ -476,6 +503,15 @@ onBeforeUnmount(() => {
         <span class="grow" />
         <span v-if="facts.length" class="facts">{{ facts.join('  ·  ') }}</span>
         <ContextChip v-if="session" :session="session" :mode="mode" />
+        <button v-if="session" class="btn" :class="{ on: isPinned }" :title="isPinned ? 'Unpin from the command panel grid' : 'Pin this session to the command panel grid'" @click="togglePanelPin"><Icon name="dashboard" :size="14" />{{ isPinned ? 'Pinned' : 'Pin' }}</button>
+        <AutonomySwitch
+          v-if="session?.isLive"
+          :value="sessionJob?.autonomy ?? null"
+          :is-disabled="!sessionJob && !session.ticket"
+          :disabled-hint="autonomyError ?? 'Only a session with a ticket can be orchestrated'"
+          :title="autonomyError ?? 'Orchestrator autonomy for this session'"
+          @change="setSessionAutonomy"
+        />
         <div v-if="tab === 'work'" class="seg" title="Show or hide the panes">
           <button :class="{ on: isCodeOpen }" @click="toggleCode"><Icon name="code" :size="14" />Code</button>
           <button :class="{ on: isClaudeOpen }" @click="toggleClaude"><Icon name="terminal" :size="14" />Claude</button>

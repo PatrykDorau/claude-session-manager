@@ -19,6 +19,7 @@ import CatalogView from './CatalogView.vue'
 import InsightsView from './InsightsView.vue'
 import FlowView from './FlowView.vue'
 import OrchestratorView from './OrchestratorView.vue'
+import { mrOfSession } from './commandpanel'
 import StartJobsDialog from './StartJobsDialog.vue'
 import type { Job, OrchestratorState } from '../../../main/orchestrator'
 import { attentionCount } from './orchestrator'
@@ -166,9 +167,11 @@ const openJob = (job: Job): void => {
   else openMr(job.key, job.sessionId)
 }
 const openSessionTask = (session: Session): void => {
+  const review = mrOfSession(session, myMrs.value.items)
+  if (isListHidden.value) toggleList()
+  if (review) return openMr(review.key, session.id)
   const key = session.ticket?.toUpperCase()
   if (!key) return
-  if (isListHidden.value) toggleList()
   openTicket(key)
   tabRequest.value = { key, tab: 'work', sessionId: session.id, at: Date.now() }
 }
@@ -340,19 +343,10 @@ onBeforeUnmount(() => {
       />
     </div>
     <Splitter v-if="!isListHidden && !isHostsPage" @resize="resizeList" @done="saveListWidth" />
-    <OrchestratorView
-      v-if="page === 'today'"
-      :tickets="myTasks.tickets"
-      :mrs="myMrs.items"
-      :my-name="myMrs.myName ?? null"
-      :sessions="sessions"
-      @open="openJob"
-      @open-task="openSessionTask"
-    />
-    <FlowView v-else-if="page === 'flow'" :rows="rows" @open-ticket="openTicket" />
+    <FlowView v-if="page === 'flow'" :rows="rows" @open-ticket="openTicket" />
     <InsightsView v-else-if="page === 'insights'" />
     <CatalogView v-else-if="page === 'catalog'" />
-    <HostsView v-else-if="isHostsPage" :sessions="sessions" @open-ticket="openTicket" />
+    <HostsView v-else-if="page === 'hosts'" :sessions="sessions" @open-ticket="openTicket" />
     <AgentView
       v-else-if="isTreePage && selectedGroup"
       :group="selectedGroup"
@@ -364,9 +358,19 @@ onBeforeUnmount(() => {
       <h3>No supervisor selected</h3>
       <p>Pick a session on the left to see the agents it dispatched, what each one is doing and its full run.</p>
     </div>
-    <KeepAlive :max="10">
+    <KeepAlive :max="11">
+      <OrchestratorView
+        v-if="page === 'today'"
+        key="command-panel"
+        :tickets="myTasks.tickets"
+        :mrs="myMrs.items"
+        :my-name="myMrs.myName ?? null"
+        :sessions="sessions"
+        @open="openJob"
+        @open-task="openSessionTask"
+      />
       <MrView
-        v-if="isMrPage && selectedMr"
+        v-else-if="isMrPage && selectedMr"
         :key="`mr-${selectedMr.key}`"
         :row="selectedMr"
         :sessions="sessions"

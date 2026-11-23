@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { attentionCount, ticketPickRows, mrPickRows, stateLabel } from '../src/renderer/src/dashboard/orchestrator'
+import { attentionCount, ticketPickRows, mrPickRows, stateLabel, liveLast, activityFeed, activityTone } from '../src/renderer/src/dashboard/orchestrator'
 import type { MrRow } from '../src/renderer/src/types'
 import type { Job } from '../src/main/orchestrator'
 
@@ -56,5 +56,34 @@ describe('attentionCount', () => {
   it('counts jobs waiting for you or for a handoff', () => {
     const jobs = (['waiting', 'handoff', 'working', 'finished', 'queued', 'waiting'] as const).map((state) => ({ state }) as Job)
     expect(attentionCount(jobs)).toBe(3)
+  })
+})
+
+describe('liveLast', () => {
+  it('moves rows that already have a live session to the end and keeps the order otherwise', () => {
+    const row = (key: string, isLive: boolean) => ({ kind: 'ticket' as const, key, title: '', repo: null, autonomy: 'manual' as const, isLive })
+    expect(liveLast([row('a', true), row('b', false), row('c', true), row('d', false)]).map((r) => r.key)).toEqual(['b', 'd', 'a', 'c'])
+  })
+})
+
+describe('activityFeed', () => {
+  const j = (id: string, key: string, log: { at: number; text: string }[]): Job => ({ id, key, kind: 'ticket', log }) as Job
+  const jobs = [j('ticket:A-1', 'A-1', [{ at: 1, text: 'queued' }, { at: 5, text: 'auto: 1 — safe' }]), j('ticket:A-2', 'A-2', [{ at: 3, text: 'adopted' }])]
+
+  it('merges every job log, newest first', () => {
+    expect(activityFeed(jobs, null).map((e) => `${e.key}@${e.at}:${e.text}`)).toEqual(['A-1@5:auto: 1 — safe', 'A-2@3:adopted', 'A-1@1:queued'])
+  })
+
+  it('keeps only the chosen job', () => {
+    expect(activityFeed(jobs, 'ticket:A-2').map((e) => e.text)).toEqual(['adopted'])
+  })
+})
+
+describe('activityTone', () => {
+  it('tells auto answers, escalations and failures apart', () => {
+    expect(activityTone('auto: 1 — safe')).toBe('auto')
+    expect(activityTone('escalated: needs your answer')).toBe('ask')
+    expect(activityTone('start failed: x')).toBe('fail')
+    expect(activityTone('queued')).toBe('info')
   })
 })
