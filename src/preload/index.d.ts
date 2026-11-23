@@ -86,6 +86,8 @@ declare global {
     mrProjects: string
     startView: 'ask' | 'sidebar' | 'dashboard'
     mrMention: string
+    orchestratorMaxParallel: number
+    orchestratorBots: string
       }
       setSettings: (patch: {
         jiraBase?: string
@@ -105,6 +107,8 @@ declare global {
     mrProjects?: string
     startView?: 'ask' | 'sidebar' | 'dashboard'
     mrMention?: string
+    orchestratorMaxParallel?: number
+    orchestratorBots?: string
       }) => void
       setFinished: (id: string, on: boolean) => void
       syncJira: () => Promise<void>
@@ -230,6 +234,11 @@ declare global {
       postMrComment: (key: string, body: string) => Promise<{ error: string | null; isCancelled: boolean }>
       startReview: (key: string) => Promise<{ error: string | null; sessionId?: string }>
       startAddress: (key: string) => Promise<{ error: string | null; sessionId?: string }>
+      startJobs: (jobs: import('../main/orchestrator').JobRequest[]) => Promise<{ error: string | null }>
+      setJobAutonomy: (id: string, autonomy: import('../main/orchestrator').Autonomy) => Promise<void>
+      removeJob: (id: string) => Promise<void>
+      getOrchestrator: () => Promise<import('../main/orchestrator').OrchestratorState>
+      onOrchestrator: (cb: (state: import('../main/orchestrator').OrchestratorState) => void) => () => void
       setAllProjects: (isAll: boolean) => void
       getStarred: () => string[]
       setStarred: (key: string, isOn: boolean) => void

@@ -1,6 +1,31 @@
 import { describe, it, expect } from 'vitest'
-import { filterMrs, reviewLabel, findReviewSession, findWorkSession, findAddressSession, findMineSession, mergeHint, groupMrs } from '../src/renderer/src/dashboard/mrs'
+import { filterMrs, reviewLabel, findReviewSession, findWorkSession, findAddressSession, findMineSession, mergeHint, groupMrs, mrMark, mergedLast } from '../src/renderer/src/dashboard/mrs'
 import type { MrRow, Session } from '../src/renderer/src/types'
+
+describe('approvals filter and marks', () => {
+  const row = (key: string, over: Partial<MrRow>): MrRow =>
+    ({ key, title: 't', iid: 1, sourceBranch: 'b', ticket: null, projectName: 'p', author: 'A', approvals: 0, isApprovedByMe: false, state: 'opened', review: 'not-reviewed', ...over }) as MrRow
+  const base = { query: '', project: '', author: '', isUnreviewedOnly: false, myName: null, isMineHidden: false }
+
+  it('keeps only merge requests with fewer than 2 approvals', () => {
+    const rows = [row('a', { approvals: 0 }), row('b', { approvals: 1 }), row('c', { approvals: 2 })]
+    expect(filterMrs(rows, { ...base, isFewApprovalsOnly: true }).map((r) => r.key)).toEqual(['a', 'b'])
+    expect(filterMrs(rows, base)).toHaveLength(3)
+  })
+
+  it('marks merged, approved by review state or by my approval, merged first', () => {
+    expect(mrMark(row('a', { state: 'merged' }))).toBe('merged')
+    expect(mrMark(row('a', { review: 'approved' }))).toBe('approved')
+    expect(mrMark(row('a', { isApprovedByMe: true }))).toBe('approved')
+    expect(mrMark(row('a', { state: 'merged', isApprovedByMe: true }))).toBe('merged')
+    expect(mrMark(row('a', {}))).toBe(null)
+  })
+
+  it('moves merged merge requests to the end and keeps the rest in order', () => {
+    const rows = [row('m1', { state: 'merged' }), row('a', {}), row('m2', { state: 'merged' }), row('b', {})]
+    expect(mergedLast(rows).map((r) => r.key)).toEqual(['a', 'b', 'm1', 'm2'])
+  })
+})
 
 const mr = (over: Partial<MrRow>): MrRow => ({
   key: '7!1',

@@ -77,6 +77,7 @@ export interface JiraTicket {
   summary: string
   status: string
   priority?: string
+  type?: string
 }
 
 export type TerminalMode = 'attach' | 'resume' | 'vscode' | 'elsewhere'
@@ -131,6 +132,7 @@ export interface MrItem {
   approvals: number
   isApprovedByMe: boolean
   isDraft: boolean
+  state: 'opened' | 'merged' | 'closed'
 }
 
 export type MrReviewState = 'new-changes' | 'not-reviewed' | 'reviewed' | 'approved'
@@ -499,6 +501,7 @@ export interface MrDraftNote {
   body: string
   anchor: MrDiscussion['anchor']
   replyTo: string | null
+  isResolving: boolean
 }
 
 export interface MrCommentable {
@@ -516,7 +519,7 @@ export interface MrLineAnchor {
 }
 
 export type MrReviewAction =
-  | { kind: 'draft-add'; body: string; anchor?: MrLineAnchor; replyTo?: string }
+  | { kind: 'draft-add'; body: string; anchor?: MrLineAnchor; replyTo?: string; isResolving?: boolean }
   | { kind: 'draft-edit'; id: number; body: string }
   | { kind: 'draft-delete'; id: number }
   | { kind: 'submit-review'; count: number }

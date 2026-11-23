@@ -1,5 +1,27 @@
 import { describe, it, expect } from 'vitest'
-import { pickTicketMr, parseMrState, parseApprovals, parseDiscussions, parseMrOverview, snippetAround, snippetFromDiff, diffRows } from '../src/main/mractions'
+import { pickTicketMr, parseMrState, parseApprovals, parseDiscussions, parseMrOverview, snippetAround, snippetFromDiff, diffRows, parseDraftNotes, draftNoteBody } from '../src/main/mractions'
+
+describe('draft note resolve', () => {
+  it('reads resolve_discussion into isResolving', () => {
+    expect(parseDraftNotes([{ id: 1, note: 'x', discussion_id: 'd', resolve_discussion: true }])[0].isResolving).toBe(true)
+  })
+
+  it('treats a draft without the field as not resolving', () => {
+    expect(parseDraftNotes([{ id: 1, note: 'x' }])[0].isResolving).toBe(false)
+  })
+
+  it('resolves the thread of a reply', () => {
+    expect(draftNoteBody({ body: 'x', replyTo: 'd', isResolving: true })).toEqual({ note: 'x', in_reply_to_discussion_id: 'd', resolve_discussion: true })
+  })
+
+  it('sends no resolve flag for a note without a thread', () => {
+    expect(draftNoteBody({ body: 'x', isResolving: true })).toEqual({ note: 'x' })
+  })
+
+  it('keeps the thread open when resolving is off', () => {
+    expect(draftNoteBody({ body: 'x', replyTo: 'd', isResolving: false })).toEqual({ note: 'x', in_reply_to_discussion_id: 'd', resolve_discussion: false })
+  })
+})
 
 describe('parseMrState', () => {
   it('reads merge readiness, pipeline, conflicts and how far behind it is', () => {

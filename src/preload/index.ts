@@ -142,6 +142,8 @@ const api = {
     mrProjects: string
     startView: 'ask' | 'sidebar' | 'dashboard'
     mrMention: string
+    orchestratorMaxParallel: number
+    orchestratorBots: string
   } => ipcRenderer.sendSync('get-settings'),
   setSettings: (patch: {
     jiraBase?: string
@@ -161,6 +163,8 @@ const api = {
     mrProjects?: string
     startView?: 'ask' | 'sidebar' | 'dashboard'
     mrMention?: string
+    orchestratorMaxParallel?: number
+    orchestratorBots?: string
   }): void => {
     ipcRenderer.send('set-settings', patch)
   },
@@ -361,6 +365,18 @@ const api = {
     ipcRenderer.invoke('mr-commentable', key, folder, isReadOnly, path),
   startReview: (key: string): Promise<{ error: string | null; sessionId?: string }> => ipcRenderer.invoke('start-review', key),
   startAddress: (key: string): Promise<{ error: string | null; sessionId?: string }> => ipcRenderer.invoke('mr-start-address', key),
+  startJobs: (jobs: import('../main/orchestrator').JobRequest[]): Promise<{ error: string | null }> => ipcRenderer.invoke('orchestrator-start', jobs),
+  setJobAutonomy: (id: string, autonomy: import('../main/orchestrator').Autonomy): Promise<void> =>
+    ipcRenderer.invoke('orchestrator-set-autonomy', id, autonomy),
+  removeJob: (id: string): Promise<void> => ipcRenderer.invoke('orchestrator-remove', id),
+  getOrchestrator: (): Promise<import('../main/orchestrator').OrchestratorState> => ipcRenderer.invoke('orchestrator-get'),
+  onOrchestrator: (cb: (state: import('../main/orchestrator').OrchestratorState) => void): (() => void) => {
+    const handler = (_e: unknown, state: import('../main/orchestrator').OrchestratorState): void => cb(state)
+    ipcRenderer.on('orchestrator', handler)
+    return () => {
+      ipcRenderer.removeListener('orchestrator', handler)
+    }
+  },
   setAllProjects: (isAll: boolean): void => ipcRenderer.send('set-mr-projects-all', isAll),
   getStarred: (): string[] => ipcRenderer.sendSync('get-starred'),
   setStarred: (key: string, isOn: boolean): void => ipcRenderer.send('set-starred', key, isOn),

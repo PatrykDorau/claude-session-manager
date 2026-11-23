@@ -11,6 +11,8 @@ import Icon from './Icon.vue'
 import { useManualOrder } from './useOrder'
 import { splitStarred, starredBlock, sortByStatus } from './order'
 import SessionBadge from './SessionBadge.vue'
+import SessionWorkList from './SessionWorkList.vue'
+import { sessionWorkRows, WITH_SESSION_FLAG } from './sessionwork'
 import type { Session } from '../types'
 
 const props = defineProps<{
@@ -20,6 +22,7 @@ const props = defineProps<{
   jiraError: 'no-token' | 'failed' | null
   mrs?: MrRow[]
   myName?: string | null
+  sessions?: Session[]
 }>()
 const emit = defineEmits<{ select: [key: string]; settings: []; 'open-mr': [key: string] }>()
 
@@ -38,6 +41,12 @@ const setTodayOnly = (next: boolean): void => {
   isTodayOnly.value = next
   writeSize('dash.todayTickets', next)
 }
+const isWithSession = ref(readFlag(WITH_SESSION_FLAG))
+const setWithSession = (next: boolean): void => {
+  isWithSession.value = next
+  writeSize(WITH_SESSION_FLAG, next)
+}
+const workRows = computed(() => sessionWorkRows(props.rows, props.mrs ?? [], props.sessions ?? [], props.myName ?? null))
 const { now, finished, toggleFinish } = useWorkday()
 const isFinished = (row: TaskRow): boolean => isTodayOnly.value && finished.value.includes(row.key)
 const matching = computed(() => filterRows(props.rows, query.value).filter((r) => !isTodayOnly.value || isActiveToday(r.sessions, now.value)))
@@ -108,7 +117,10 @@ const toggleOutside = (key: string): void => {
     <div class="filters">
       <label title="Only tickets with a Claude session active since midnight"><input :checked="isTodayOnly" type="checkbox" @change="setTodayOnly(($event.target as HTMLInputElement).checked)" />Today</label>
       <label title="Sort by session status: needs you, working, idle, then tickets without a session"><input :checked="isStatusSort" type="checkbox" @change="setStatusSort(($event.target as HTMLInputElement).checked)" />By status</label>
+      <label title="One list of tickets, your merge requests and other people's merge requests that have a running Claude session"><input :checked="isWithSession" type="checkbox" @change="setWithSession(($event.target as HTMLInputElement).checked)" />With session</label>
     </div>
+    <SessionWorkList v-if="isWithSession" :rows="workRows" :selected-key="selectedKey" @select-ticket="emit('select', $event)" @select-mr="emit('open-mr', $event)" />
+    <template v-else>
     <div v-if="jiraError" class="note">
       {{ JIRA_HINT[jiraError] }}
       <button class="link" @click="emit('settings')">Open Settings</button>
@@ -190,6 +202,7 @@ const toggleOutside = (key: string): void => {
         </div>
       </article>
     </div>
+    </template>
   </section>
 </template>
 

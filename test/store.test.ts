@@ -40,6 +40,7 @@ const base: State = {
   serverCommands: {},
   chromePorts: {},
   insightsLastRun: null,
+  orchestrator: { jobs: [] },
   settings: {
     jiraBase: 'https://jira.redge.com/browse/',
     jiraToken: '',
@@ -57,7 +58,9 @@ const base: State = {
     gitlabToken: '',
     mrProjects: 'tigo-fo-web, tigo-fo-smarttv',
     startView: 'ask',
-    mrMention: '@telco-frontend'
+    mrMention: '@telco-frontend',
+    orchestratorMaxParallel: 2,
+    orchestratorBots: 'dao-gitlab'
   }
 }
 
@@ -90,6 +93,33 @@ describe('ticket-level state', () => {
     expect(s.insightsLastRun).toBeNull()
     expect(s.settings.taskJql).toBe(base.settings.taskJql)
     expect(s.settings.startPrompt).toBe(base.settings.startPrompt)
+    expect(s.orchestrator).toEqual({ jobs: [] })
+    expect(s.settings.orchestratorMaxParallel).toBe(2)
+    expect(s.settings.orchestratorBots).toBe('dao-gitlab')
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('orchestratorMaxParallel loading', () => {
+  it.each([0, -1, 1.5, null, '3'])('loads %s as 2', (value) => {
+    const dir = mkdtempSync(join(tmpdir(), 'css-'))
+    const file = join(dir, 'state.json')
+    writeFileSync(file, JSON.stringify({ settings: { orchestratorMaxParallel: value } }))
+    expect(loadState(file).settings.orchestratorMaxParallel).toBe(2)
+    rmSync(dir, { recursive: true, force: true })
+  })
+  it('loads Infinity as 2', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'css-'))
+    const file = join(dir, 'state.json')
+    writeFileSync(file, '{"settings":{"orchestratorMaxParallel":1e999}}')
+    expect(loadState(file).settings.orchestratorMaxParallel).toBe(2)
+    rmSync(dir, { recursive: true, force: true })
+  })
+  it('keeps a valid integer', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'css-'))
+    const file = join(dir, 'state.json')
+    writeFileSync(file, JSON.stringify({ settings: { orchestratorMaxParallel: 4 } }))
+    expect(loadState(file).settings.orchestratorMaxParallel).toBe(4)
     rmSync(dir, { recursive: true, force: true })
   })
 })
@@ -177,6 +207,7 @@ describe('store io', () => {
       serverCommands: { repo: 'npm run serve -- --port {port}' },
       chromePorts: { 'A-1': 9301 },
       insightsLastRun: 1700000000000,
+      orchestrator: { jobs: [] },
       settings: {
         jiraBase: 'http://jira.local/',
         jiraToken: 'tok',
@@ -194,7 +225,9 @@ describe('store io', () => {
         gitlabToken: 'gt',
         mrProjects: 'a, b',
         startView: 'dashboard',
-        mrMention: '@team'
+        mrMention: '@team',
+        orchestratorMaxParallel: 3,
+        orchestratorBots: 'bot-a, bot-b'
       }
     }
     saveState(file, next)

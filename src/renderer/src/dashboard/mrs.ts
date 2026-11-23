@@ -9,7 +9,16 @@ export interface MrFilter {
   myName: string | null
   isMineHidden: boolean
   isMineOnly?: boolean
+  isFewApprovalsOnly?: boolean
 }
+
+export const APPROVALS_NEEDED = 2
+
+export type MrMark = 'merged' | 'approved' | null
+
+export const mrMark = (row: MrRow): MrMark => (row.state === 'merged' ? 'merged' : row.review === 'approved' || row.isApprovedByMe ? 'approved' : null)
+
+export const mergedLast = (rows: MrRow[]): MrRow[] => [...rows.filter((r) => r.state !== 'merged'), ...rows.filter((r) => r.state === 'merged')]
 
 const isQueryMatch = (row: MrRow, needle: string): boolean =>
   !needle ||
@@ -24,7 +33,8 @@ export const filterMrs = (rows: MrRow[], f: MrFilter): MrRow[] => {
       (!f.author || r.author === f.author) &&
       (!f.isUnreviewedOnly || (r.review !== 'reviewed' && r.review !== 'approved')) &&
       (!f.isMineHidden || !f.myName || r.author !== f.myName) &&
-      (!f.isMineOnly || (!!f.myName && r.author === f.myName))
+      (!f.isMineOnly || (!!f.myName && r.author === f.myName)) &&
+      (!f.isFewApprovalsOnly || r.approvals < APPROVALS_NEEDED)
   )
 }
 

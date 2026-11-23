@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { parseTranscriptHead, parseTail, countTurns, lastMessages, createDetailCache } from '../src/main/transcript'
+import { parseTranscriptHead, parseTail, countTurns, lastMessages, createDetailCache, pendingRawInput } from '../src/main/transcript'
 
 describe('parseTranscriptHead', () => {
   it('keeps the first custom title so an explain session stays named after a restart', () => {
@@ -263,5 +263,25 @@ describe('parseTail pending tool', () => {
     expect(tail.pendingTool).toBeNull()
     expect(tail.isOpaqueRequest).toBe(false)
     expect(tail.questionOptions).toEqual([])
+  })
+})
+
+describe('pendingRawInput', () => {
+  const toolMessage = (blocks: unknown[]): string =>
+    JSON.stringify({ type: 'assistant', message: { stop_reason: 'tool_use', content: blocks } })
+  const use = (id: string, name: string, input: unknown): unknown => ({ type: 'tool_use', id, name, input })
+
+  it('returns the full input of the single pending call', () => {
+    const command = 'x'.repeat(500)
+    expect(pendingRawInput([toolMessage([use('t1', 'Bash', { command })])])).toEqual({ command })
+  })
+  it('returns null for several calls and opaque tools', () => {
+    expect(pendingRawInput([toolMessage([use('a', 'Bash', { command: 'a' }), use('b', 'Bash', { command: 'b' })])])).toBeNull()
+    expect(pendingRawInput([toolMessage([use('p', 'ExitPlanMode', { plan: 'x' })])])).toBeNull()
+  })
+  it('returns null for multi-part questions and when nothing is pending', () => {
+    const two = use('q', 'AskUserQuestion', { questions: [{ question: 'A?' }, { question: 'B?' }] })
+    expect(pendingRawInput([toolMessage([two])])).toBeNull()
+    expect(pendingRawInput([])).toBeNull()
   })
 })

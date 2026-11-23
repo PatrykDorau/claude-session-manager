@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue'
 import type { MrRow, Session } from '../types'
 import { ago } from '../display'
-import { filterMrs, reviewLabel, groupMrs, findMineSession, findReviewSession } from './mrs'
+import { filterMrs, reviewLabel, groupMrs, findMineSession, findReviewSession, mrMark, mergedLast } from './mrs'
 import { readFlag, writeSize } from './dashboard'
 import { isActiveToday } from './workday'
 import { useWorkday } from './useWorkday'
@@ -11,6 +11,9 @@ import PriorityIcon from './PriorityIcon.vue'
 import { useManualOrder } from './useOrder'
 import { splitStarred, starredBlock, sortByStatus } from './order'
 import SessionBadge from './SessionBadge.vue'
+import SessionWorkList from './SessionWorkList.vue'
+import { sessionWorkRows, WITH_SESSION_FLAG } from './sessionwork'
+import type { TaskRow } from '../taskview'
 
 const props = defineProps<{
   rows: MrRow[]
@@ -22,8 +25,15 @@ const props = defineProps<{
   isAllProjects: boolean
   sessions?: Session[]
   isLoading?: boolean
+  tasks?: TaskRow[]
 }>()
-const emit = defineEmits<{ select: [key: string]; settings: [] }>()
+const emit = defineEmits<{ select: [key: string]; settings: []; 'open-ticket': [key: string] }>()
+const isWithSession = ref(readFlag(WITH_SESSION_FLAG))
+const setWithSession = (next: boolean): void => {
+  isWithSession.value = next
+  writeSize(WITH_SESSION_FLAG, next)
+}
+const workRows = computed(() => sessionWorkRows(props.tasks ?? [], props.rows, props.sessions ?? [], props.myName ?? null))
 
 const ERROR_HINT = {
   'no-token': 'Add a GitLab token in Settings to see your merge requests.',
@@ -79,7 +89,8 @@ const matching = computed(() =>
     isUnreviewedOnly: isUnreviewedOnly.value,
     myName: props.myName ?? null,
     isMineHidden: !isMineMode.value,
-    isMineOnly: isMineMode.value
+    isMineOnly: isMineMode.value,
+    isFewApprovalsOnly: isFewApprovalsOnly.value
   }).filter((r) => !isTodayOnly.value || isActiveToday([sessionOf(r)], now.value))
 )
 const order = useManualOrder('dash.order.mrs')
@@ -100,7 +111,12 @@ const isStarred = (row: MrRow): boolean => props.starred.includes(row.key)
 const orderGroup = (key: string, rows: MrRow[]): MrRow[] => {
   const split = splitStarred(rows, props.starred)
   const ordered = [...order.ordered(starredBlock(key), split.starred, rankMr), ...order.ordered(key, split.rest, rankMr)]
-  return isStatusSort.value ? sortByStatus(ordered, (r) => (isLive(r) ? (sessionOf(r)?.status ?? null) : null)) : ordered
+  return mergedLast(isStatusSort.value ? sortByStatus(ordered, (r) => (isLive(r) ? (sessionOf(r)?.status ?? null) : null)) : ordered)
+}
+const isFewApprovalsOnly = ref(readFlag('dash.fewApprovalsMrs'))
+const setFewApprovalsOnly = (next: boolean): void => {
+  isFewApprovalsOnly.value = next
+  writeSize('dash.fewApprovalsMrs', next)
 }
 const isStatusSort = ref(readFlag('dash.statusSortMrs'))
 const setStatusSort = (next: boolean): void => {
@@ -147,12 +163,16 @@ const updatedAgo = (row: MrRow): string => {
     </div>
     <div class="filters">
       <label v-if="!isMineMode"><input v-model="isUnreviewedOnly" type="checkbox" />Not reviewed</label>
+      <label title="Only merge requests with fewer than 2 approvals (yours included)"><input :checked="isFewApprovalsOnly" type="checkbox" @change="setFewApprovalsOnly(($event.target as HTMLInputElement).checked)" />&lt; 2 approvals</label>
       <label title="Only merge requests with a Claude session active since midnight"><input :checked="isTodayOnly" type="checkbox" @change="setTodayOnly(($event.target as HTMLInputElement).checked)" />Today</label>
       <label title="Sort by session status: needs you, working, idle, then merge requests without a session"><input :checked="isStatusSort" type="checkbox" @change="setStatusSort(($event.target as HTMLInputElement).checked)" />By status</label>
+      <label title="One list of tickets, your merge requests and other people's merge requests that have a running Claude session"><input :checked="isWithSession" type="checkbox" @change="setWithSession(($event.target as HTMLInputElement).checked)" />With session</label>
       <button class="toggle" :class="{ on: isAllProjects }" @click="toggleAllProjects">
         {{ isAllProjects ? 'My projects' : 'All projects' }}
       </button>
     </div>
+    <SessionWorkList v-if="isWithSession" :rows="workRows" :selected-key="selectedKey" @select-ticket="emit('open-ticket', $event)" @select-mr="emit('select', $event)" />
+    <template v-else>
 
     <div v-if="error" class="note">
       {{ ERROR_HINT[error] }}
@@ -176,6 +196,8 @@ const updatedAgo = (row: MrRow): string => {
           sel: selectedKey === r.key,
           'has-session': isLive(r),
           'needs-input': isWaiting(r),
+          'mark-merged': mrMark(r) === 'merged',
+          'mark-approved': mrMark(r) === 'approved',
           'drop-before': order.dropTarget.value?.key === r.key && !order.dropTarget.value.isAfter,
           'drop-after': order.dropTarget.value?.key === r.key && order.dropTarget.value.isAfter
         }"
@@ -195,6 +217,8 @@ const updatedAgo = (row: MrRow): string => {
           <PriorityIcon :name="r.priority" />
           <span class="proj" :style="{ color: projectColor(r.projectName), background: `${projectColor(r.projectName)}1f` }">{{ r.projectName }}</span>
           <span class="iid">!{{ r.iid }}</span>
+          <span v-if="mrMark(r) === 'merged'" class="mark merged" title="This merge request is already merged"><Icon name="pr" :size="11" />merged</span>
+          <span v-else-if="mrMark(r) === 'approved'" class="mark approved" title="You approved this merge request"><Icon name="check" :size="11" />approved by me</span>
           <span v-if="isWaiting(r)" class="live needs" title="Claude is waiting for your answer"><i />needs you</span>
           <span v-else-if="isLive(r)" class="live" title="A Claude session for this merge request is running"><i /></span>
           <span class="who"><span class="av">{{ initials(r.author) }}</span>{{ r.author }}</span>
@@ -210,6 +234,7 @@ const updatedAgo = (row: MrRow): string => {
         </div>
       </article>
     </div>
+    </template>
   </section>
 </template>
 
@@ -565,6 +590,27 @@ select:focus {
   color: var(--warn);
   border: 1px solid var(--warn);
   border-radius: 4px;
+}
+.tile.mark-merged {
+  border-color: #a371f7;
+}
+.tile.mark-approved {
+  border-color: #3dd68c;
+}
+.mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  font-size: 10.5px;
+}
+.mark.merged {
+  color: #a371f7;
+}
+.mark.approved {
+  color: #3dd68c;
 }
 .appr {
   flex: none;

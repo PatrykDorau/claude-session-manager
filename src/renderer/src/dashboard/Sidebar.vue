@@ -13,10 +13,10 @@ const props = defineProps<{
   usage: UsageResult | null
   isListOpen: boolean
 }>()
-const emit = defineEmits<{ select: [page: DashboardPage]; settings: [] }>()
+const emit = defineEmits<{ select: [page: DashboardPage]; settings: []; startJobs: [] }>()
 
 const ENTRIES: { page: DashboardPage; label: string; icon: IconName; isSoon: boolean }[] = [
-  { page: 'today', label: 'Today', icon: 'dashboard', isSoon: false },
+  { page: 'today', label: 'Orchestrator', icon: 'dashboard', isSoon: false },
   { page: 'inbox', label: 'Inbox', icon: 'bell', isSoon: false },
   { page: 'tickets', label: 'My tickets', icon: 'ticket', isSoon: false },
   { page: 'mrs', label: 'Merge requests to review', icon: 'pr', isSoon: false },
@@ -78,6 +78,7 @@ const showSidebar = (): void => window.api.showSidebar()
       <span v-if="!e.isSoon && counts[e.page]" class="badge">{{ counts[e.page] > 99 ? '99+' : counts[e.page] }}</span>
       <i v-if="alerts?.[e.page]" class="alert" :title="`${alerts[e.page]} waiting for your answer`" />
     </button>
+    <button class="nav" title="Start jobs…" @click="emit('startJobs')"><Icon name="play" :size="19" /></button>
     <span class="grow" />
     <div v-if="meters.length" class="usage" :title="usageTitle">
       <div v-for="m in meters" :key="m.key" class="meter">

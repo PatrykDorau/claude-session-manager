@@ -50,10 +50,10 @@ describe('positionForLine', () => {
 describe('parseDraftNotes', () => {
   it('reads the body, anchor and reply target', () => {
     const json = [{ id: 7, note: 'x', discussion_id: null, position: { new_path: 'f.ts', new_line: 3, head_sha: 'h', base_sha: 'b' } }]
-    expect(parseDraftNotes(json)).toEqual([{ id: 7, body: 'x', replyTo: null, anchor: { path: 'f.ts', line: 3, sha: 'h', side: 'new' } }])
+    expect(parseDraftNotes(json)).toEqual([{ id: 7, body: 'x', replyTo: null, anchor: { path: 'f.ts', line: 3, sha: 'h', side: 'new' }, isResolving: false }])
   })
   it('reads a reply draft without a position', () => {
-    expect(parseDraftNotes([{ id: 8, note: 'y', discussion_id: 'abc' }])).toEqual([{ id: 8, body: 'y', replyTo: 'abc', anchor: null }])
+    expect(parseDraftNotes([{ id: 8, note: 'y', discussion_id: 'abc' }])).toEqual([{ id: 8, body: 'y', replyTo: 'abc', anchor: null, isResolving: false }])
   })
   it('returns nothing for a non-array', () => {
     expect(parseDraftNotes(null)).toEqual([])
@@ -110,6 +110,7 @@ describe('draft lists', () => {
     id,
     body: '',
     replyTo,
+    isResolving: false,
     anchor: path ? { path, line, sha: 'h', side: 'new' } : null
   })
   it('orders drafts by file and line with general drafts last', () => {

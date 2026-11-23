@@ -21,7 +21,7 @@ import icon from '../../resources/icon.png?asset'
 import attentionPng from '../../resources/attention.png?asset'
 import { STAGES, type Session, type TaskMeta, type InboxItem } from '../renderer/src/types'
 import { rmSync, readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, openSync, readSync, closeSync, fstatSync, statSync, symlinkSync } from 'node:fs'
-import { parseTail, countTurns, lastMessages, createDetailCache } from './transcript'
+import { parseTail, countTurns, lastMessages, createDetailCache, pendingRawInput } from './transcript'
 import { createPtyHost } from './ptyhost'
 import { pickPort, serverCommand, bashCandidates, isPortFree, DEFAULT_SERVER_COMMAND } from './devserver'
 import { stvOptions, webOptions, mergeEnvLocal, stvCommand, serverHost as serverHostName, chromeArgs, isChoiceMismatch, type StvChoice } from './serverprofile'
@@ -166,6 +166,37 @@ import { nearestEdge, dockBounds, pickDisplay } from './dock'
 import { registerAppBar, unregisterAppBar } from './appbar'
 import { fetchUsage } from './usage'
 import type { UsageResult } from '../renderer/src/types'
+import {
+  addLog,
+  followSession,
+  isClearConfirmed,
+  isHandoffHeld,
+  isHandoffClockReset,
+  handoffStopAction,
+  handAddressToLiveTicket,
+  AUTO_HANDOFF_LIMIT,
+  nextHandoffTick,
+  requeueFromRequest,
+  isJobOver,
+  isPromptSkipping,
+  jobId,
+  type ClearMark,
+  jobsToStart,
+  newJob,
+  nextJobState,
+  queueAddressJob,
+  resumePrompt,
+  PROMPT_SKIP_WARNING,
+  type Autonomy,
+  type Job,
+  type JobRequest,
+  type SessionView
+} from './orchestrator'
+import { decideWaiting, allowedKeys, judgePrompt, judgeArgs, parseVerdict, JUDGE_TIMEOUT_MS, type Verdict } from './judge'
+import { isForbiddenRequest } from './guard'
+import { parseBots, newHumanNotes, watchAction, watchStep, newCommentsPrompt, parseMrKey, ownMrsToWatch } from './mrwatch'
+import { fetchMyUsername, fetchMrState, fetchMrDiscussions } from './gitlab'
+import { handoffPrompt } from '../renderer/src/dashboard/context'
 
 let mainWindow: BrowserWindow
 let tray: Tray
@@ -345,6 +376,7 @@ async function refreshRunning(): Promise<void> {
     saveState(statePath, appState)
   }
   cachedRunningIds = [...new Set(extractResumeIds(procs.map((p) => p.commandLine)).map((id) => activeLinks.get(id) ?? id))]
+  warnPromptSkips(procs)
 }
 
 async function refreshAgents(): Promise<void> {
@@ -391,6 +423,7 @@ async function pushSessions(): Promise<void> {
   const decorated = decorate(sessions)
   lastSessions = decorated
   runAutoHandoff(decorated, cleared)
+  tickJobs()
   lastCounts = {
     total: sessions.length,
     live: sessions.filter((s) => s.isLive).length,
@@ -751,6 +784,7 @@ const refreshMyMrs = async (): Promise<void> => {
         appState = { ...appState, approvedMrs }
         saveState(statePath, appState)
       }
+      void watchMrs(token)
     }
     void refreshPriorities()
   }
@@ -765,7 +799,7 @@ const mrFiles = (key: string): Promise<MrFile[] | null> => {
   return mr && token ? fetchDiffStats(appState.settings.gitlabBase, token, mr.projectId, mr.iid) : Promise.resolve(null)
 }
 
-const startReview = async (key: string): Promise<{ error: string | null; sessionId?: string }> => {
+const startReview = async (key: string, isOrchestrated = false): Promise<{ error: string | null; sessionId?: string }> => {
   const mr = mrItems.find((m) => m.key === key)
   if (!mr) return { error: 'merge request not found' }
   if (startingReviews.has(key)) return { error: 'review is already starting' }
@@ -780,7 +814,7 @@ const startReview = async (key: string): Promise<{ error: string | null; session
       (await fetchMrSha(appState.settings.gitlabBase, appState.settings.gitlabToken.trim(), mr.projectId, mr.iid)) ?? mr.sha
     const worktree = taskWorktree(repo, `MR-${mr.iid}`)
     const isExisting = isLinkedWorktreeGitFile(readText(joinPath(worktree, '.git')) ?? '')
-    const out = await spawnBackground(exe, isExisting ? worktree : repo, reviewArgs(mr.iid, mr.url, isExisting))
+    const out = await spawnBackground(exe, isExisting ? worktree : repo, reviewArgs(mr.iid, mr.url, isExisting), isOrchestrated)
     const shortId = parseBgId(out)
     if (!shortId) return { error: out.trim().split(/\r?\n/).pop() || 'claude did not start' }
     isStarted = true
@@ -847,12 +881,12 @@ const linkNodeModules = (worktree: string, repo: string): void => {
   }
 }
 
-const spawnBackground = (exe: string, cwd: string, args: string[]): Promise<string> =>
+const spawnBackground = (exe: string, cwd: string, args: string[], isOrchestrated = false): Promise<string> =>
   new Promise((resolve) => {
     let out = ''
     const env = { ...process.env }
     delete env.NO_COLOR
-    const settingsFile = writeSessionSettings(app.getPath('userData'), appState.settings.gitlabToken.trim())
+    const settingsFile = writeSessionSettings(app.getPath('userData'), appState.settings.gitlabToken.trim(), isOrchestrated)
     const p = spawn(exe, sessionSettingsArgs(args, settingsFile), {
       cwd,
       shell: false,
@@ -930,13 +964,22 @@ const startTask = async (
   key: string,
   title: string,
   repo: string,
-  mode: 'vscode' | 'background'
+  mode: 'vscode' | 'background',
+  onWarmUpDone?: () => void,
+  isOrchestrated = false
 ): Promise<{ error: string | null; sessionId?: string }> => {
-  if (startingTasks.has(key)) return { error: 'this ticket is already starting' }
+  if (startingTasks.has(key)) {
+    onWarmUpDone?.()
+    return { error: 'this ticket is already starting' }
+  }
   const exe = resolveClaudeExe()
-  if (!exe) return { error: 'claude.exe not found' }
+  if (!exe) {
+    onWarmUpDone?.()
+    return { error: 'claude.exe not found' }
+  }
   startingTasks.add(key)
   let isStarted = false
+  let isWarmingUp = false
   try {
     appState = { ...appState, repoByPrefix: { ...appState.repoByPrefix, [ticketPrefix(key)]: repo } }
     saveState(statePath, appState)
@@ -944,11 +987,12 @@ const startTask = async (
     const isExisting = isLinkedWorktreeGitFile(readText(joinPath(worktree, '.git')) ?? '')
     const mcpConfig = prepareTaskBrowser(key, worktree)
     const prompt = `${startPrompt(appState.settings.startPrompt, key, title)}\n\n${taskContext(key, worktree, repo, new Date())}`
-    const out = await spawnBackground(exe, isExisting ? worktree : repo, taskMcpArgs(startArgs(key, prompt, isExisting), mcpConfig))
+    const out = await spawnBackground(exe, isExisting ? worktree : repo, taskMcpArgs(startArgs(key, prompt, isExisting), mcpConfig), isOrchestrated)
     const shortId = parseBgId(out)
     if (!shortId) return { error: out.trim().split(/\r?\n/).pop() || 'claude did not start' }
     isStarted = true
-    const warmUp = (link: () => void): void =>
+    const warmUp = (link: () => void): void => {
+      isWarmingUp = true
       void warmUpTask({
         waitFolder: () => waitForCheckout(worktree),
         link,
@@ -956,7 +1000,8 @@ const startTask = async (
         waitServer: (url) => waitForPortOpen(url, 180000),
         openChrome: (url) => bridgeRoutes['/chrome']({ ticket: key, cwd: worktree, url }),
         log: (message) => console.error(`[warm-up] ${key}: ${message}`)
-      })
+      }).finally(() => onWarmUpDone?.())
+    }
     if (mode === 'background') {
       warmUp(() => linkNodeModules(worktree, repo))
       const id = await waitForSessionId(shortId, 20000)
@@ -974,6 +1019,7 @@ const startTask = async (
     warmUp(() => undefined)
     return { error: isOpened ? null : 'could not open the session in VS Code' }
   } finally {
+    if (!isWarmingUp) onWarmUpDone?.()
     if (isStarted) setTimeout(() => startingTasks.delete(key), 30000)
     else startingTasks.delete(key)
     void refreshAgents()
@@ -1928,7 +1974,7 @@ const readExplanations = (ticket: string): Record<string, string> => {
 
 const startingAddress = new Set<string>()
 
-const startAddress = async (key: string): Promise<{ error: string | null; sessionId?: string }> => {
+const startAddress = async (key: string, isOrchestrated = false): Promise<{ error: string | null; sessionId?: string }> => {
   const mr = mrItems.find((m) => m.key === key)
   if (!mr) return { error: 'merge request not found' }
   if (startingAddress.has(key)) return { error: 'Addressing comments is already starting' }
@@ -1945,7 +1991,7 @@ const startAddress = async (key: string): Promise<{ error: string | null; sessio
     const handoff = findHandoff(ticket)
     const model = handoff && handoffSizeOf(handoff)?.risk === 'critical' ? 'opus' : 'sonnet'
     const args = addressArgs({ iid: mr.iid, url: mr.url, ticket, folder, repo, branch: mr.sourceBranch, handoff, model })
-    const out = await spawnBackground(exe, folder ?? repo, taskMcpArgs(args, mcpConfig))
+    const out = await spawnBackground(exe, folder ?? repo, taskMcpArgs(args, mcpConfig), isOrchestrated)
     const shortId = parseBgId(out)
     if (!shortId) return { error: out.trim().split(/\r?\n/).pop() || 'claude did not start' }
     isStarted = true
@@ -1959,6 +2005,466 @@ const startAddress = async (key: string): Promise<{ error: string | null; sessio
   } finally {
     if (isStarted) setTimeout(() => startingAddress.delete(key), 30000)
     else startingAddress.delete(key)
+  }
+}
+
+const STARTING_SLOT_MS = 120_000
+const HANDOFF_STALL_MS = 5 * 60_000
+const JOB_REQUEST_KINDS = ['ticket', 'review', 'watch']
+const launchingJobs = new Map<string, number>()
+const jobStatus = new Map<string, Session['status']>()
+const turnStarts = new Map<string, number>()
+const phaseSince = new Map<string, number>()
+const clearSentAt = new Map<string, number>()
+const clearMarks = new Map<string, ClearMark>()
+const waitMarks = new Map<string, string>()
+const transcriptPaths = new Map<string, string>()
+const busyJobs = new Set<string>()
+const judgedToolUses = new Set<string>()
+const warnedSkips = new Set<string>()
+let gitlabUsername: string | null = null
+let isWatchingMrs = false
+
+const setJobs = (jobs: Job[]): void => {
+  appState = { ...appState, orchestrator: { jobs } }
+  saveState(statePath, appState)
+  sendAll('orchestrator', appState.orchestrator)
+}
+
+const updateJob = (id: string, fn: (job: Job) => Job): void => {
+  if (!appState.orchestrator.jobs.some((j) => j.id === id)) return
+  setJobs(appState.orchestrator.jobs.map((j) => (j.id === id ? fn(j) : j)))
+}
+
+const logJob = (id: string, text: string): void => updateJob(id, (j) => addLog(j, text, Date.now()))
+
+const findJob = (id: string): Job | undefined => appState.orchestrator.jobs.find((j) => j.id === id)
+
+const boundSessionId = (id: string, links: Map<string, string>): string => {
+  const rebound = followSession(id, links, lastSessions.map((s) => s.id))
+  return sessionById(rebound) ? rebound : id
+}
+
+const sessionViewOf = (s: Session | undefined): SessionView | null =>
+  s ? { id: s.id, status: s.status, ticket: s.ticket, isLive: s.isLive } : null
+
+const orchestratorLiveKeys = (): Set<string> => {
+  const links = throughCleared(continuations.links)
+  const isLiveId = (id: string): boolean => !!sessionById(boundSessionId(id, links))?.isLive
+  return new Set([
+    ...lastSessions.flatMap((s) => (s.isLive && s.ticket ? [s.ticket] : [])),
+    ...Object.entries(appState.mrSessions).flatMap(([key, id]) => (isLiveId(id) ? [key] : []))
+  ])
+}
+
+const mrTicketMap = (): Map<string, string> =>
+  new Map(mrItems.flatMap((m): [string, string][] => (m.ticket ? [[m.key, m.ticket.toUpperCase()]] : [])))
+
+const addressSessionId = (key: string, links: Map<string, string>): string | null => {
+  const mrSession = appState.mrSessions[key]
+  const sessionId = mrSession ? boundSessionId(mrSession, links) : null
+  if (sessionId && sessionById(sessionId)?.isLive) return sessionId
+  const ticket = mrTicketMap().get(key)
+  return (ticket && lastSessions.find((s) => s.isLive && s.ticket?.toUpperCase() === ticket)?.id) || sessionId
+}
+
+const startJob = async (job: Job): Promise<void> => {
+  const onWarmUpDone = (): void => {
+    launchingJobs.delete(job.id)
+    updateJob(job.id, (j) => (j.state === 'starting' ? addLog({ ...j, state: 'working' }, 'warm-up done', Date.now()) : j))
+    pumpQueue()
+  }
+  const launch = (): Promise<{ error: string | null; sessionId?: string }> => {
+    if (job.kind === 'review') return startReview(job.key, true)
+    if (job.kind === 'address') return startAddress(job.key, true)
+    if (!job.repo) return Promise.resolve({ error: 'no repo chosen for this ticket' })
+    return startTask(job.key, job.title, job.repo, 'background', onWarmUpDone, true)
+  }
+  const result = await launch().catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e), sessionId: undefined }))
+  if (result.error) {
+    launchingJobs.delete(job.id)
+    updateJob(job.id, (j) => addLog({ ...j, state: 'failed' }, `start failed: ${result.error}`, Date.now()))
+    pumpQueue()
+    return
+  }
+  updateJob(job.id, (j) => addLog({ ...j, sessionId: result.sessionId ?? j.sessionId }, 'session started', Date.now()))
+}
+
+const pumpQueue = (): void => {
+  if (!isProcessScanReady || !isMrsLoaded || !appState.orchestrator.jobs.some((j) => j.state === 'queued')) return
+  const liveKeys = orchestratorLiveKeys()
+  const mrTickets = mrTicketMap()
+  const handed = handAddressToLiveTicket(appState.orchestrator.jobs, liveKeys, mrTickets, Date.now())
+  if (handed !== appState.orchestrator.jobs) setJobs(handed)
+  const toStart = jobsToStart(appState.orchestrator, appState.settings.orchestratorMaxParallel, liveKeys, mrTickets)
+  if (!toStart.length) return
+  const now = Date.now()
+  const ids = new Set(toStart.map((j) => j.id))
+  for (const id of ids) launchingJobs.set(id, now)
+  setJobs(appState.orchestrator.jobs.map((j) => (ids.has(j.id) ? addLog({ ...j, state: 'starting' }, 'starting', now) : j)))
+  for (const job of toStart) void startJob(job)
+}
+
+const runJudge = (prompt: string, allowed: string[]): Promise<Verdict> =>
+  new Promise((resolve) => {
+    const escalate = (reason: string): Verdict => ({ action: 'escalate', key: null, reason })
+    const exe = resolveClaudeExe()
+    if (!exe) return resolve(escalate('claude.exe not found'))
+    let out = ''
+    const env = { ...process.env }
+    delete env.NO_COLOR
+    const p = spawn(exe, judgeArgs(prompt), {
+      cwd: homedir(),
+      shell: false,
+      windowsHide: true,
+      env,
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+    let isDone = false
+    const finish = (verdict: Verdict): void => {
+      if (isDone) return
+      isDone = true
+      clearTimeout(timer)
+      resolve(verdict)
+    }
+    const timer = setTimeout(() => {
+      if (p.pid) void killProcess(p.pid, true)
+      else p.kill()
+      finish(escalate('judge timed out'))
+    }, JUDGE_TIMEOUT_MS)
+    p.stdout?.on('data', (d: Buffer) => (out += d.toString()))
+    p.on('error', (e) => finish(escalate(`judge failed: ${e.message}`)))
+    p.on('close', (code) => finish(code === 0 ? parseVerdict(out, allowed) : escalate(`judge exited with ${code}`)))
+  })
+
+const handleWaiting = async (id: string, sessionId: string): Promise<void> => {
+  const file = cachedTranscript(sessionId)
+  const lines = file ? readTailLines(file) : []
+  const tail = parseTail(lines)
+  const pending = tail.pendingTool
+  const rawInput = pendingRawInput(lines)
+  const job = findJob(id)
+  if (!job || (pending && judgedToolUses.has(pending.toolUseId))) return
+  const decision = decideWaiting(job.autonomy, pending, rawInput, (await modeOf(sessionId)) === 'attach')
+  if (decision === 'escalate' || !pending) {
+    if (pending) judgedToolUses.add(pending.toolUseId)
+    if (job.autonomy !== 'manual') logJob(id, 'escalated: needs your answer')
+    return
+  }
+  judgedToolUses.add(pending.toolUseId)
+  const allowed = allowedKeys(pending, tail.questionOptions)
+  const prompt = judgePrompt({
+    ticket: job.key,
+    title: job.title,
+    pending,
+    rawInput,
+    questionOptions: tail.questionOptions,
+    tail: lastMessages(lines, 10)
+  })
+  const verdict = await runJudge(prompt, allowed)
+  const current = findJob(id)
+  if (!current || current.autonomy === 'manual') return
+  if (verdict.action !== 'answer' || !verdict.key) return logJob(id, `escalated: ${verdict.reason}`)
+  if (isForbiddenRequest(pending.name, rawInput)) return logJob(id, 'escalated: forbidden request')
+  const answered = await answerInbox(sessionId, pending.toolUseId, verdict.key)
+  logJob(id, answered.error ? `escalated: ${answered.error}` : `auto: ${verdict.key} — ${verdict.reason}`)
+}
+
+const runBusy = (id: string, work: () => Promise<void>): (() => Promise<void>) => {
+  busyJobs.add(id)
+  const run = async (): Promise<void> => {
+    try {
+      await work()
+    } catch (e) {
+      logJob(id, `escalated: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      busyJobs.delete(id)
+    }
+  }
+  return run
+}
+
+const abortHandoff = (id: string, text: string): void =>
+  updateJob(id, (j) => addLog({ ...j, handoffPhase: 'none', state: 'waiting' }, text, Date.now()))
+
+const sendHandoffStep = (id: string, sessionId: string, data: string, isClear: boolean): (() => Promise<void>) =>
+  runBusy(id, async () => {
+    const sent = await sendKeys(sessionId, data)
+    if (sent.error) return abortHandoff(id, `handoff step failed: ${sent.error}`)
+    if (isClear) clearSentAt.set(id, Date.now())
+  })
+
+const clearMarkOf = (sessionId: string): ClearMark => ({
+  sessionId,
+  contextTokens: sessionById(sessionId)?.contextTokens ?? null,
+  clearLinks: [...clearedIds].filter(([from, to]) => from === sessionId || to === sessionId).map(([from, to]) => `${from}>${to}`)
+})
+
+const isClearDone = (id: string, sessionId: string): boolean => {
+  const before = clearMarks.get(id)
+  return clearSentAt.has(id) && !!before && isClearConfirmed(before, clearMarkOf(sessionId))
+}
+
+const cachedTranscript = (sessionId: string): string | null => {
+  const cached = transcriptPaths.get(sessionId)
+  if (cached && existsSync(cached)) return cached
+  const found = transcriptFile(sessionId)
+  if (found) transcriptPaths.set(sessionId, found)
+  else transcriptPaths.delete(sessionId)
+  return found
+}
+
+const transcriptMark = (sessionId: string): string => {
+  const file = cachedTranscript(sessionId)
+  try {
+    const stat = file ? statSync(file) : null
+    return stat ? `${stat.size}:${stat.mtimeMs}` : ''
+  } catch {
+    transcriptPaths.delete(sessionId)
+    return ''
+  }
+}
+
+const tickHandoff = (
+  job: Job,
+  sessionId: string,
+  view: SessionView,
+  prev: Session['status'] | undefined,
+  now: number,
+  actions: (() => Promise<void>)[]
+): Job => {
+  const status = view.status
+  if (job.handoffPhase === 'none') {
+    if (prev !== 'working' || status === 'working') return job
+    const stop = handoffStopAction(job, prev, status, handoffMtime(findHandoff(job.key)), turnStarts.get(job.id) ?? Number.POSITIVE_INFINITY)
+    if (stop === 'none') return job
+    if (stop === 'hold') return addLog({ ...job, state: 'handoff' }, 'waiting for Clear + handoff', now)
+    if (stop === 'limit')
+      return addLog({ ...job, state: 'handoff' }, `${AUTO_HANDOFF_LIMIT} automatic handoffs done: waiting for Clear + handoff`, now)
+    phaseSince.set(job.id, now)
+    actions.push(sendHandoffStep(job.id, sessionId, pasteInput(handoffPrompt(job.key, new Date())), false))
+    return addLog({ ...job, state: 'handoff', handoffPhase: 'handoff', autoHandoffs: job.autoHandoffs + 1 }, 'handoff point: writing handoff.md', now)
+  }
+  if (job.autonomy !== 'autonomous') return addLog({ ...job, handoffPhase: 'none', state: nextJobState({ ...job, handoffPhase: 'none' }, view) }, 'handoff left to you', now)
+  if (!phaseSince.has(job.id) || isHandoffClockReset(job.handoffPhase, status)) phaseSince.set(job.id, now)
+  const elapsed = now - (phaseSince.get(job.id) ?? now)
+  const step = nextHandoffTick(job.handoffPhase, prev ?? status, status, isClearDone(job.id, sessionId), elapsed, HANDOFF_STALL_MS)
+  if (step.action === 'stall') return addLog({ ...job, handoffPhase: 'none', state: 'waiting' }, 'handoff stalled', now)
+  if (step.phase === job.handoffPhase) return job
+  phaseSince.set(job.id, now)
+  const next = { ...job, handoffPhase: step.phase }
+  if (step.action === 'clear') {
+    clearSentAt.delete(job.id)
+    clearMarks.set(job.id, clearMarkOf(sessionId))
+    actions.push(sendHandoffStep(job.id, sessionId, '/clear\r', true))
+    return addLog(next, 'handoff written: clearing', now)
+  }
+  if (step.action === 'resume') {
+    actions.push(sendHandoffStep(job.id, sessionId, pasteInput(resumePrompt(job.key, new Date())), false))
+    return addLog(next, 'resuming from handoff.md', now)
+  }
+  return addLog({ ...next, state: nextJobState(next, view) }, 'handoff done', now)
+}
+
+const tickStartingState = (job: Job, view: SessionView | null, now: number): Job['state'] => {
+  const launchedAt = launchingJobs.get(job.id)
+  if (launchedAt !== undefined && (job.kind === 'ticket' || (view?.status !== 'working' && now - launchedAt < STARTING_SLOT_MS)))
+    return 'starting'
+  launchingJobs.delete(job.id)
+  return view ? nextJobState(job, view) : 'working'
+}
+
+const tickWatch = (job: Job, links: Map<string, string>, now: number, actions: (() => Promise<void>)[]): Job => {
+  if (!job.isCommentsPending || busyJobs.has(job.id)) return job
+  const sessionId = addressSessionId(job.key, links)
+  const session = sessionId ? sessionById(sessionId) : undefined
+  const action = watchAction(true, session ? { status: session.status, isLive: session.isLive } : null)
+  if (action === 'hold') return job
+  if (action === 'start' || !sessionId) {
+    actions.push(
+      runBusy(job.id, async () => {
+        setJobs(queueAddressJob(appState.orchestrator.jobs, job.key, job.title, Date.now()))
+        pumpQueue()
+      })
+    )
+    return addLog({ ...job, isCommentsPending: false }, 'new comments: address queued', now)
+  }
+  const iid = parseMrKey(job.key)?.iid ?? 0
+  actions.push(
+    runBusy(job.id, async () => {
+      const sent = await sendPrompt(sessionId, newCommentsPrompt(iid))
+      if (sent.error) logJob(job.id, `new comments: prompt failed: ${sent.error}`)
+    })
+  )
+  return addLog({ ...job, isCommentsPending: false }, 'new comments: sent to the address session', now)
+}
+
+const tickJob = (job: Job, links: Map<string, string>, now: number, actions: (() => Promise<void>)[]): Job => {
+  if (job.kind === 'watch') return tickWatch(job, links, now, actions)
+  if (job.state === 'queued' || job.state === 'finished' || job.state === 'failed') return job
+  const sessionId = job.sessionId ? boundSessionId(job.sessionId, links) : null
+  const view = sessionViewOf(sessionId ? sessionById(sessionId) : undefined)
+  const bound = { ...job, sessionId }
+  const state = job.state === 'starting' ? tickStartingState(bound, view, now) : isHandoffHeld(bound, view) ? 'handoff' : nextJobState(bound, view)
+  const next = state === 'finished' ? addLog({ ...bound, state }, 'finished', now) : { ...bound, state }
+  if (!sessionId || !view || state === 'finished' || busyJobs.has(job.id)) return next
+  const prev = jobStatus.get(job.id)
+  const status = view.status
+  jobStatus.set(job.id, status)
+  if (status === 'working' && prev !== 'working') turnStarts.set(job.id, now)
+  const mark = status === 'waiting' ? transcriptMark(sessionId) : ''
+  if (status === 'waiting' && (prev !== 'waiting' || mark !== waitMarks.get(job.id))) {
+    waitMarks.set(job.id, mark)
+    actions.push(runBusy(job.id, () => handleWaiting(job.id, sessionId)))
+    return next
+  }
+  return job.kind === 'ticket' && state !== 'starting' ? tickHandoff(next, sessionId, view, prev, now, actions) : next
+}
+
+const tickJobs = (): void => {
+  try {
+    const jobs = appState.orchestrator.jobs
+    if (!jobs.length) return
+    const now = Date.now()
+    const links = throughCleared(continuations.links)
+    const actions: (() => Promise<void>)[] = []
+    const next = jobs.map((job) => tickJob(job, links, now, actions))
+    if (JSON.stringify(next) !== JSON.stringify(jobs)) setJobs(next)
+    for (const action of actions) void action()
+    pumpQueue()
+  } catch (e) {
+    console.error('[orchestrator] tick failed:', e)
+  }
+}
+
+const isThreadOpen = (key: string): boolean => {
+  const mr = mrItems.find((m) => m.key === key)
+  return !!mr && (mr.openThreads > 0 || mr.hasOpenThreads)
+}
+
+const isJobRequest = (r: unknown): r is JobRequest => {
+  const o = r as Partial<JobRequest> | null
+  return (
+    !!o &&
+    typeof o === 'object' &&
+    JOB_REQUEST_KINDS.includes(o.kind as string) &&
+    typeof o.key === 'string' &&
+    o.key !== '' &&
+    typeof o.title === 'string' &&
+    (o.repo === null || typeof o.repo === 'string')
+  )
+}
+
+const startJobs = (requests: unknown): { error: string | null } => {
+  if (!Array.isArray(requests) || !requests.every(isJobRequest)) return { error: 'invalid jobs' }
+  const now = Date.now()
+  const ids = new Set(appState.orchestrator.jobs.map((j) => j.id))
+  const added = requests.flatMap((r) => {
+    const job = newJob(r, now, r.kind === 'watch' && isThreadOpen(r.key))
+    if (ids.has(job.id)) return []
+    ids.add(job.id)
+    return [job]
+  })
+  const isRequeued = (id: string): boolean => {
+    const existing = findJob(id)
+    return !!existing && isJobOver(existing)
+  }
+  const requeued = new Map(requests.map((r): [string, JobRequest] => [jobId(r.kind, r.key), r]).filter(([id]) => isRequeued(id)))
+  for (const id of requeued.keys()) forgetJob(id)
+  const requeue = (j: Job): Job => {
+    const request = requeued.get(j.id)
+    return request ? requeueFromRequest(j, request, now) : j
+  }
+  if (added.length || requeued.size) setJobs([...appState.orchestrator.jobs.map(requeue), ...added])
+  pumpQueue()
+  const token = appState.settings.gitlabToken.trim()
+  if (token && [...added.map((j) => j.id), ...requeued.keys()].some((id) => id.startsWith('watch:'))) void watchMrs(token)
+  return { error: null }
+}
+
+const setJobAutonomy = (id: string, autonomy: Autonomy): void =>
+  updateJob(id, (j) =>
+    j.kind !== 'ticket' || (autonomy !== 'manual' && autonomy !== 'autonomous') || j.autonomy === autonomy
+      ? j
+      : addLog({ ...j, autonomy }, `autonomy: ${autonomy}`, Date.now())
+  )
+
+const forgetJob = (id: string): void => {
+  for (const map of [launchingJobs, jobStatus, turnStarts, phaseSince, clearSentAt, clearMarks, waitMarks]) map.delete(id)
+  warnedSkips.delete(id)
+}
+
+const removeJob = (id: string): void => {
+  if (!findJob(id)) return
+  forgetJob(id)
+  setJobs(appState.orchestrator.jobs.filter((j) => j.id !== id))
+}
+
+const watchMr = async (job: Job, token: string, me: string): Promise<void> => {
+  const base = appState.settings.gitlabBase
+  const mr = mrItems.find((m) => m.key === job.key)
+  const ref = mr ? { projectId: mr.projectId, iid: mr.iid } : parseMrKey(job.key)
+  if (!ref) return
+  if (!mr) {
+    const state = await fetchMrState(base, token, ref.projectId, ref.iid)
+    if (state === 'merged' || state === 'closed') updateJob(job.id, (j) => addLog({ ...j, state: 'finished' }, `MR ${state}`, Date.now()))
+    return
+  }
+  const json = await fetchMrDiscussions(base, token, ref.projectId, ref.iid)
+  const current = findJob(job.id)
+  if (json === null || !current) return
+  const notes = newHumanNotes(json, current.lastSeenNoteId, me, parseBots(appState.settings.orchestratorBots))
+  const step = watchStep(current.lastSeenNoteId, notes)
+  if (step.lastSeenId !== current.lastSeenNoteId) updateJob(job.id, (j) => ({ ...j, lastSeenNoteId: step.lastSeenId }))
+  if (!step.isNewComment) return
+  const sessionId = addressSessionId(job.key, throughCleared(continuations.links))
+  const session = sessionId ? sessionById(sessionId) : undefined
+  const action = watchAction(true, session ? { status: session.status, isLive: session.isLive } : null)
+  if (action === 'start' || !sessionId) {
+    setJobs(queueAddressJob(appState.orchestrator.jobs, job.key, job.title, Date.now()))
+    logJob(job.id, 'new comments: address queued')
+    pumpQueue()
+    return
+  }
+  if (action === 'hold') return updateJob(job.id, (j) => addLog({ ...j, isCommentsPending: true }, 'new comments: waiting for the address session', Date.now()))
+  const sent = await sendPrompt(sessionId, newCommentsPrompt(mr.iid))
+  logJob(job.id, sent.error ? `new comments: prompt failed: ${sent.error}` : 'new comments: sent to the address session')
+}
+
+const watchMrs = async (token: string): Promise<void> => {
+  if (isWatchingMrs) return
+  isWatchingMrs = true
+  try {
+    const added = ownMrsToWatch(mrItems, gitlabMe, appState.orchestrator.jobs)
+    const now = Date.now()
+    if (added.length)
+      setJobs([
+        ...appState.orchestrator.jobs,
+        ...added.map((m) => newJob({ kind: 'watch', key: m.key, title: m.title, repo: null, autonomy: 'routine' }, now, false))
+      ])
+    const watches = appState.orchestrator.jobs.filter((j) => j.kind === 'watch' && j.state !== 'finished' && j.state !== 'failed')
+    if (!watches.length) return
+    gitlabUsername = gitlabUsername ?? (await fetchMyUsername(appState.settings.gitlabBase, token))
+    if (!gitlabUsername) return
+    for (const job of watches) await watchMr(job, token, gitlabUsername)
+  } catch (e) {
+    console.error('[orchestrator] MR watch failed:', e)
+  } finally {
+    isWatchingMrs = false
+  }
+}
+
+const warnPromptSkips = (procs: { pid: number; commandLine: string }[]): void => {
+  const jobs = appState.orchestrator.jobs.filter((j) => j.sessionId && !warnedSkips.has(j.id) && j.state !== 'finished' && j.state !== 'failed')
+  if (!jobs.length) return
+  const files = sessionFiles()
+  for (const job of jobs) {
+    const id = job.sessionId as string
+    const pid = files.find((f) => f.sessionId === id)?.pid
+    const proc = procs.find((p) => p.pid === pid || p.commandLine.includes(id))
+    if (!proc || !isPromptSkipping(proc.commandLine)) continue
+    warnedSkips.add(job.id)
+    if (!job.log.some((l) => l.text === PROMPT_SKIP_WARNING)) logJob(job.id, PROMPT_SKIP_WARNING)
   }
 }
 
@@ -2252,15 +2758,17 @@ const waitForQuietOutput = async (id: string, isStrict = false): Promise<boolean
   return !isStrict && ptyHost.isOpen(id)
 }
 
-const sendPrompt = async (id: string, text: string): Promise<{ error: string | null }> => {
+const sendKeys = async (id: string, data: string): Promise<{ error: string | null }> => {
   if (!ptyHost.isOpen(id)) {
     const opened = await openTerminal(id, 120, 32)
     if (opened.error) return opened
   }
   if (!(await waitForQuietOutput(id))) return { error: 'the session did not answer' }
-  ptyHost.write(id, pasteInput(text))
+  ptyHost.write(id, data)
   return { error: null }
 }
+
+const sendPrompt = (id: string, text: string): Promise<{ error: string | null }> => sendKeys(id, pasteInput(text))
 
 const takeOver = async (id: string, cols: number, rows: number): Promise<{ error: string | null }> => {
   handedToVscode.delete(id)
@@ -2735,6 +3243,7 @@ function wireSessions(win: BrowserWindow): void {
     isProcessScanReady = true
     void probeEnv()
     await pushSessions()
+    pumpQueue()
     void pushUsage()
     void refreshFinishSignals()
     void refreshTaskSources().then(pushSessions)
@@ -2919,7 +3428,9 @@ if (!app.requestSingleInstanceLock()) {
       gitlabToken: appState.settings.gitlabToken,
       mrProjects: appState.settings.mrProjects,
       startView: appState.settings.startView,
-      mrMention: appState.settings.mrMention
+      mrMention: appState.settings.mrMention,
+      orchestratorMaxParallel: appState.settings.orchestratorMaxParallel,
+      orchestratorBots: appState.settings.orchestratorBots
     }
   })
   ipcMain.on('set-settings', (_e, patch: Partial<State['settings']>) => {
@@ -2949,6 +3460,11 @@ if (!app.requestSingleInstanceLock()) {
     if (typeof patch.mrMention === 'string') appState.settings.mrMention = patch.mrMention
     if (typeof patch.gitlabBase === 'string' || typeof patch.gitlabToken === 'string' || typeof patch.mrMention === 'string') void refreshMyMrs()
     if (typeof patch.mrProjects === 'string') pushMyMrs()
+    if (Number.isInteger(patch.orchestratorMaxParallel) && (patch.orchestratorMaxParallel as number) >= 1) {
+      appState.settings.orchestratorMaxParallel = patch.orchestratorMaxParallel as number
+      pumpQueue()
+    }
+    if (typeof patch.orchestratorBots === 'string') appState.settings.orchestratorBots = patch.orchestratorBots
     if (patch.startView === 'ask' || patch.startView === 'sidebar' || patch.startView === 'dashboard')
       appState.settings.startView = patch.startView
     if (typeof patch.launchOnStartup === 'boolean') {
@@ -3203,6 +3719,10 @@ if (!app.requestSingleInstanceLock()) {
     return { repo, folder: await branchFolder(repo, mr.sourceBranch) }
   })
   ipcMain.handle('mr-start-address', (_e, key: string) => startAddress(key))
+  ipcMain.handle('orchestrator-start', (_e, jobs: unknown) => startJobs(jobs))
+  ipcMain.handle('orchestrator-set-autonomy', (_e, id: string, autonomy: Autonomy) => setJobAutonomy(id, autonomy))
+  ipcMain.handle('orchestrator-remove', (_e, id: string) => removeJob(id))
+  ipcMain.handle('orchestrator-get', () => appState.orchestrator)
   ipcMain.handle('local-hosts', () => listLocalHosts())
   ipcMain.handle('close-chrome', async (_e, key: string | null) => ({ error: await closeChrome(typeof key === 'string' ? key : null) }))
   ipcMain.handle('ticket-server', async (_e, key: string, cwd: string | null) => bridgeRoutes['/server']({ ticket: key, cwd: cwd ?? '' }))
@@ -3286,7 +3806,7 @@ if (!app.requestSingleInstanceLock()) {
       case 'draft-add': {
         const placed = action.anchor ? await linePosition(found, action.anchor) : null
         if (placed && 'error' in placed) return placed.error
-        return createDraftNote(base, token, projectId, iid, { body: action.body, position: placed?.position, replyTo: action.replyTo })
+        return createDraftNote(base, token, projectId, iid, { body: action.body, position: placed?.position, replyTo: action.replyTo, isResolving: action.isResolving })
       }
       case 'draft-edit':
         return updateDraftNote(base, token, projectId, iid, action.id, action.body)

@@ -124,6 +124,7 @@ const initials = (name: string): string =>
     .toUpperCase()
 const replyTo = ref<string | null>(null)
 const reply = ref('')
+const isReplyResolving = ref(true)
 const postReply = async (discussionId: string): Promise<void> => {
   busyAction.value = 'reply'
   actionError.value = null
@@ -177,7 +178,7 @@ const saveNoteEdit = async (discussionId: string, noteId: number): Promise<void>
   if (await runReview({ kind: 'note-edit', discussionId, noteId, body: editText.value })) editKey.value = null
 }
 const addReplyDraft = async (discussionId: string): Promise<void> => {
-  if (!(await runReview({ kind: 'draft-add', body: reply.value, replyTo: discussionId }))) return
+  if (!(await runReview({ kind: 'draft-add', body: reply.value, replyTo: discussionId, isResolving: isReplyResolving.value }))) return
   reply.value = ''
   replyTo.value = null
 }
@@ -368,13 +369,14 @@ const saveDesc = async (): Promise<void> => {
                 <textarea v-model="reply" rows="3" placeholder="Reply…" />
                 <div class="crow">
                   <button class="btn sm" @click="replyTo = null">Cancel</button>
+                  <label title="Resolve this thread when the review is submitted"><input v-model="isReplyResolving" type="checkbox" />Resolve thread</label>
                   <button class="btn sm" :disabled="!reply.trim() || !!busyAction" title="Save as a pending draft note; publish it with Submit review" @click="addReplyDraft(d.id)">Add to review</button>
                   <button class="btn sm primary" :disabled="!reply.trim() || !!busyAction" @click="postReply(d.id)">
                     {{ busyAction === 'reply' ? 'Posting…' : 'Post reply' }}
                   </button>
                 </div>
               </template>
-              <button v-else class="replybtn" @click="(replyTo = d.id), (reply = '')">Reply…</button>
+              <button v-else class="replybtn" @click="(replyTo = d.id), (reply = ''), (isReplyResolving = true)">Reply…</button>
             </div>
           </article>
         </template>

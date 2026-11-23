@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import type { JiraIssue } from './jira'
 import type { Placement } from './pane'
+import { emptyOrchestrator, loadOrchestrator, type OrchestratorState } from './orchestrator'
 import type { RestoreState } from './restore'
 import { STAGES, type Stage } from '../renderer/src/types'
 
@@ -30,6 +31,8 @@ export interface Settings {
   mrProjects: string
   startView: StartView
   mrMention: string
+  orchestratorMaxParallel: number
+  orchestratorBots: string
 }
 
 export type StartView = 'ask' | 'sidebar' | 'dashboard'
@@ -81,6 +84,7 @@ export interface State {
   serverCommands: Record<string, string>
   chromePorts: Record<string, number>
   insightsLastRun: number | null
+  orchestrator: OrchestratorState
   settings: Settings
 }
 
@@ -117,7 +121,9 @@ const DEFAULT_SETTINGS: Settings = {
   gitlabToken: '',
   mrProjects: 'tigo-fo-web, tigo-fo-smarttv',
   startView: 'ask',
-  mrMention: '@telco-frontend'
+  mrMention: '@telco-frontend',
+  orchestratorMaxParallel: 2,
+  orchestratorBots: 'dao-gitlab'
 }
 
 const DEFAULT_DOCK: DockState = {
@@ -203,6 +209,7 @@ export const DEFAULT_STATE = (): State => ({
   serverCommands: {},
   chromePorts: {},
   insightsLastRun: null,
+  orchestrator: emptyOrchestrator(),
   settings: { ...DEFAULT_SETTINGS }
 })
 
@@ -242,6 +249,7 @@ export function loadState(file: string): State {
         : {},
       insightsLastRun:
         typeof o.insightsLastRun === 'number' ? o.insightsLastRun : typeof o.factoryLastRun === 'number' ? o.factoryLastRun : null,
+      orchestrator: loadOrchestrator(o.orchestrator),
       settings: {
         jiraBase: typeof s.jiraBase === 'string' ? s.jiraBase : DEFAULT_SETTINGS.jiraBase,
         jiraToken: typeof s.jiraToken === 'string' ? s.jiraToken : DEFAULT_SETTINGS.jiraToken,
@@ -270,7 +278,13 @@ export function loadState(file: string): State {
         gitlabToken: typeof s.gitlabToken === 'string' ? s.gitlabToken : DEFAULT_SETTINGS.gitlabToken,
         mrProjects: typeof s.mrProjects === 'string' ? s.mrProjects : DEFAULT_SETTINGS.mrProjects,
         startView: START_VIEWS.includes(s.startView) ? s.startView : DEFAULT_SETTINGS.startView,
-        mrMention: typeof s.mrMention === 'string' ? s.mrMention : DEFAULT_SETTINGS.mrMention
+        mrMention: typeof s.mrMention === 'string' ? s.mrMention : DEFAULT_SETTINGS.mrMention,
+        orchestratorMaxParallel:
+          Number.isInteger(s.orchestratorMaxParallel) && s.orchestratorMaxParallel >= 1
+            ? s.orchestratorMaxParallel
+            : DEFAULT_SETTINGS.orchestratorMaxParallel,
+        orchestratorBots:
+          typeof s.orchestratorBots === 'string' ? s.orchestratorBots : DEFAULT_SETTINGS.orchestratorBots
       }
     }
   } catch {

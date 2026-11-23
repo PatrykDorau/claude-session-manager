@@ -57,6 +57,14 @@ const saveGitlab = (): void =>
     mrProjects: mrProjects.value,
     mrMention: mrMention.value.trim()
   })
+const orchestratorMaxParallel = ref(initial.orchestratorMaxParallel)
+const orchestratorBots = ref(initial.orchestratorBots)
+const saveOrchestratorMaxParallel = (): void => {
+  const value = Math.max(1, Math.floor(Number(orchestratorMaxParallel.value) || 1))
+  orchestratorMaxParallel.value = value
+  window.api.setSettings({ orchestratorMaxParallel: value })
+}
+const saveOrchestratorBots = (): void => window.api.setSettings({ orchestratorBots: orchestratorBots.value })
 const startView = ref(initial.startView)
 const saveStartView = (): void => window.api.setSettings({ startView: startView.value })
 const quickActions = ref(initial.quickActions.map((a) => ({ ...a })))
@@ -233,6 +241,32 @@ function copyDiag(): void {
       <span class="flbl">Review mention</span>
       <input v-model="mrMention" class="inp" spellcheck="false" placeholder="@telco-frontend" @change="saveGitlab" />
       <small class="hint">Open merge requests whose description mentions this group count as yours to review, together with your to-dos and MRs where you are a reviewer. Leave empty to skip.</small>
+    </label>
+
+    <label class="field">
+      <span class="flbl">Orchestrator parallel jobs</span>
+      <input
+        v-model.number="orchestratorMaxParallel"
+        class="inp"
+        type="number"
+        min="1"
+        step="1"
+        @change="saveOrchestratorMaxParallel"
+        @blur="saveOrchestratorMaxParallel"
+      />
+      <small class="hint">How many orchestrator jobs may start at the same time. At least 1.</small>
+    </label>
+    <label class="field">
+      <span class="flbl">Orchestrator bots</span>
+      <input
+        v-model="orchestratorBots"
+        class="inp"
+        spellcheck="false"
+        placeholder="dao-gitlab"
+        @change="saveOrchestratorBots"
+        @blur="saveOrchestratorBots"
+      />
+      <small class="hint">Comma-separated GitLab usernames whose MR comments the orchestrator ignores.</small>
     </label>
 
     <div class="field">

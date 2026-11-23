@@ -18,8 +18,10 @@ import HostsView from './HostsView.vue'
 import CatalogView from './CatalogView.vue'
 import InsightsView from './InsightsView.vue'
 import FlowView from './FlowView.vue'
-import TodayView from './TodayView.vue'
-import { buildToday, type TodayTarget } from './today'
+import OrchestratorView from './OrchestratorView.vue'
+import StartJobsDialog from './StartJobsDialog.vue'
+import type { Job, OrchestratorState } from '../../../main/orchestrator'
+import { attentionCount } from './orchestrator'
 import InboxPopup from './InboxPopup.vue'
 import { buildInboxRows, buildLiveRows, nextInboxId, type InboxRow, type LiveOrder } from './inbox'
 import StatusBar from './StatusBar.vue'
@@ -158,36 +160,19 @@ const jumpToNext = (): void => {
   const row = inboxRows.value.find((r) => r.sessionId === lastJumpId.value)
   if (row) openInboxRow(row)
 }
-const todayItems = computed(() =>
-  buildToday({
-    inbox: inboxRows.value,
-    sessions: sessions.value,
-    titles: titles.value,
-    mrs: myMrs.value.items,
-    myName: myMrs.value.myName ?? null,
-    tickets: myTasks.value.tickets
-  })
-)
-const openToday = (target: TodayTarget): void => {
+const openJob = (job: Job): void => {
   if (isListHidden.value) toggleList()
-  if (target.kind === 'inbox') {
-    const row = inboxRows.value.find((r) => r.sessionId === target.sessionId)
-    if (row) openInboxRow(row)
-    else {
-      const ticket = sessions.value.find((s) => s.id === target.sessionId)?.ticket ?? null
-      focusSession({ sessionId: target.sessionId, ticket })
-    }
-  } else if (target.kind === 'ticket') openTicket(target.key)
-  else if (target.kind === 'mr') openMr(target.key)
-  else if (target.ticket) openTicket(target.ticket)
-  else if (target.mrKey) openMr(target.mrKey, target.sessionId)
-  else {
-    focusSession(target)
-    void loadTree()
-  }
+  if (job.kind === 'ticket') openTicket(job.key)
+  else openMr(job.key, job.sessionId)
 }
+const orchestratorJobs = ref<Job[]>([])
+const isStartJobsOpen = ref(false)
+const applyOrchestrator = (state: OrchestratorState): void => {
+  orchestratorJobs.value = state.jobs
+}
+let stopOrchestrator: (() => void) | null = null
 const counts = computed<Record<DashboardPage, number>>(() => ({
-  today: todayItems.value.onMe.length,
+  today: attentionCount(orchestratorJobs.value),
   inbox: inboxRows.value.length,
   tickets: rows.value.length,
   mrs: myMrs.value.items.length,
@@ -219,7 +204,7 @@ const closeSettings = (): void => {
 }
 useEscapeClose(isSettingsOpen, closeSettings)
 const PAGE_TITLES: Record<DashboardPage, string> = {
-  today: 'Today',
+  today: 'Orchestrator',
   inbox: 'Inbox',
   tickets: 'My tickets',
   mrs: 'Merge requests',
@@ -268,9 +253,12 @@ onMounted(() => {
   window.api.onFocusSession(focusSession)
   window.api.onInboxNext(jumpToNext)
   window.addEventListener('keydown', onGlobalKey, true)
+  stopOrchestrator = window.api.onOrchestrator(applyOrchestrator)
+  void window.api.getOrchestrator().then(applyOrchestrator)
   void loadTree()
 })
 onBeforeUnmount(() => {
+  stopOrchestrator?.()
   window.removeEventListener('keydown', onGlobalKey, true)
   if (treeTimer) clearTimeout(treeTimer)
 })
@@ -286,6 +274,15 @@ onBeforeUnmount(() => {
       :is-list-open="!isListHidden"
       @select="selectPage"
       @settings="isSettingsOpen = true"
+      @start-jobs="isStartJobsOpen = true"
+    />
+    <StartJobsDialog
+      v-if="isStartJobsOpen"
+      :tickets="myTasks.tickets"
+      :mrs="myMrs.items"
+      :my-name="myMrs.myName ?? null"
+      :sessions="sessions"
+      @close="isStartJobsOpen = false"
     />
     <div v-if="!isListHidden && !isHostsPage" class="col" :style="{ width: `${listWidth}px` }">
       <header class="colhead">
@@ -316,7 +313,9 @@ onBeforeUnmount(() => {
         :sessions="sessions"
         :is-loading="myMrs.isLoading"
         :is-all-projects="myMrs.isAllProjects"
+        :tasks="rows"
         @select="selectMr"
+        @open-ticket="openTicket"
         @settings="isSettingsOpen = true"
       />
       <TicketList
@@ -327,13 +326,21 @@ onBeforeUnmount(() => {
         :jira-error="myTasks.error"
         :mrs="myMrs.items"
         :my-name="myMrs.myName"
+        :sessions="sessions"
         @select="selectTicket"
         @open-mr="openMr"
         @settings="isSettingsOpen = true"
       />
     </div>
     <Splitter v-if="!isListHidden && !isHostsPage" @resize="resizeList" @done="saveListWidth" />
-    <TodayView v-if="page === 'today'" :items="todayItems" @open="openToday" />
+    <OrchestratorView
+      v-if="page === 'today'"
+      :tickets="myTasks.tickets"
+      :mrs="myMrs.items"
+      :my-name="myMrs.myName ?? null"
+      :sessions="sessions"
+      @open="openJob"
+    />
     <FlowView v-else-if="page === 'flow'" :rows="rows" @open-ticket="openTicket" />
     <InsightsView v-else-if="page === 'insights'" />
     <CatalogView v-else-if="page === 'catalog'" />

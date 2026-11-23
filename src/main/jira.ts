@@ -167,7 +167,7 @@ export const searchIssues = async (
   jql: string
 ): Promise<JiraTicket[] | null> => {
   try {
-    const url = `${new URL(browseBase).origin}/rest/api/2/search?jql=${encodeURIComponent(jql)}&fields=summary,status,priority&maxResults=200`
+    const url = `${new URL(browseBase).origin}/rest/api/2/search?jql=${encodeURIComponent(jql)}&fields=summary,status,priority,issuetype&maxResults=200`
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }
     })

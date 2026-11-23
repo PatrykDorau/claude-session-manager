@@ -134,7 +134,8 @@ export const parseDraftNotes = (json: unknown): MrDraftNote[] =>
           id: d.id,
           body: typeof d.note === 'string' ? d.note : '',
           replyTo: typeof d.discussion_id === 'string' && d.discussion_id ? d.discussion_id : null,
-          anchor: anchorOf(d.position)
+          anchor: anchorOf(d.position),
+          isResolving: d.resolve_discussion === true
         }))
     : []
 
@@ -332,20 +333,27 @@ export const fetchAllPages = async (base: string, token: string, path: string): 
   return { json: all, problem: null }
 }
 
+interface DraftNoteInput {
+  body: string
+  position?: MrLinePosition
+  replyTo?: string
+  isResolving?: boolean
+}
+
+export const draftNoteBody = (input: DraftNoteInput): Record<string, unknown> => ({
+  note: input.body,
+  ...(input.position ? { position: input.position } : {}),
+  ...(input.replyTo ? { in_reply_to_discussion_id: input.replyTo, resolve_discussion: input.isResolving !== false } : {})
+})
+
 export const createDraftNote = async (
   base: string,
   token: string,
   projectId: number,
   iid: number,
-  input: { body: string; position?: MrLinePosition; replyTo?: string }
+  input: DraftNoteInput
 ): Promise<string | null> =>
-  (
-    await request(base, token, 'POST', `${mrPath(projectId, iid)}/draft_notes`, {
-      note: input.body,
-      ...(input.position ? { position: input.position } : {}),
-      ...(input.replyTo ? { in_reply_to_discussion_id: input.replyTo } : {})
-    })
-  ).problem
+  (await request(base, token, 'POST', `${mrPath(projectId, iid)}/draft_notes`, draftNoteBody(input))).problem
 
 export const updateDraftNote = async (base: string, token: string, projectId: number, iid: number, draftId: number, body: string): Promise<string | null> =>
   (await request(base, token, 'PUT', `${mrPath(projectId, iid)}/draft_notes/${draftId}`, { note: body })).problem

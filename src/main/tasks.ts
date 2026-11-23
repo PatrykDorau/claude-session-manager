@@ -14,9 +14,10 @@ export const parseSearch = (json: unknown): JiraTicket[] => {
   return issues.flatMap((i) => {
     const key = (i as { key?: unknown })?.key
     if (typeof key !== 'string') return []
-    const fields = (i as { fields?: { summary?: unknown; status?: { name?: unknown }; priority?: { name?: unknown } } }).fields
+    const fields = (i as { fields?: { summary?: unknown; status?: { name?: unknown }; priority?: { name?: unknown }; issuetype?: { name?: unknown } } }).fields
     const priority = asText(fields?.priority?.name)
-    return [{ key, summary: asText(fields?.summary), status: asText(fields?.status?.name), ...(priority ? { priority } : {}) }]
+    const type = asText(fields?.issuetype?.name)
+    return [{ key, summary: asText(fields?.summary), status: asText(fields?.status?.name), ...(priority ? { priority } : {}), ...(type ? { type } : {}) }]
   })
 }
 

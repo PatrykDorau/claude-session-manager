@@ -23,6 +23,7 @@ import { searchPanel } from './searchpanel'
 import { barCells, type BarCell, type LineCounts } from './diffstat'
 import { changeSignature, isFileViewed, toggleViewed } from './viewed'
 import { importAt, wordAt, listImports, importLineOf, definitionLine, defaultExportLine, resolveImport, isIdentifierQuery, groupHits, peekTarget, memberSites, snippetAt } from './codenav'
+import { openTab, rememberTab, closeTab, tabScope, type CodeTab } from './codetabs'
 import { parseVersionLink } from './mrhtml'
 import { clampSize, readSize, writeSize, readFlag } from './dashboard'
 import { mapToSideA, readDiffLayout, sidesFor, type DiffLayout } from './difflayout'
@@ -559,6 +560,10 @@ const leavePushedWhenGone = (mr: typeof props.pushedMr): void => {
   if (!mr && isPushed.value) void reopenAs(false)
 }
 watch(() => props.pushedMr, leavePushedWhenGone)
+const resetTabs = (): void => {
+  tabs.value = []
+}
+watch(() => tabScope(props.cwd ?? null, activeRef.value?.source ?? null), resetTabs)
 defineExpose({ goToFileLine, showPushed })
 const commentCount = (path: string): number => mrComments.value.filter((c) => c.path === path && !c.isResolved).length
 const lineStart = (v: EditorView, line: number): number => v.state.doc.line(Math.min(Math.max(line, 1), v.state.doc.lines)).from
@@ -719,7 +724,7 @@ const commentActions = (c: CodeComment, box: HTMLElement): HTMLElement | null =>
       bar.className = 'cmt-actions'
       const send = (kind: 'draft-add' | 'reply'): void => {
         if (!area.value.trim()) return
-        const action: MrReviewAction = kind === 'reply' ? { kind, discussionId, body: area.value } : { kind, body: area.value, replyTo: discussionId }
+        const action: MrReviewAction = kind === 'reply' ? { kind, discussionId, body: area.value } : { kind, body: area.value, replyTo: discussionId, isResolving: resolveBox.checked }
         void sendReview(action).then((isDone) => {
           if (isDone) redrawComments()
         })
@@ -731,7 +736,14 @@ const commentActions = (c: CodeComment, box: HTMLElement): HTMLElement | null =>
         }
         if (e.key === 'Escape') redrawComments()
       })
+      const resolveBox = document.createElement('input')
+      resolveBox.type = 'checkbox'
+      resolveBox.checked = true
+      const resolveLabel = document.createElement('label')
+      resolveLabel.title = 'Resolve this thread when the review is submitted'
+      resolveLabel.append(resolveBox, 'Resolve thread')
       bar.append(
+        resolveLabel,
         button('Cancel', 'cmt-btn', redrawComments),
         button('Reply now', 'cmt-btn', () => send('reply')),
         button('Add to review', 'cmt-btn primary', () => send('draft-add'))
@@ -905,9 +917,35 @@ const destroyEditors = (): void => {
 
 const confirmDiscard = (): boolean => !isDirty.value || window.confirm(`Discard unsaved changes in ${openPath.value}?`)
 
+const tabs = ref<CodeTab[]>([])
+const tabName = (path: string): string => path.split('/').pop() ?? path
+const tabScroller = (): HTMLElement | null => mergeView.value?.dom ?? editor.value?.scrollDOM ?? null
+const topLineOf = (v: EditorView): number => v.state.doc.lineAt(v.lineBlockAtHeight(tabScroller()?.scrollTop ?? 0).from).number
+const restoreTab = (tab: CodeTab): void => {
+  const v = editor.value
+  if (!v) return
+  const doc = v.state.doc
+  const cursor = doc.line(Math.min(Math.max(tab.line, 1), doc.lines)).from
+  const top = doc.line(Math.min(Math.max(tab.topLine, 1), doc.lines)).from
+  v.dispatch({ selection: { anchor: cursor }, effects: EditorView.scrollIntoView(top, { y: 'start' }) })
+}
+const closeFileTab = async (path: string): Promise<void> => {
+  const { next } = closeTab(tabs.value, path)
+  if (path === openPath.value && next && !(await open(next))) return
+  tabs.value = closeTab(tabs.value, path).tabs
+}
+const onTabAuxClick = (e: MouseEvent, path: string): void => {
+  if (e.button === 1) void closeFileTab(path)
+}
+
 const open = async (path: string, isConfirmed = false): Promise<boolean> => {
   if (!props.cwd) return false
   if (!isConfirmed && !confirmDiscard()) return false
+  const previous = openPath.value
+  const current = editor.value
+  if (previous && previous !== path && current) {
+    tabs.value = rememberTab(tabs.value, previous, current.state.doc.lineAt(current.state.selection.main.head).number, topLineOf(current))
+  }
   docText.value = null
   const ref = activeRef.value
   const isRef = !!ref && !!branch.value?.isReadOnly
@@ -969,6 +1007,9 @@ const open = async (path: string, isConfirmed = false): Promise<boolean> => {
   }
   changeIndex.value = -1
   countChanges(editor.value.state)
+  const known = tabs.value.find((t) => t.path === path)
+  tabs.value = openTab(tabs.value, path, Date.now())
+  if (known && previous !== path) restoreTab(known)
   emit('fileShown', path, branch.value?.folder ?? null, !!branch.value?.isReadOnly)
   return true
 }
@@ -1615,6 +1656,19 @@ onBeforeUnmount(() => {
         <button class="tb" :class="{ on: layout === 'split' }" title="Old and new side by side" @click="setLayout('split')"><Icon name="panelLeft" :size="14" /><span class="lbl">Split</span></button>
         <button class="tb" :class="{ on: layout === 'unified' }" title="Old and new in one column" @click="setLayout('unified')"><Icon name="fileText" :size="14" /><span class="lbl">Unified</span></button>
         <button v-if="!branch?.isReadOnly" class="tb primary" :disabled="!isDirty || isSaving" title="Save (Ctrl+S)" @click="save"><Icon name="save" :size="14" /><span class="lbl">{{ isSaving ? 'Saving…' : 'Save' }}</span></button>
+      </div>
+      <div v-if="tabs.length" class="filetabs">
+        <button
+          v-for="t in tabs"
+          :key="t.path"
+          class="filetab"
+          :class="{ on: t.path === openPath }"
+          :title="t.path"
+          @click="t.path !== openPath && open(t.path)"
+          @auxclick="onTabAuxClick($event, t.path)"
+        >
+          {{ tabName(t.path) }}<span class="x" title="Close" @click.stop="closeFileTab(t.path)">×</span>
+        </button>
       </div>
       <div v-if="openPath && fileWhys.length" class="whys" :style="isWhyOpen ? { maxHeight: `${whyHeight}px` } : undefined">
         <button class="whyhead" @click="isWhyOpen = !isWhyOpen">
@@ -2689,6 +2743,43 @@ onBeforeUnmount(() => {
 .fchange code {
   font: 11px var(--font-mono);
   color: var(--info);
+}
+.filetabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 4px 8px 0;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+}
+.filetab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: none;
+  color: var(--text-3);
+  font: 12px var(--font-ui);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.filetab.on {
+  background: var(--bg-editor);
+  border-color: var(--line);
+  color: var(--text-1);
+}
+.filetab .x {
+  padding: 0 3px;
+  border-radius: 4px;
+  opacity: 0.6;
+}
+.filetab .x:hover {
+  opacity: 1;
+  background: var(--bg-3, rgba(255, 255, 255, 0.08));
 }
 .editor {
   flex: 1;

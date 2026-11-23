@@ -29,6 +29,7 @@ const openDraft = (d: MrDraftNote): void => {
   <div v-if="drafts.length && isReviewListOpen" class="reviewlist">
     <div v-for="d in sortedDrafts" :key="d.id" class="rvitem">
       <button class="rvwhere" :title="d.anchor ? 'Show this line in the code' : 'Scroll to this thread'" @click="openDraft(d)">{{ draftWhere(d) }}</button>
+      <span v-if="d.isResolving" class="muted" title="Submitting the review resolves this thread">resolves thread</span>
       <template v-if="editKey === `d:${d.id}`">
         <textarea v-model="editText" rows="3" />
         <div class="crow">

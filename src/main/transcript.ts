@@ -45,13 +45,18 @@ const toolInput = (name: string, input: any): string => {
   return text.length > INPUT_MAX ? `${text.slice(0, INPUT_MAX - 1)}…` : text
 }
 
-const pendingRequest = (message: any): { pendingTool: PendingTool | null; isOpaqueRequest: boolean; questionOptions: string[] } => {
+const singlePendingUse = (message: any): { use: any; questions: any[]; isNone: boolean; isOpaque: boolean } => {
   const uses = message?.stop_reason === 'tool_use' && Array.isArray(message.content) ? message.content.filter((c: any) => c?.type === 'tool_use') : []
-  if (!uses.length) return { pendingTool: null, isOpaqueRequest: false, questionOptions: [] }
-  if (uses.length > 1 || OPAQUE_TOOLS.includes(uses[0].name)) return { pendingTool: null, isOpaqueRequest: true, questionOptions: [] }
   const use = uses[0]
-  const questions = use.name === 'AskUserQuestion' && Array.isArray(use.input?.questions) ? use.input.questions : []
-  if (questions.length > 1 || questions[0]?.multiSelect) return { pendingTool: null, isOpaqueRequest: true, questionOptions: [] }
+  const questions = use?.name === 'AskUserQuestion' && Array.isArray(use.input?.questions) ? use.input.questions : []
+  const isOpaque = uses.length > 1 || OPAQUE_TOOLS.includes(use?.name) || questions.length > 1 || !!questions[0]?.multiSelect
+  return { use, questions, isNone: !uses.length, isOpaque }
+}
+
+const pendingRequest = (message: any): { pendingTool: PendingTool | null; isOpaqueRequest: boolean; questionOptions: string[] } => {
+  const { use, questions, isNone, isOpaque } = singlePendingUse(message)
+  if (isNone) return { pendingTool: null, isOpaqueRequest: false, questionOptions: [] }
+  if (isOpaque) return { pendingTool: null, isOpaqueRequest: true, questionOptions: [] }
   const options = questions[0]?.options
   return {
     pendingTool: { name: String(use.name), input: toolInput(String(use.name), use.input), toolUseId: String(use.id ?? '') },
@@ -75,6 +80,11 @@ const lastMessage = (lines: string[]): any => {
   const sameMessage: any[] = []
   for (let i = entries.length - 1; i >= 0 && entries[i].type === 'assistant' && (id ? entries[i].message?.id === id : i === entries.length - 1); i--) sameMessage.unshift(entries[i])
   return { ...last.message, content: sameMessage.flatMap((o) => (Array.isArray(o.message?.content) ? o.message.content : [])) }
+}
+
+export const pendingRawInput = (lines: string[]): unknown | null => {
+  const { use, isNone, isOpaque } = singlePendingUse(lastMessage(lines))
+  return isNone || isOpaque ? null : use.input ?? null
 }
 
 const QUESTION_END = /\?[\s*_`)"'\]]*$/

@@ -172,6 +172,20 @@ describe('parseSearch — priority', () => {
   })
 })
 
+describe('parseSearch — issue type', () => {
+  it('reads the issue type when Jira sends it and omits it otherwise', () => {
+    const json = {
+      issues: [
+        { key: 'A-1', fields: { summary: 'Fix', status: { name: 'To Do' }, issuetype: { name: 'Bug' } } },
+        { key: 'A-2', fields: { summary: 'Fix', status: { name: 'To Do' } } }
+      ]
+    }
+    const [typed, untyped] = parseSearch(json)
+    expect(typed.type).toBe('Bug')
+    expect('type' in untyped).toBe(false)
+  })
+})
+
 describe('taskContext', () => {
   it('tells the session where to work, which base to use and how to get the server', () => {
     const worktree = String.raw`C:\repo\.claude\worktrees\SOFNJJ-2537`

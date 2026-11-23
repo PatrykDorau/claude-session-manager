@@ -35,7 +35,8 @@ const mrItem = (t: any, projectId: number | null, projectPath: string, projectNa
       openThreads: 0,
       approvals: 0,
       isApprovedByMe: false,
-      isDraft
+      isDraft,
+      state: t.state === 'merged' || t.state === 'closed' ? t.state : 'opened'
     }
   ]
 }
@@ -251,3 +252,19 @@ export const fetchDiffStats = async (base: string, token: string, projectId: num
 
 export const fetchMrSha = async (base: string, token: string, projectId: number, iid: number): Promise<string | null> =>
   parseMrSha(await apiGet(base, token, `/projects/${projectId}/merge_requests/${iid}`))
+
+export const fetchMrDiscussions = async (base: string, token: string, projectId: number, iid: number): Promise<unknown | null> =>
+  apiGet(base, token, `/projects/${projectId}/merge_requests/${iid}/discussions?per_page=100`)
+
+export const fetchMyUsername = async (base: string, token: string): Promise<string | null> =>
+  asText(((await apiGet(base, token, '/user')) as { username?: unknown } | null)?.username) || null
+
+export const fetchMrState = async (
+  base: string,
+  token: string,
+  projectId: number,
+  iid: number
+): Promise<'opened' | 'merged' | 'closed' | null> => {
+  const state = ((await apiGet(base, token, `/projects/${projectId}/merge_requests/${iid}`)) as { state?: unknown } | null)?.state
+  return state === 'opened' || state === 'merged' || state === 'closed' ? state : null
+}

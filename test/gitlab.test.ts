@@ -43,7 +43,8 @@ describe('parseTodos', () => {
         openThreads: 0,
         approvals: 0,
         isApprovedByMe: false,
-        isDraft: false
+        isDraft: false,
+        state: 'opened'
       }
     ])
   })
@@ -159,6 +160,11 @@ describe('parseReviewMrs', () => {
     expect(item.projectPath).toBe('telco/tigo-fo-web')
     expect(item.projectName).toBe('tigo-fo-web')
     expect(item.ticket).toBe('SOFRMPT-2')
+  })
+  it('reads the merge request state, defaulting to opened', () => {
+    expect(parseReviewMrs([{ ...mr, state: 'merged' }])[0].state).toBe('merged')
+    expect(parseReviewMrs([{ ...mr, state: 'closed' }])[0].state).toBe('closed')
+    expect(parseReviewMrs([mr])[0].state).toBe('opened')
   })
   it('skips entries without a project or iid', () => {
     expect(parseReviewMrs([{ title: 'x' }, 'junk'])).toEqual([])
