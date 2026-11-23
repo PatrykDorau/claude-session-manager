@@ -5,6 +5,7 @@ import type {
   ChangedFile,
   DevServer,
   ExplainFile,
+  ReviewDoc,
   JiraTransition,
   ServerProfile,
   ServerSpec,
@@ -174,12 +175,14 @@ declare global {
       listChanges: (cwd: string) => Promise<ChangedFile[]>
       listBranchChanges: (cwd: string) => Promise<BranchChanges>
       getExplainDoc: (key: string) => Promise<ExplainFile | null>
-      listRefChanges: (cwd: string, source: string, target: string) => Promise<BranchChanges>
+      listRefChanges: (cwd: string, source: string, target: string, isPushedOnly?: boolean) => Promise<BranchChanges>
       readRefFile: (cwd: string, source: string, target: string, rel: string, isBase: boolean) => Promise<string | null>
       listRefFiles: (cwd: string, source: string) => Promise<string[]>
       getAgentTree: () => Promise<import('../renderer/src/types').AgentGroup[]>
       getAgentRun: (sessionId: string, agentId: string) => Promise<import('../renderer/src/types').AgentStep[]>
       startExplain: (key: string, cwd: string, sourceSessionId: string | null) => Promise<{ error: string | null; sessionId?: string }>
+      startReviewParts: (key: string, cwd: string, mr: { iid: number; source: string; target: string } | null) => Promise<{ error: string | null; sessionId?: string }>
+      getReviewDoc: (key: string) => Promise<(ReviewDoc & { updatedAt: number }) | null>
       openExplainMd: (key: string) => void
       readExplainMd: (key: string) => Promise<string | null>
       readFile: (cwd: string, rel: string) => Promise<{ text: string | null; error: string | null }>
@@ -203,6 +206,9 @@ declare global {
       mrCommentable: (key: string, folder: string | null, isReadOnly: boolean, path: string | null) => Promise<import('../renderer/src/types').MrCommentable>
       refreshLists: () => Promise<boolean>
       getLocalHosts: () => Promise<import('../renderer/src/types').LocalHost[]>
+      getCatalog: () => Promise<import('../renderer/src/types').CatalogGroup[]>
+      readCatalogItem: (path: string) => Promise<import('../renderer/src/types').CatalogRead | null>
+      openCatalogFolder: (path: string) => void
       getInsightsReport: () => Promise<import('../renderer/src/types').InsightsReport>
       getFlow: (keys: string[]) => Promise<import('../renderer/src/types').FlowState>
       openFlowSkill: () => void

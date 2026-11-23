@@ -6,7 +6,7 @@ export const uncommittedCount = (sessions: Session[]): number => {
   return [...byFolder.values()].reduce((sum, n) => sum + n, 0)
 }
 
-export type DashboardPage = 'today' | 'inbox' | 'tickets' | 'mrs' | 'tree' | 'hosts' | 'insights' | 'flow'
+export type DashboardPage = 'today' | 'inbox' | 'tickets' | 'mrs' | 'tree' | 'hosts' | 'insights' | 'flow' | 'catalog'
 
 export const filterRows = (rows: TaskRow[], query: string): TaskRow[] => {
   const needle = query.trim().toLowerCase()

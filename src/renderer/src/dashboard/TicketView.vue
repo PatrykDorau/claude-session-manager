@@ -1,17 +1,24 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount, onActivated, onDeactivated } from 'vue'
-import { followId, followIds } from './follow'
-import type { DevServer, MrRow, Session, SessionDetail, TerminalMode, TicketMr, Stage } from '../types'
+import { ref, shallowRef, computed, watch, nextTick, onMounted, onBeforeUnmount, onActivated, onDeactivated } from 'vue'
+import { followId, followIds, isSuperseded, visibleTabs } from './follow'
+import { sessionRole, roleLabel, type SessionRole } from './tabs'
+import { findAddressSession } from './mrs'
+import { flashElement, type MrState } from './mrstate'
+import type { DevServer, MrDraftNote, MrRow, Session, SessionDetail, TerminalMode, TicketMr, Stage } from '../types'
 import type { TaskRow } from '../taskview'
 import { splitTag, statusLane } from '../taskview'
 import { plainSession } from '../cards'
 import { ago } from '../display'
 import { rowChip } from './dashboard'
+import type { TabRequest, TicketTab } from './mrroute'
 import { readiness, CREATE_MR_PROMPT } from './readiness'
 import ClaudeTerminal from './ClaudeTerminal.vue'
 import QuickActions from './QuickActions.vue'
 import TicketPanel from './TicketPanel.vue'
 import CodeView from './CodeView.vue'
+import MrOverview from './MrOverview.vue'
+import MrDraftsBar from './MrDraftsBar.vue'
+import MrStateHost from './MrStateHost.vue'
 import TestCasesDialog from './TestCasesDialog.vue'
 import ServerPanel from './ServerPanel.vue'
 import StatusMenu from './StatusMenu.vue'
@@ -23,13 +30,18 @@ import Icon from './Icon.vue'
 import type { MenuItem } from '../types'
 import StartSessionPopover from '../components/StartSessionPopover.vue'
 
-const props = defineProps<{ row: TaskRow; servers: DevServer[]; mrUrl: string | null; mr?: MrRow | null; stage?: Stage | null; reached?: Stage[] }>()
+const props = defineProps<{ row: TaskRow; servers: DevServer[]; mrUrl: string | null; mr?: MrRow | null; myName?: string | null; mrSession?: Session | null; stage?: Stage | null; reached?: Stage[]; tabRequest?: TabRequest | null }>()
 const emit = defineEmits<{ 'open-mr': [key: string]; viewing: [id: string | null] }>()
 const emitViewing = (name: 'viewing', id: string | null): void => emit(name, id)
 
 const DETAIL_INTERVAL_MS = 5000
 
-const tab = ref<'work' | 'server' | 'ticket'>('work')
+const tab = ref<TicketTab>('work')
+const ownMr = computed(() => (props.mr && props.myName && props.mr.author === props.myName ? props.mr : null))
+const availableTabs = computed<TicketTab[]>(() => (ownMr.value ? ['work', 'mr', 'server', 'ticket'] : ['work', 'server', 'ticket']))
+watch(availableTabs, (tabs) => {
+  if (!tabs.includes(tab.value)) tab.value = 'work'
+})
 const isCodeOpen = ref(!readFlag('dash.codeHidden'))
 const isClaudeOpen = ref(!readFlag('dash.claudeHidden'))
 const isBothOpen = computed(() => isCodeOpen.value && isClaudeOpen.value)
@@ -62,6 +74,15 @@ const resizeCode = (delta: number): void => {
 }
 const saveCodeWidth = (): void => writeSize('dash.codeWidth', codeWidth.value)
 const pickedId = ref<string | null>(null)
+watch(
+  () => props.tabRequest,
+  (request) => {
+    if (!request || request.key !== props.row.key) return
+    tab.value = availableTabs.value.includes(request.tab) ? request.tab : 'work'
+    if (request.sessionId) pickedId.value = request.sessionId
+  },
+  { immediate: true }
+)
 const modes = ref<Record<string, TerminalMode | null>>({})
 const ticks = ref<Record<string, number>>({})
 const openedIds = ref<string[]>([])
@@ -79,10 +100,16 @@ const followTabs = (): void => {
 }
 watch(() => props.row.sessions, followTabs)
 const defaultSession = (): Session | undefined => {
-  const main = props.row.sessions.filter((s) => !/\bexplain$/.test(s.name ?? ''))
-  return main.find((s) => s.isLive) ?? props.row.sessions.find((s) => s.isLive) ?? main[0] ?? props.row.sessions[0]
+  const current = props.row.sessions.filter((s) => !isSuperseded(props.row.sessions, s))
+  const main = current.filter((s) => roleOf(s) === 'main')
+  return main.find((s) => s.isLive) ?? current.find((s) => s.isLive) ?? main[0] ?? current[0] ?? props.row.sessions[0]
 }
-const session = computed(() => props.row.sessions.find((s) => s.id === pickedId.value) ?? defaultSession())
+const mrSession = computed(() => (ownMr.value ? (props.mrSession ?? findAddressSession(props.row.sessions, ownMr.value) ?? null) : null))
+const allSessions = computed(() =>
+  mrSession.value && !props.row.sessions.some((s) => s.id === mrSession.value?.id) ? [...props.row.sessions, mrSession.value] : props.row.sessions
+)
+const roleOf = (s: Session): SessionRole => sessionRole(s, props.row.key, mrSession.value?.id ?? null)
+const session = computed(() => allSessions.value.find((s) => s.id === followId(allSessions.value, pickedId.value)) ?? defaultSession())
 watch(() => session.value?.id ?? null, (id) => emitViewing('viewing', id), { immediate: true })
 onActivated(() => emitViewing('viewing', session.value?.id ?? null))
 onDeactivated(() => emitViewing('viewing', null))
@@ -91,7 +118,7 @@ const setMode = (id: string, next: TerminalMode | null): void => {
   modes.value = { ...modes.value, [id]: next }
 }
 const openedSessions = computed(() =>
-  openedIds.value.flatMap((id) => props.row.sessions.find((s) => s.id === id) ?? [])
+  openedIds.value.flatMap((id) => allSessions.value.find((s) => s.id === id) ?? [])
 )
 const STATUS_DOT: Record<string, string> = {
   working: '#6aa9ff',
@@ -101,18 +128,13 @@ const STATUS_DOT: Record<string, string> = {
   closed: '#3a414c'
 }
 const tabSessions = computed(() => {
-  const shown = props.row.sessions.filter((s) => s.isLive || openedIds.value.includes(s.id))
+  const shown = visibleTabs(allSessions.value, openedIds.value)
   const fallback = defaultSession()
   return shown.length ? shown : fallback ? [fallback] : []
 })
-const isExplain = (s: Session): boolean => /\bexplain$/.test(s.name ?? '')
-const sessionLabel = (s: Session): string => {
-  const name = s.name ?? ''
-  if (/\bexplain$/.test(name)) return 'Explain'
-  return name.replace(new RegExp(`^${props.row.key}\\s*`), '') || props.row.key
-}
+const sessionLabel = (s: Session): string => roleLabel(roleOf(s), s, props.row.key)
 const implementingSessionId = computed(
-  () => props.row.sessions.find((s) => !/\bexplain$/.test(s.name ?? ''))?.id ?? session.value?.id ?? null
+  () => props.row.sessions.find((s) => roleOf(s) === 'main')?.id ?? session.value?.id ?? null
 )
 const chip = computed(() => rowChip(props.row))
 const server = computed(() => props.servers.find((s) => s.key === props.row.key) ?? null)
@@ -147,10 +169,12 @@ const isMrSending = ref(false)
 const mrSendError = ref<string | null>(null)
 const isMrMissing = computed(() => !props.mr && !ticketMr.value)
 const taskFiles = ref<{ name: string; kind: 'video' | 'image' }[] | null>(null)
-const MAX_FILE_CHIPS = 6
-const fileLabel = (name: string): string => name.replace(/\.[^.]+$/, '')
 const openFolder = (): void => window.api.openTaskFolder(props.row.key)
 const openFile = (name: string): void => window.api.openTaskFile(props.row.key, name)
+const fileItems = computed<MenuItem[]>(() => [
+  { label: 'Open the task folder', icon: 'folder', run: openFolder },
+  ...(taskFiles.value ?? []).map((f): MenuItem => ({ label: f.name, icon: f.kind === 'video' ? 'play' : 'file', run: () => openFile(f.name) }))
+])
 const loadReadiness = async (): Promise<void> => {
   void window.api.getTaskFiles(props.row.key).then((files) => (taskFiles.value = files))
   const cwd = session.value?.projectPath ?? null
@@ -251,6 +275,72 @@ const askClaude = (text: string): void => {
   showClaude()
   activeTerminal()?.paste(text)
 }
+const sendToMainSession = (text: string): boolean => {
+  const id = implementingSessionId.value
+  const terminal = id && modes.value[id] === 'attach' ? terminals.get(id) : undefined
+  if (!id || !terminal) return false
+  pick(id)
+  showClaude()
+  terminal.paste(text)
+  return true
+}
+const askReviewSession = async (text: string): Promise<boolean> => {
+  const found = allSessions.value.filter((s) => roleOf(s) === 'review' && !isSuperseded(allSessions.value, s)).sort((a, b) => b.lastActive - a.lastActive)[0]
+  if (!found) return false
+  pick(found.id)
+  showClaude()
+  await nextTick()
+  const terminal = terminals.get(found.id)
+  if (!terminal) return false
+  if (modes.value[found.id] !== 'attach' && !(await terminal.takeOver())) return false
+  terminal.paste(text)
+  setTimeout(() => window.api.writeTerminal(found.id, '\r'), 150)
+  return true
+}
+const mrState = shallowRef<MrState | null>(null)
+const mrStateId = ref(0)
+const onMrState = (state: MrState): void => {
+  mrState.value = state
+  mrStateId.value += 1
+}
+const onMrGone = (state: MrState): void => {
+  if (mrState.value === state) mrState.value = null
+}
+const pushedMr = computed(() => (ownMr.value ? { iid: ownMr.value.iid, source: ownMr.value.sourceBranch, target: ownMr.value.targetBranch } : null))
+const codeComments = computed(() => mrState.value?.codeComments.value)
+const commentable = computed(() => mrState.value?.commentable.value ?? null)
+const onFileShown = (path: string, folder: string | null, isReadOnly: boolean): void => {
+  if (isReadOnly) void mrState.value?.checkCommentable(path, folder, isReadOnly)
+}
+const onVersion = (href: string, path: string | null, line: number | null): void => void mrState.value?.openVersion(href, path, line)
+const codeView = ref<{ goToFileLine: (path: string, line: number) => Promise<void>; showPushed: () => Promise<boolean> } | null>(null)
+const openLine = async (path: string, line: number): Promise<void> => {
+  showCode()
+  await nextTick()
+  if (await codeView.value?.showPushed()) await codeView.value?.goToFileLine(path, line)
+}
+const openDraft = async (d: MrDraftNote): Promise<void> => {
+  if (d.anchor) {
+    await openLine(d.anchor.path, d.anchor.line)
+    return
+  }
+  if (!mrState.value) return
+  tab.value = 'mr'
+  const target = mrState.value.revealDraft(d)
+  await nextTick()
+  flashElement(target)
+}
+const addressError = ref<string | null>(null)
+const isAddressPending = computed(() => mrState.value?.isAddressPendingIn(allSessions.value) ?? false)
+const addressComments = async (): Promise<void> => {
+  const state = mrState.value
+  if (!state) return
+  addressError.value = null
+  showClaude()
+  const result = await state.startAddressing()
+  addressError.value = result.error
+  if (result.sessionId) onStarted(result.sessionId)
+}
 const openItems = computed<MenuItem[]>(() => [
   { label: 'VS Code — code only', hint: "The ticket's worktree, no Claude session", icon: 'code', run: openCode },
   {
@@ -339,6 +429,10 @@ watch(
   { immediate: true }
 )
 watch(() => session.value?.lastActive, scheduleDetail)
+watch(
+  () => tabSessions.value.map((s) => `${s.id}:${s.status}:${s.lastActive}`).join('|'),
+  () => mrState.value?.scheduleStatus()
+)
 onBeforeUnmount(() => {
   if (detailTimer) clearTimeout(detailTimer)
   if (remountTimer) clearTimeout(remountTimer)
@@ -362,11 +456,8 @@ onBeforeUnmount(() => {
         <h1 class="title" :title="title.text">{{ title.text || 'No title' }}</h1>
         <button v-if="changes" class="unc" :title="`${changes} uncommitted ${changes === 1 ? 'file' : 'files'}. Show the code`" @click="showCode"><Icon name="diff" :size="13" />{{ changes }} uncommitted</button>
         <template v-if="taskFiles">
-          <button class="file" title="Open the task folder" @click="openFolder"><Icon name="folder" :size="13" />Folder</button>
-          <button v-for="f in taskFiles.slice(0, MAX_FILE_CHIPS)" :key="f.name" class="file" :title="f.name" @click="openFile(f.name)">
-            <Icon :name="f.kind === 'video' ? 'play' : 'file'" :size="12" /><span class="fname">{{ fileLabel(f.name) }}</span>
-          </button>
-          <button v-if="taskFiles.length > MAX_FILE_CHIPS" class="file" title="Open the task folder" @click="openFolder">+{{ taskFiles.length - MAX_FILE_CHIPS }}</button>
+          <button v-if="!taskFiles.length" class="file" title="Open the task folder" @click="openFolder"><Icon name="folder" :size="13" />Folder</button>
+          <MenuButton v-else :label="`Files ${taskFiles.length}`" icon="folder" title="Task folder, videos and screenshots" :items="fileItems" />
         </template>
         <button v-if="isMrMissing" class="ready" :class="{ full: ready.done === ready.total }" title="What is done before the merge request" @click="toggleReady">
           <Icon name="check" :size="13" />Ready for MR {{ ready.done }}/{{ ready.total }}
@@ -374,9 +465,11 @@ onBeforeUnmount(() => {
         <button v-if="server" class="srv" title="Show the dev server" @click="tab = 'server'"><i />localhost:{{ server.port }}</button>
         <span v-if="chip" class="state" :style="{ color: chip.color }"><i :style="{ background: chip.color }" />{{ chip.label }}</span>
       </div>
+      <MrDraftsBar v-if="mrState" :key="mrStateId" :state="mrState" :is-gone="false" @open-draft="openDraft" />
       <div class="bar">
         <nav class="tabs">
           <button :class="{ on: tab === 'work' }" @click="tab = 'work'"><Icon name="code" :size="15" />Work</button>
+          <button v-if="ownMr" :class="{ on: tab === 'mr' }" @click="tab = 'mr'"><Icon name="pr" :size="15" />MR !{{ ownMr.iid }}<span v-if="ownMr.openThreads" class="count">{{ ownMr.openThreads }}</span></button>
           <button :class="{ on: tab === 'server' }" @click="tab = 'server'"><Icon name="server" :size="15" />Server<span v-if="server" class="dot" /></button>
           <button :class="{ on: tab === 'ticket' }" @click="tab = 'ticket'"><Icon name="fileText" :size="15" />Ticket</button>
         </nav>
@@ -393,6 +486,7 @@ onBeforeUnmount(() => {
         <MenuButton label="Open in" icon="external" :items="openItems" />
         <MenuButton label="More actions" icon="more" is-icon title="More actions" :items="moreItems" />
       </div>
+      <div v-if="addressError" class="warn">{{ addressError }}</div>
       <template v-if="isReadyOpen && isMrMissing">
         <div class="scrim" @click="isReadyOpen = false" />
         <div class="readybox">
@@ -421,13 +515,22 @@ onBeforeUnmount(() => {
     <div v-show="tab === 'work'" ref="panes" class="panes">
       <section v-show="isCodeOpen" class="pane code" :style="isBothOpen ? { flex: 'none', width: `${codeWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
         <CodeView
+          ref="codeView"
           :cwd="session?.projectPath ?? null"
           :ticket-key="row.key"
           :ticket-title="title.text"
           :can-ask="mode === 'attach'"
           :source-session-id="implementingSessionId"
+          :pushed-mr="pushedMr"
+          :comments="codeComments"
+          :commentable="commentable"
+          :review="mrState?.runReview"
+          :send-to-session="sendToMainSession"
+          :ask-review="askReviewSession"
           @ask="askClaude"
           @explain="explainInSession"
+          @version="onVersion"
+          @file-shown="onFileShown"
         />
       </section>
       <Splitter v-if="isBothOpen" @resize="resizeCode" @done="saveCodeWidth" />
@@ -442,7 +545,7 @@ onBeforeUnmount(() => {
               @click="pick(s.id)"
             >
               <span v-if="closingIds.includes(s.id)" class="spin" />
-              <Icon v-else-if="isExplain(s)" name="sparkles" :size="13" />
+              <Icon v-else-if="roleOf(s) === 'explain'" name="sparkles" :size="13" />
               <i v-else :style="{ background: STATUS_DOT[s.status] ?? '#666d78' }" />{{ closingIds.includes(s.id) ? 'Closing…' : sessionLabel(s) }}
               <span v-if="!closingIds.includes(s.id)" class="x" role="button" :title="s.isLive ? 'Close this session (stops the Claude process)' : 'Hide this tab'" @click.stop="closeTab(s)">×</span>
             </button>
@@ -486,6 +589,11 @@ onBeforeUnmount(() => {
         <QuickActions :session-id="session?.id ?? null" :mode="mode" :take-over="takeOverHere" :values="actionValues" :stage="stage ?? null" />
       </section>
     </div>
+
+    <section v-if="ownMr && mrState" v-show="tab === 'mr'" class="pane doc">
+      <MrOverview :key="mrStateId" :row="ownMr" :state="mrState" :is-gone="false" is-header-shown :is-address-pending="isAddressPending" @open-line="openLine" @address-comments="addressComments" />
+    </section>
+    <MrStateHost v-if="ownMr" :key="ownMr.key" :row="ownMr" :my-name="myName ?? null" @state="onMrState" @gone="onMrGone" />
 
     <section v-show="tab === 'server'" class="pane">
       <ServerPanel :ticket-key="row.key" :cwd="session?.projectPath ?? null" :servers="servers" />
@@ -719,6 +827,19 @@ onBeforeUnmount(() => {
 .tabs button.on {
   color: var(--text);
   border-bottom-color: var(--accent);
+}
+.warn {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--warn);
+}
+.count {
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-3);
+  background: var(--bg-4);
+  border-radius: 8px;
 }
 .facts {
   margin-right: 6px;
@@ -973,6 +1094,9 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+.pane.doc {
+  overflow-y: auto;
 }
 .pane.claude {
   position: relative;

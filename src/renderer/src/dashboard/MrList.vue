@@ -9,7 +9,7 @@ import { useWorkday } from './useWorkday'
 import Icon from './Icon.vue'
 import PriorityIcon from './PriorityIcon.vue'
 import { useManualOrder } from './useOrder'
-import { splitStarred, starredBlock } from './order'
+import { splitStarred, starredBlock, sortByStatus } from './order'
 import SessionBadge from './SessionBadge.vue'
 
 const props = defineProps<{
@@ -99,7 +99,13 @@ const groups = computed(() =>
 const isStarred = (row: MrRow): boolean => props.starred.includes(row.key)
 const orderGroup = (key: string, rows: MrRow[]): MrRow[] => {
   const split = splitStarred(rows, props.starred)
-  return [...order.ordered(starredBlock(key), split.starred, rankMr), ...order.ordered(key, split.rest, rankMr)]
+  const ordered = [...order.ordered(starredBlock(key), split.starred, rankMr), ...order.ordered(key, split.rest, rankMr)]
+  return isStatusSort.value ? sortByStatus(ordered, (r) => (isLive(r) ? (sessionOf(r)?.status ?? null) : null)) : ordered
+}
+const isStatusSort = ref(readFlag('dash.statusSortMrs'))
+const setStatusSort = (next: boolean): void => {
+  isStatusSort.value = next
+  writeSize('dash.statusSortMrs', next)
 }
 const blockOf = (key: string, row: MrRow): string => (isStarred(row) ? starredBlock(key) : key)
 const blockKeys = (key: string, rows: MrRow[], row: MrRow): string[] =>
@@ -142,6 +148,7 @@ const updatedAgo = (row: MrRow): string => {
     <div class="filters">
       <label v-if="!isMineMode"><input v-model="isUnreviewedOnly" type="checkbox" />Not reviewed</label>
       <label title="Only merge requests with a Claude session active since midnight"><input :checked="isTodayOnly" type="checkbox" @change="setTodayOnly(($event.target as HTMLInputElement).checked)" />Today</label>
+      <label title="Sort by session status: needs you, working, idle, then merge requests without a session"><input :checked="isStatusSort" type="checkbox" @change="setStatusSort(($event.target as HTMLInputElement).checked)" />By status</label>
       <button class="toggle" :class="{ on: isAllProjects }" @click="toggleAllProjects">
         {{ isAllProjects ? 'My projects' : 'All projects' }}
       </button>
@@ -439,6 +446,8 @@ select:focus {
   background: var(--bg-3);
   border-color: var(--accent);
   box-shadow: inset 3px 0 0 var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .summary {
   margin: 0;

@@ -15,6 +15,7 @@ import SettingsPanel from '../components/SettingsPanel.vue'
 import AgentList from './AgentList.vue'
 import AgentView from './AgentView.vue'
 import HostsView from './HostsView.vue'
+import CatalogView from './CatalogView.vue'
 import InsightsView from './InsightsView.vue'
 import FlowView from './FlowView.vue'
 import TodayView from './TodayView.vue'
@@ -26,6 +27,8 @@ import PromptSearch from './PromptSearch.vue'
 import { treeCounts, filterGroups } from './agenttree'
 import { clampSize, readSize, writeSize, readFlag } from './dashboard'
 import { useEscapeClose } from './escape'
+import { routeMr, type TabRequest } from './mrroute'
+import { findReviewSession } from './mrs'
 
 const sessions = ref<Session[]>([])
 const tasks = ref<Record<string, TaskMeta>>({})
@@ -42,7 +45,7 @@ const selectedSupervisor = ref<string | null>(null)
 const isMovingOnly = ref(false)
 const isFinishedHidden = ref(false)
 const isTreePage = computed(() => page.value === 'tree')
-const isHostsPage = computed(() => page.value === 'hosts' || page.value === 'insights' || page.value === 'flow' || page.value === 'today')
+const isHostsPage = computed(() => page.value === 'hosts' || page.value === 'insights' || page.value === 'flow' || page.value === 'today' || page.value === 'catalog')
 const visibleGroups = computed(() =>
   filterGroups(agentGroups.value, { isMovingOnly: isMovingOnly.value, isFinishedHidden: isFinishedHidden.value })
 )
@@ -60,24 +63,32 @@ const mrForTicket = (key: string): MrRow | null => {
   const list = myMrs.value.items.filter((m) => m.ticket === key)
   return list.find((m) => m.author === myMrs.value.myName) ?? list[0] ?? null
 }
-const openMr = (key: string): void => {
-  if (!key) return
-  page.value = 'mrs'
-  selectedMrKey.value = key
-}
+const tabRequest = ref<TabRequest | null>(null)
 const openTicket = (key: string): void => {
   page.value = 'tickets'
   selectedKey.value = key
+}
+const openMr = (key: string, sessionId: string | null = null): void => {
+  if (!key) return
+  const route = routeMr(myMrs.value.items.find((m) => m.key === key) ?? null, myMrs.value.myName ?? null, rows.value.map((r) => r.key))
+  if (route.page === 'tickets') {
+    openTicket(route.key)
+    tabRequest.value = { key: route.key, tab: sessionId ? 'work' : 'mr', sessionId, at: Date.now() }
+    return
+  }
+  page.value = 'mrs'
+  selectedMrKey.value = key
 }
 
 const focusSession = (target: { ticket: string | null; sessionId: string }): void => {
   if (target.ticket) {
     openTicket(target.ticket)
+    tabRequest.value = { key: target.ticket, tab: 'work', sessionId: target.sessionId, at: Date.now() }
     return
   }
   const mr = myMrs.value.items.find((m) => m.sessionId === target.sessionId)
   if (mr) {
-    openMr(mr.key)
+    openMr(mr.key, target.sessionId)
     return
   }
   page.value = 'tree'
@@ -136,7 +147,7 @@ const openInboxRow = (row: InboxRow): void => {
   isInboxOpen.value = false
   if (isListHidden.value) toggleList()
   if (row.mrKey) {
-    openMr(row.mrKey)
+    openMr(row.mrKey, row.sessionId)
     return
   }
   focusSession({ sessionId: row.sessionId, ticket: row.ticket })
@@ -169,7 +180,7 @@ const openToday = (target: TodayTarget): void => {
   } else if (target.kind === 'ticket') openTicket(target.key)
   else if (target.kind === 'mr') openMr(target.key)
   else if (target.ticket) openTicket(target.ticket)
-  else if (target.mrKey) openMr(target.mrKey)
+  else if (target.mrKey) openMr(target.mrKey, target.sessionId)
   else {
     focusSession(target)
     void loadTree()
@@ -183,7 +194,8 @@ const counts = computed<Record<DashboardPage, number>>(() => ({
   tree: agentGroups.value.length,
   hosts: servers.value.length,
   insights: 0,
-  flow: 0
+  flow: 0,
+  catalog: 0
 }))
 
 const alerts = computed(() => ({
@@ -214,7 +226,8 @@ const PAGE_TITLES: Record<DashboardPage, string> = {
   tree: 'Agent tree',
   hosts: 'Local servers',
   insights: 'Insights',
-  flow: 'Flow'
+  flow: 'Flow',
+  catalog: 'Catalog'
 }
 const listWidth = ref(clampSize(readSize('dash.listWidth', 320), 220, 640))
 const toggleList = (): void => {
@@ -242,9 +255,7 @@ const selectPage = (next: DashboardPage): void => {
 const selectTicket = (key: string): void => {
   selectedKey.value = key
 }
-const selectMr = (key: string): void => {
-  selectedMrKey.value = key
-}
+const selectMr = (key: string): void => openMr(key)
 
 onMounted(() => {
   window.api.onSessions((s) => (sessions.value = s))
@@ -325,6 +336,7 @@ onBeforeUnmount(() => {
     <TodayView v-if="page === 'today'" :items="todayItems" @open="openToday" />
     <FlowView v-else-if="page === 'flow'" :rows="rows" @open-ticket="openTicket" />
     <InsightsView v-else-if="page === 'insights'" />
+    <CatalogView v-else-if="page === 'catalog'" />
     <HostsView v-else-if="isHostsPage" :sessions="sessions" @open-ticket="openTicket" />
     <AgentView
       v-else-if="isTreePage && selectedGroup"
@@ -356,8 +368,11 @@ onBeforeUnmount(() => {
         :servers="servers"
         :mr-url="tasks[selectedRow.key]?.mrUrl ?? null"
         :mr="mrForTicket(selectedRow.key)"
+        :my-name="myMrs.myName ?? null"
+        :mr-session="findReviewSession(sessions, mrForTicket(selectedRow.key)?.sessionId ?? null) ?? null"
         :stage="tasks[selectedRow.key]?.stage ?? null"
         :reached="tasks[selectedRow.key]?.reached ?? []"
+        :tab-request="tabRequest"
         @open-mr="openMr"
         @viewing="viewedTabId = $event"
       />

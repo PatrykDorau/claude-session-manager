@@ -2,6 +2,8 @@
 import { computed, onUnmounted, ref, watch } from 'vue'
 import type { AgentNode, Session, TerminalMode } from '../types'
 import { contextLevel, formatContext, handoffPrompt, clearStartPrompt, isIdleLarge, nextClearStep, type ClearPhase } from './context'
+import { useEscapeClose } from './escape'
+import { isSideSessionName } from './tabs'
 
 const props = defineProps<{ session: Session; mode: TerminalMode | null }>()
 
@@ -17,7 +19,7 @@ onUnmounted(stopClock)
 const isIdle = computed(() => isIdleLarge(props.session, now.value))
 const level = computed(() => (isIdle.value && contextLevel(props.session.contextTokens) === 'ok' ? 'warn' : contextLevel(props.session.contextTokens)))
 const isDanger = computed(() => level.value === 'danger')
-const isClearShown = computed(() => props.mode === 'attach' && !!props.session.ticket && !/\bexplain$/.test(props.session.name ?? '') && (isDanger.value || isIdle.value || phase.value !== 'none'))
+const isClearShown = computed(() => props.mode === 'attach' && !!props.session.ticket && !isSideSessionName(props.session.name) && (isDanger.value || isIdle.value || phase.value !== 'none'))
 const isBusy = computed(() => props.session.status === 'working' || props.session.status === 'waiting')
 const isClearDisabled = computed(() => phase.value === 'blocked' || (phase.value === 'none' && isBusy.value))
 const clearLabel = computed(() => {
@@ -25,6 +27,26 @@ const clearLabel = computed(() => {
   if (phase.value === 'blocked') return 'Handoff needs you'
   return 'Clear + handoff'
 })
+const isCompactShown = computed(() => isDanger.value && props.mode === 'attach')
+const isHandOffShown = computed(() => isDanger.value && !!props.session.ticket)
+const isMenuAvailable = computed(() => isCompactShown.value || isHandOffShown.value || isClearShown.value)
+const isMenuOpen = ref(false)
+const phaseText = computed(() => {
+  if (phase.value === 'handoff') return 'Writing handoff…'
+  if (phase.value === 'blocked') return 'Handoff needs you'
+  return ''
+})
+const toggleMenu = (): void => {
+  if (isMenuAvailable.value) isMenuOpen.value = !isMenuOpen.value
+}
+const closeMenu = (): void => {
+  isMenuOpen.value = false
+}
+useEscapeClose(isMenuOpen, closeMenu)
+const runItem = (run: () => void): void => {
+  closeMenu()
+  run()
+}
 const clearTitle = computed(() => {
   if (phase.value === 'handoff') return 'Cancel: do not /clear after the handoff'
   if (isBusy.value && phase.value === 'none') return 'Wait until the session is idle'
@@ -94,8 +116,17 @@ const handOff = (): void => {
 <template>
   <span v-if="level !== 'none'" class="context">
     <span class="peek" @mouseenter="openPeek" @mouseleave="closePeek">
-      <span class="chip" :class="level">{{ formatContext(session.contextTokens) }} context</span>
-      <span v-if="isPeekOpen" class="pop">
+      <button class="chip" :class="[level, { menu: isMenuAvailable }]" :title="chipTitle" :disabled="!isMenuAvailable" @click="toggleMenu">
+        {{ formatContext(session.contextTokens) }} context<template v-if="phaseText"> · {{ phaseText }}</template>
+        <span v-if="isMenuAvailable" class="dot" />
+      </button>
+      <span v-if="isMenuOpen" class="scrim" @click="closeMenu" />
+      <span v-if="isMenuOpen" class="actions">
+        <button v-if="isCompactShown" class="item" title="Run /compact in this session" @click="runItem(compact)">Compact</button>
+        <button v-if="isHandOffShown" class="item" title="Write handoff.md for a fresh session" @click="runItem(handOff)">Hand off</button>
+        <button v-if="isClearShown" class="item" :title="clearTitle" :disabled="isClearDisabled" @click="runItem(clearAndHandOff)">{{ clearLabel }}</button>
+      </span>
+      <span v-if="isPeekOpen && !isMenuOpen" class="pop">
         <span class="prow main"><b>Main session</b><em>{{ formatContext(session.contextTokens) }}</em></span>
         <span class="hint">{{ chipTitle }}</span>
         <span v-if="!isAgentsLoaded" class="hint">Loading subagents…</span>
@@ -109,9 +140,6 @@ const handOff = (): void => {
         </template>
       </span>
     </span>
-    <button v-if="isDanger && mode === 'attach'" class="act" title="Run /compact in this session" @click="compact">Compact</button>
-    <button v-if="isDanger && session.ticket" class="act" title="Write handoff.md for a fresh session" @click="handOff">Hand off</button>
-    <button v-if="isClearShown" class="act" :title="clearTitle" :disabled="isClearDisabled" @click="clearAndHandOff">{{ clearLabel }}</button>
   </span>
 </template>
 
@@ -184,9 +212,60 @@ const handOff = (): void => {
   color: var(--text-4);
 }
 .chip {
-  cursor: default;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  font: 12px var(--font-ui);
   white-space: nowrap;
+  background: none;
+  border: none;
+  cursor: default;
+}
+.chip.menu {
+  cursor: pointer;
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+}
+.actions {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  padding: 5px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+.item {
+  padding: 8px 10px;
+  font: 13px var(--font-ui);
+  color: var(--text);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+.item:hover:not(:disabled) {
+  background: var(--bg-4);
+}
+.item:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .chip.ok {
   color: var(--text-4);
@@ -196,23 +275,5 @@ const handOff = (): void => {
 }
 .chip.danger {
   color: var(--danger);
-}
-.act {
-  height: 22px;
-  padding: 0 8px;
-  font: 500 12px var(--font-ui);
-  color: var(--danger);
-  background: none;
-  border: 1px solid var(--danger-line);
-  border-radius: 6px;
-  cursor: pointer;
-}
-.act:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-.act:not(:disabled):hover {
-  background: var(--danger-soft);
-  border-color: var(--danger);
 }
 </style>

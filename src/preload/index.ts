@@ -11,7 +11,10 @@ import type {
   ChangedFile,
   DevServer,
   ExplainFile,
+  ReviewDoc,
   InsightsReport,
+  CatalogGroup,
+  CatalogRead,
   FlowState,
   JiraTransition,
   ServerProfile,
@@ -274,8 +277,8 @@ const api = {
   listChanges: (cwd: string): Promise<ChangedFile[]> => ipcRenderer.invoke('ide-status', cwd),
   listBranchChanges: (cwd: string): Promise<BranchChanges> => ipcRenderer.invoke('ide-changes', cwd),
   getExplainDoc: (key: string): Promise<ExplainFile | null> => ipcRenderer.invoke('explain-doc', key),
-  listRefChanges: (cwd: string, source: string, target: string): Promise<BranchChanges> =>
-    ipcRenderer.invoke('ide-ref-changes', cwd, source, target),
+  listRefChanges: (cwd: string, source: string, target: string, isPushedOnly = false): Promise<BranchChanges> =>
+    ipcRenderer.invoke('ide-ref-changes', cwd, source, target, isPushedOnly),
   readRefFile: (cwd: string, source: string, target: string, rel: string, isBase: boolean): Promise<string | null> =>
     ipcRenderer.invoke('ide-ref-read', cwd, source, target, rel, isBase),
   listRefFiles: (cwd: string, source: string): Promise<string[]> => ipcRenderer.invoke('ide-ref-files', cwd, source),
@@ -283,6 +286,9 @@ const api = {
   getAgentRun: (sessionId: string, agentId: string): Promise<AgentStep[]> => ipcRenderer.invoke('agent-run', sessionId, agentId),
   startExplain: (key: string, cwd: string, sourceSessionId: string | null): Promise<{ error: string | null; sessionId?: string }> =>
     ipcRenderer.invoke('explain-start', key, cwd, sourceSessionId),
+  startReviewParts: (key: string, cwd: string, mr: { iid: number; source: string; target: string } | null): Promise<{ error: string | null; sessionId?: string }> =>
+    ipcRenderer.invoke('review-parts-start', key, cwd, mr),
+  getReviewDoc: (key: string): Promise<(ReviewDoc & { updatedAt: number }) | null> => ipcRenderer.invoke('review-parts-doc', key),
   openExplainMd: (key: string): void => ipcRenderer.send('open-explain-md', key),
   readExplainMd: (key: string): Promise<string | null> => ipcRenderer.invoke('explain-md-text', key),
   readFile: (cwd: string, rel: string): Promise<{ text: string | null; error: string | null }> =>
@@ -317,6 +323,9 @@ const api = {
   getMrRepo: (key: string): Promise<string | null> => ipcRenderer.invoke('mr-repo', key),
   refreshLists: (): Promise<boolean> => ipcRenderer.invoke('refresh-lists'),
   getLocalHosts: (): Promise<LocalHost[]> => ipcRenderer.invoke('local-hosts'),
+  getCatalog: (): Promise<CatalogGroup[]> => ipcRenderer.invoke('catalog-list'),
+  readCatalogItem: (path: string): Promise<CatalogRead | null> => ipcRenderer.invoke('catalog-read', path),
+  openCatalogFolder: (path: string): void => ipcRenderer.send('catalog-open-folder', path),
   getInsightsReport: (): Promise<InsightsReport> => ipcRenderer.invoke('insights-report'),
   getFlow: (keys: string[]): Promise<FlowState> => ipcRenderer.invoke('flow-state', keys),
   openFlowSkill: (): void => ipcRenderer.send('flow-open-skill'),

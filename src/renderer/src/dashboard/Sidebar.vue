@@ -23,7 +23,8 @@ const ENTRIES: { page: DashboardPage; label: string; icon: IconName; isSoon: boo
   { page: 'tree', label: 'Agent tree', icon: 'tree', isSoon: false },
   { page: 'hosts', label: 'Local servers', icon: 'server', isSoon: false },
   { page: 'insights', label: 'Insights', icon: 'sparkles', isSoon: false },
-  { page: 'flow', label: 'Flow', icon: 'flow', isSoon: false }
+  { page: 'flow', label: 'Flow', icon: 'flow', isSoon: false },
+  { page: 'catalog', label: 'Catalog', icon: 'fileText', isSoon: false }
 ]
 const select = (entry: (typeof ENTRIES)[number]): void => {
   if (!entry.isSoon) emit('select', entry.page)

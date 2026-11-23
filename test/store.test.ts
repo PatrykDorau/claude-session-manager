@@ -12,6 +12,7 @@ import {
   applyTicketWatched,
   applyTicketFinished,
   overrideTicket,
+  resolveById,
   visibleBounds,
   DEFAULT_QUICK_ACTIONS,
   type State
@@ -132,6 +133,13 @@ describe('store pure transforms', () => {
     expect(s.ticketOverride).toEqual({ a: 'SOFKAN-1', b: '' })
     s = applyTicketOverride(s, 'a', null)
     expect(s.ticketOverride).toEqual({ b: '' })
+  })
+  it('resolveById reads an exact key, then a short-id prefix key of 8+ chars', () => {
+    const map = { '2e738d2a-ae89-4b81': 'full', '2e738d2a': 'short', abc: 'tiny' }
+    expect(resolveById(map, '2e738d2a-ae89-4b81')).toBe('full')
+    expect(resolveById({ '2e738d2a': 'short' }, '2e738d2a-ae89-4b81-b65c')).toBe('short')
+    expect(resolveById({ abc: 'tiny' }, 'abcdef123456')).toBeUndefined()
+    expect(resolveById({}, '2e738d2a-ae89')).toBeUndefined()
   })
   it('overrideTicket resolves auto vs pin vs not-a-task', () => {
     expect(overrideTicket('SOFKAN-1', undefined)).toBe('SOFKAN-1')

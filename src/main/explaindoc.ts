@@ -43,9 +43,11 @@ export const parseExplainDoc = (json: unknown): ExplainDoc | null => {
   }
 }
 
+export const explainName = (key: string): string => `${key} explain`
+
 export const explainArgs = (key: string, transcript: string | null): string[] => [
   '--bg',
   '--name',
-  `${key} explain`,
+  explainName(key),
   `/explain-changes ${key} --dashboard${transcript ? ` --transcript "${transcript}"` : ''}`
 ]

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseExplainDoc, explainArgs } from '../src/main/explaindoc'
+import { parseExplainDoc, explainArgs, explainName } from '../src/main/explaindoc'
 
 describe('parseExplainDoc', () => {
   it('reads the flow and the changes the skill writes', () => {
@@ -33,6 +33,13 @@ describe('parseExplainDoc', () => {
   it('returns null when the file is not an explanation', () => {
     expect(parseExplainDoc(null)).toBeNull()
     expect(parseExplainDoc({ ticket: 'X' })).toBeNull()
+  })
+})
+
+describe('explainName', () => {
+  it('names the session after the ticket and shares the name with the start arguments', () => {
+    expect(explainName('SOFRMPT-1')).toBe('SOFRMPT-1 explain')
+    expect(explainArgs('SOFRMPT-1', null)[2]).toBe(explainName('SOFRMPT-1'))
   })
 })
 

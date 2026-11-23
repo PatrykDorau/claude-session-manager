@@ -27,7 +27,21 @@ export const orderRows = <T extends Keyed>(rows: T[], rank: (row: T) => Rank, ma
   return [...unknown.filter((row) => rank(row).isActive), ...known, ...unknown.filter((row) => !rank(row).isActive)]
 }
 
-export const splitStarred = <T extends Keyed>(rows: T[], starred: string[]): { starred: T[]; rest: T[] } => {
+const STATUS_ORDER = ['waiting', 'working', 'checkout', 'idle']
+
+const statusRank = (status: string | null): number => {
+  if (status === null) return STATUS_ORDER.length + 1
+  const at = STATUS_ORDER.indexOf(status)
+  return at < 0 ? STATUS_ORDER.length : at
+}
+
+export const sortByStatus = <T>(rows: T[], statusOf: (row: T) => string | null): T[] =>
+  rows
+    .map((row, index) => ({ row, index, rank: statusRank(statusOf(row)) }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map((entry) => entry.row)
+
+export const splitStarred =<T extends Keyed>(rows: T[], starred: string[]): { starred: T[]; rest: T[] } => {
   const keys = new Set(starred)
   return { starred: rows.filter((row) => keys.has(row.key)), rest: rows.filter((row) => !keys.has(row.key)) }
 }

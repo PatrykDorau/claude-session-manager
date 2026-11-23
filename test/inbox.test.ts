@@ -37,6 +37,18 @@ describe('buildInboxRows', () => {
   })
 })
 
+describe('buildInboxRows for an own MR address session', () => {
+  const mr = { key: '7!518', iid: 518, ticket: 'SOFNJJ-2350', title: 'Own MR', sessionId: null } as MrRow
+  it('resolves the MR by the address session name when the session has no ticket', () => {
+    const rows = buildInboxRows([session({ id: 'a', name: 'SOFNJJ-2350-cr' })], {}, [mr])
+    expect(rows[0].mrKey).toBe('7!518')
+    expect(rows[0].label).toBe('!518')
+  })
+  it('does not match a session with another name', () => {
+    expect(buildInboxRows([session({ id: 'a', name: 'scratch' })], {}, [mr])[0].mrKey).toBeNull()
+  })
+})
+
 describe('buildLiveRows', () => {
   const all = [
     session({ id: 'idle', status: 'idle', lastActive: 9 }),

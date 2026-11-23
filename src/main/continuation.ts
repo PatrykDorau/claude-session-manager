@@ -49,6 +49,11 @@ export const findContinuations = (
   return { links: collapsed, seen, active }
 }
 
+export const launchIdsOf = (id: string, active: Map<string, string>): string[] => [
+  ...(active.has(id) ? [] : [id]),
+  ...[...active].filter(([, to]) => to === id).map(([from]) => from)
+]
+
 export interface CarryState {
   mrSessions: Record<string, string>
   ticketOverride: Record<string, string>

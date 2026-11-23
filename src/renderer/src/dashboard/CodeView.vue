@@ -10,8 +10,8 @@ import { json } from '@codemirror/lang-json'
 import { css } from '@codemirror/lang-css'
 import { sass } from '@codemirror/lang-sass'
 import { html } from '@codemirror/lang-html'
-import { unifiedMergeView, uncollapseUnchanged } from '@codemirror/merge'
-import type { BranchChanges, ChangedFile, CodeComment, ExplainFile, MrCommentable, MrReviewAction } from '../types'
+import { MergeView, getChunks, unifiedMergeView, uncollapseUnchanged } from '@codemirror/merge'
+import type { BranchChanges, ChangedFile, CodeComment, ExplainFile, MrCommentable, MrReviewAction, ReviewDoc, ReviewNote } from '../types'
 import { buildTree, languageOf, type Language, type TreeNode } from './code'
 import Splitter from './Splitter.vue'
 import Icon from './Icon.vue'
@@ -25,6 +25,11 @@ import { changeSignature, isFileViewed, toggleViewed } from './viewed'
 import { importAt, wordAt, listImports, importLineOf, definitionLine, defaultExportLine, resolveImport, isIdentifierQuery, groupHits, peekTarget, memberSites, snippetAt } from './codenav'
 import { parseVersionLink } from './mrhtml'
 import { clampSize, readSize, writeSize, readFlag } from './dashboard'
+import { mapToSideA, readDiffLayout, sidesFor, type DiffLayout } from './difflayout'
+import ReviewParts from './ReviewParts.vue'
+import { isSameHead, staleReason, progressKey, remarkDrafts, remarkedParts, remarksPrompt, restoreProgress, setRemark, type PartProgress } from './reviewparts'
+
+type ReviewFile = ReviewDoc & { updatedAt: number }
 
 const props = defineProps<{
   cwd: string | null
@@ -36,6 +41,11 @@ const props = defineProps<{
   branchRef?: { source: string; target: string } | null
   commentable?: MrCommentable | null
   review?: (action: MrReviewAction) => Promise<boolean>
+  pushedMr?: { iid: number; source: string; target: string } | null
+  mr?: { iid: number; source: string; target: string } | null
+  isOthersMr?: boolean
+  sendToSession?: (text: string) => boolean
+  askReview?: (text: string) => Promise<boolean>
 }>()
 const emit = defineEmits<{
   ask: [text: string]
@@ -74,14 +84,18 @@ const surface = EditorView.theme(
     '.cm-cursor': { borderLeftColor: '#aeafad' },
     '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection': { backgroundColor: '#264f78 !important' },
     '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'rgba(255, 255, 255, 0.03)' },
-    '.cm-changedLine': { backgroundColor: 'rgba(46, 200, 110, 0.2) !important' },
-    '.cm-changedText': { background: 'rgba(46, 220, 110, 0.5) !important', borderRadius: '2px', boxShadow: 'inset 0 -2px 0 #3ee07f' },
-    '.cm-deletedChunk': { backgroundColor: 'rgba(240, 70, 70, 0.2) !important', paddingLeft: '18px', position: 'relative' },
+    '.cm-changedLine': { backgroundColor: 'rgba(46, 160, 67, 0.15) !important' },
+    '.cm-changedText': { background: 'rgba(46, 160, 67, 0.4) !important', borderRadius: '2px' },
+    '.cm-merge-a .cm-changedLine': { backgroundColor: 'rgba(248, 81, 73, 0.15) !important' },
+    '.cm-merge-a .cm-changedText': { background: 'rgba(248, 81, 73, 0.4) !important', borderRadius: '2px' },
+    '.cm-deletedChunk': { backgroundColor: 'rgba(248, 81, 73, 0.15) !important', paddingLeft: '18px', position: 'relative' },
     '.cm-deletedChunk .cm-deletedLine::before': { content: '"−"', position: 'absolute', left: '5px', color: '#ff7b72', fontWeight: '700' },
-    '.cm-deletedChunk .cm-deletedText, .cm-deletedChunk del': { background: 'rgba(240, 70, 70, 0.5)', textDecoration: 'none', boxShadow: 'inset 0 -2px 0 #ff6b6b' },
+    '.cm-deletedChunk .cm-deletedText, .cm-deletedChunk del': { background: 'rgba(248, 81, 73, 0.4)', textDecoration: 'none' },
     '.cm-changeGutter': { width: '14px', paddingLeft: '0' },
-    '.cm-changedLineGutter': { background: 'rgba(46, 200, 110, 0.35)' },
-    '.cm-changedLineGutter::after': { content: '"+"', display: 'block', textAlign: 'center', color: '#3ee07f', fontWeight: '700' },
+    '.cm-changedLineGutter': { background: '#238636' },
+    '.cm-changedLineGutter::after': { content: '"+"', display: 'block', textAlign: 'center', color: '#ffffff', fontWeight: '700' },
+    '.cm-merge-a .cm-changedLineGutter': { background: '#b62324' },
+    '.cm-merge-a .cm-changedLineGutter::after': { content: '"−"', color: '#ffffff' },
     '.cm-deletedLineGutter': { background: 'var(--danger)' },
     '.cm-tooltip.cm-tooltip-hover': { background: 'var(--bg-2)', border: '1px solid var(--line-2)', borderRadius: '8px', boxShadow: '0 8px 24px rgba(0, 0, 0, 0.45)' },
     '.cp-peek': { maxWidth: '640px', maxHeight: '360px', overflow: 'auto', padding: '6px 10px' },
@@ -90,6 +104,7 @@ const surface = EditorView.theme(
     '.cp-peek pre': { margin: '2px 0 8px', font: '12px/1.5 var(--font-mono)', color: '#d4d4d4', whiteSpace: 'pre' },
     '.cm-collapsedLines': { color: 'var(--text-3)', background: 'var(--bg-2)', padding: '4px 12px', cursor: 'pointer', fontFamily: 'var(--font-ui)', fontSize: '12px' },
     '.cm-why-gutter': { width: '22px' },
+    '.cm-part-line': { boxShadow: 'inset 3px 0 0 #e8b84a', backgroundColor: 'rgba(232, 184, 74, 0.08)' },
     '.cm-searchMatch': { backgroundColor: 'rgba(232, 184, 74, 0.22)', outline: '1px solid rgba(232, 184, 74, 0.75)', borderRadius: '2px' },
     '.cm-searchMatch.cm-searchMatch-selected': { backgroundColor: '#e8b84a', outline: '1px solid #e8b84a', color: '#141414' },
     '.cm-searchMatch.cm-searchMatch-selected *': { color: '#141414 !important' },
@@ -134,7 +149,7 @@ const surface = EditorView.theme(
   { dark: true }
 )
 
-const view = ref<'changes' | 'files' | 'flow' | 'search'>('changes')
+const view = ref<'changes' | 'files' | 'flow' | 'search' | 'parts'>('changes')
 const filter = ref('')
 const searchQuery = ref('')
 const searchResults = ref<{ path: string; line: number; text: string }[]>([])
@@ -201,13 +216,22 @@ const isSaving = ref(false)
 const expanded = ref<Set<string>>(new Set())
 const host = ref<HTMLDivElement | null>(null)
 const editor = shallowRef<EditorView | null>(null)
+const mergeView = shallowRef<MergeView | null>(null)
+const layout = ref<DiffLayout>(readDiffLayout())
 const explain = ref<ExplainFile | null>(null)
 const isExplaining = ref(false)
-let pollTimer: ReturnType<typeof setTimeout> | null = null
+const pollTimers = new Set<ReturnType<typeof setTimeout>>()
+const partsDoc = ref<ReviewFile | null>(null)
+const partsProgress = ref<PartProgress>({ head: '', updatedAt: 0, reviewed: [], remarks: {} })
+const isSendingRemarks = ref(false)
+const activePart = ref<number | null>(null)
+const isReviewing = ref(false)
 const why = ref<{ text: string; top: number; left: number } | null>(null)
 const languageSlot = new Compartment()
+const languageSlotA = new Compartment()
 const diffSlot = new Compartment()
 const whySlot = new Compartment()
+const partSlot = new Compartment()
 let baseText = ''
 let savedText = ''
 const peekCache = new Map<string, { path: string; line: number; snippet: string } | null>()
@@ -289,7 +313,7 @@ const toggleSide = (): void => {
   isSideCollapsed.value = !isSideCollapsed.value
   writeSize('dash.codeSideCollapsed', isSideCollapsed.value)
 }
-const showView = (next: 'changes' | 'files' | 'flow' | 'search'): void => {
+const showView = (next: 'changes' | 'files' | 'flow' | 'search' | 'parts'): void => {
   view.value = next
   if (isSideCollapsed.value) toggleSide()
 }
@@ -309,13 +333,41 @@ const fileWhys = computed(() =>
   }))
 )
 const whyCount = (path: string): number => changesOfFile(path).length
+const uncollapseAt = (v: EditorView, from: number): void => {
+  v.dispatch({ effects: uncollapseUnchanged.of(from) })
+  const left = mergeView.value && mergeView.value.b === v ? mergeView.value.a : null
+  const chunks = left ? getChunks(v.state)?.chunks : null
+  if (left && chunks) left.dispatch({ effects: uncollapseUnchanged.of(mapToSideA(from, chunks)) })
+}
 const goToLine = (line: number): void => {
   const v = editor.value
   if (!v) return
   const target = v.state.doc.line(Math.min(Math.max(line, 1), v.state.doc.lines))
   const block = v.lineBlockAt(target.from)
-  if (block.type === BlockType.WidgetRange) v.dispatch({ effects: uncollapseUnchanged.of(block.from) })
+  if (block.type === BlockType.WidgetRange) uncollapseAt(v, block.from)
   v.dispatch({ selection: { anchor: target.from }, effects: EditorView.scrollIntoView(target.from, { y: 'center' }) })
+  v.focus()
+}
+
+const changeCount = ref(0)
+const changeIndex = ref(-1)
+const countChanges = (state: EditorState): void => {
+  changeCount.value = getChunks(state)?.chunks.length ?? 0
+}
+const stepChange = (delta: number): void => {
+  const v = editor.value
+  const chunks = v ? (getChunks(v.state)?.chunks ?? []) : []
+  if (!v || !chunks.length) return
+  const doc = v.state.doc
+  const head = doc.lineAt(v.state.selection.main.head).from
+  const starts = chunks.map((c) => doc.lineAt(Math.min(c.fromB, doc.length)).from)
+  const after = starts.findIndex((s) => s > head)
+  const before = starts.reduce((found, s, i) => (s < head ? i : found), -1)
+  const index = delta > 0 ? (after === -1 ? 0 : after) : before === -1 ? starts.length - 1 : before
+  changeIndex.value = index
+  const block = v.lineBlockAt(starts[index])
+  if (block.type === BlockType.WidgetRange) uncollapseAt(v, block.from)
+  v.dispatch({ selection: { anchor: starts[index] }, effects: EditorView.scrollIntoView(starts[index], { y: 'center' }) })
   v.focus()
 }
 
@@ -357,11 +409,97 @@ const whyExtension = (): Extension => {
   })
 }
 
+const note = ref<{ text: string; line: number; top: number; left: number } | null>(null)
+let noteCloseTimer: ReturnType<typeof setTimeout> | null = null
+const keepNote = (): void => {
+  if (noteCloseTimer) clearTimeout(noteCloseTimer)
+  noteCloseTimer = null
+}
+const closeNoteSoon = (): void => {
+  keepNote()
+  noteCloseTimer = setTimeout(() => (note.value = null), 250)
+}
+
+class NoteMarker extends GutterMarker {
+  constructor(
+    readonly text: string,
+    readonly line: number
+  ) {
+    super()
+  }
+  eq(other: NoteMarker): boolean {
+    return other.text === this.text && other.line === this.line
+  }
+  toDOM(): Node {
+    const el = document.createElement('span')
+    el.className = 'why-dot note-dot'
+    el.textContent = 'i'
+    el.addEventListener('mouseenter', () => {
+      keepNote()
+      const r = el.getBoundingClientRect()
+      note.value = { text: this.text, line: this.line, top: r.bottom + 4, left: r.left }
+    })
+    el.addEventListener('mouseleave', closeNoteSoon)
+    return el
+  }
+}
+
+const noteExtension = (notes: ReviewNote[]): Extension =>
+  notes.length
+    ? gutter({
+        class: 'cm-why-gutter',
+        markers: (v) =>
+          RangeSet.of(
+            notes
+              .map((n) => ({ from: lineStart(v, n.line), n }))
+              .sort((a, b) => a.from - b.from)
+              .map((m) => new NoteMarker(m.n.text, m.n.line).range(m.from)),
+            true
+          )
+      })
+    : []
+
+const askAboutNote = async (): Promise<void> => {
+  const shown = note.value
+  const v = editor.value
+  if (!shown || !v || !openPath.value) return
+  note.value = null
+  const code = v.state.doc.line(Math.min(Math.max(shown.line, 1), v.state.doc.lines)).text.trim()
+  const prompt = `Rozwiń proszę wyjaśnienie linii ${openPath.value}:${shown.line}\n\`\`\`\n${code}\n\`\`\`\nTwoja notatka: ${shown.text}\nCzego dotyczy ta linia i jak działa w kontekście tej zmiany?`
+  if (!props.askReview || !(await props.askReview(prompt))) emit('ask', prompt)
+}
+
+const partLine = Decoration.line({ class: 'cm-part-line' })
+const partExtension = (): Extension => {
+  const part = activePart.value === null ? null : partsDoc.value?.parts[activePart.value]
+  const hunks = part ? part.hunks.filter((h) => h.file === openPath.value) : []
+  const notes = part ? (part.notes ?? []).filter((n) => n.file === openPath.value) : []
+  if (!hunks.length) return noteExtension(notes)
+  return [noteExtension(notes), EditorView.decorations.compute(['doc'], (state) => {
+    const starts = new Set<number>()
+    for (const h of hunks) {
+      for (let n = Math.max(h.start, 1); n <= Math.min(h.end, state.doc.lines); n += 1) starts.add(state.doc.line(n).from)
+    }
+    return Decoration.set([...starts].sort((a, b) => a - b).map((from) => partLine.range(from)))
+  })]
+}
+
+const isPushed = ref(false)
+const pushedRef = computed(() => (isPushed.value && props.pushedMr ? { source: props.pushedMr.source, target: props.pushedMr.target } : null))
+const activeRef = computed(() => props.branchRef ?? pushedRef.value)
+const isMrSource = computed(() => !!props.branchRef || !!pushedRef.value)
+const mrComments = computed(() => (isMrSource.value ? (props.comments ?? []) : []))
+const mrCommentable = computed(() => (isMrSource.value ? (props.commentable ?? null) : null))
+const mrReview = computed(() => (isMrSource.value ? props.review : undefined))
+const reviewMr = computed(() => props.mr ?? (pushedRef.value ? (props.pushedMr ?? null) : null))
+const isMrOfOther = computed(() => !!props.branchRef && !!props.isOthersMr)
+const currentHead = computed(() => (isMrSource.value ? (props.commentable?.headSha ?? null) : (branch.value?.head ?? null)))
+const partsStaleReason = computed(() => (partsDoc.value && branch.value ? staleReason(partsDoc.value, branch.value.files, currentHead.value) : null))
 const commentSlot = new Compartment()
 const openComments = ref<Set<string>>(new Set())
-const fileComments = computed(() => (props.comments ?? []).filter((c) => c.path === openPath.value))
+const fileComments = computed(() => mrComments.value.filter((c) => c.path === openPath.value))
 const activeComments = computed(() =>
-  (props.comments ?? []).filter((c) => !c.isResolved).sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line)
+  mrComments.value.filter((c) => !c.isResolved).sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line)
 )
 const commentIndex = ref(-1)
 const goToFileLine = async (path: string, line: number): Promise<void> => {
@@ -370,8 +508,8 @@ const goToFileLine = async (path: string, line: number): Promise<void> => {
   if (!v || openPath.value !== path) return
   const at = lineStart(v, line)
   const block = v.lineBlockAt(at)
-  if (block.type === BlockType.WidgetRange) v.dispatch({ effects: uncollapseUnchanged.of(block.from) })
-  const here = (props.comments ?? []).filter((c) => c.path === path && c.line === line && !c.isDraft)
+  if (block.type === BlockType.WidgetRange) uncollapseAt(v, block.from)
+  const here = mrComments.value.filter((c) => c.path === path && c.line === line && !c.isDraft)
   if (here.length) {
     const next = new Set(openComments.value)
     here.forEach((c) => next.add(c.id))
@@ -398,8 +536,31 @@ const stepComment = (delta: number): void => {
   commentIndex.value = next
   void goToFileLine(list[next].path, list[next].line)
 }
-defineExpose({ goToFileLine })
-const commentCount = (path: string): number => (props.comments ?? []).filter((c) => c.path === path && !c.isResolved).length
+const reopenAs = async (isPushedNext: boolean): Promise<void> => {
+  isPushed.value = isPushedNext
+  isUncommittedOnly.value = false
+  isDiff.value = true
+  diffBase.value = 'target'
+  await refresh()
+  if (!openPath.value || (await open(openPath.value, true))) return
+  destroyEditors()
+  openPath.value = null
+  isDirty.value = false
+}
+const showPushed = async (): Promise<boolean> => {
+  if (!props.pushedMr) return false
+  if (isPushed.value) return true
+  if (!confirmDiscard()) return false
+  await reopenAs(true)
+  return true
+}
+const showWorktree = (): Promise<void> => reopenAs(false)
+const leavePushedWhenGone = (mr: typeof props.pushedMr): void => {
+  if (!mr && isPushed.value) void reopenAs(false)
+}
+watch(() => props.pushedMr, leavePushedWhenGone)
+defineExpose({ goToFileLine, showPushed })
+const commentCount = (path: string): number => mrComments.value.filter((c) => c.path === path && !c.isResolved).length
 const lineStart = (v: EditorView, line: number): number => v.state.doc.line(Math.min(Math.max(line, 1), v.state.doc.lines)).from
 const lineEnd = (v: EditorView, line: number): number => v.state.doc.line(Math.min(Math.max(line, 1), v.state.doc.lines)).to
 
@@ -495,7 +656,7 @@ class CommentWidget extends WidgetType {
 }
 
 const isCommenting = computed(
-  () => !!props.review && !!props.commentable?.isAllowed && !!props.commentable.headSha && props.commentable.path === openPath.value && !isDirty.value
+  () => !!mrReview.value && !!mrCommentable.value?.isAllowed && !!mrCommentable.value.headSha && mrCommentable.value.path === openPath.value && !isDirty.value
 )
 let isSending = false
 let renderTick = 0
@@ -506,7 +667,7 @@ const redrawComments = (): void => {
 const composer = ref<{ path: string; line: number } | null>(null)
 let composerText = ''
 
-const sendReview = async (action: MrReviewAction): Promise<boolean> => (props.review ? props.review(action) : false)
+const sendReview = async (action: MrReviewAction): Promise<boolean> => (mrReview.value ? mrReview.value(action) : false)
 
 const button = (label: string, className: string, run: () => void): HTMLButtonElement => {
   const b = document.createElement('button')
@@ -520,7 +681,7 @@ const button = (label: string, className: string, run: () => void): HTMLButtonEl
 }
 
 const commentActions = (c: CodeComment, box: HTMLElement): HTMLElement | null => {
-  if (!props.review) return null
+  if (!mrReview.value) return null
   const row = document.createElement('div')
   row.className = 'cmt-actions'
   if (c.isDraft && c.draftId !== undefined) {
@@ -591,7 +752,7 @@ const closeComposer = (): void => {
 
 const submitComposer = async (kind: 'draft-add' | 'line-comment'): Promise<void> => {
   const at = composer.value
-  const sha = props.commentable?.headSha
+  const sha = mrCommentable.value?.headSha
   if (!at || !sha || !composerText.trim() || isSending) return
   isSending = true
   try {
@@ -700,7 +861,7 @@ const commentExtension = (): Extension => {
   ]
 }
 watch(
-  () => [props.comments, props.commentable, isDirty.value],
+  () => [mrComments.value, mrCommentable.value, isDirty.value],
   () => editor.value?.dispatch({ effects: commentSlot.reconfigure(commentExtension()) })
 )
 
@@ -712,8 +873,8 @@ const diffExtension = (): Extension =>
 const refresh = async (): Promise<void> => {
   if (!props.cwd) return
   peekCache.clear()
-  const ref = props.branchRef
-  const changed = ref ? await window.api.listRefChanges(props.cwd, ref.source, ref.target) : await window.api.listBranchChanges(props.cwd)
+  const ref = activeRef.value
+  const changed = ref ? await window.api.listRefChanges(props.cwd, ref.source, ref.target, !!pushedRef.value) : await window.api.listBranchChanges(props.cwd)
   branch.value = changed
   files.value = ref && changed?.isReadOnly ? await window.api.listRefFiles(props.cwd, ref.source) : await window.api.listFiles(changed?.folder ?? props.cwd)
 }
@@ -735,11 +896,20 @@ const save = async (): Promise<void> => {
   emit('fileShown', path, branch.value?.folder ?? null, !!branch.value?.isReadOnly)
 }
 
-const open = async (path: string): Promise<void> => {
-  if (!props.cwd) return
-  if (isDirty.value && !window.confirm(`Discard unsaved changes in ${openPath.value}?`)) return
+const destroyEditors = (): void => {
+  if (mergeView.value) mergeView.value.destroy()
+  else editor.value?.destroy()
+  mergeView.value = null
+  editor.value = null
+}
+
+const confirmDiscard = (): boolean => !isDirty.value || window.confirm(`Discard unsaved changes in ${openPath.value}?`)
+
+const open = async (path: string, isConfirmed = false): Promise<boolean> => {
+  if (!props.cwd) return false
+  if (!isConfirmed && !confirmDiscard()) return false
   docText.value = null
-  const ref = props.branchRef
+  const ref = activeRef.value
   const isRef = !!ref && !!branch.value?.isReadOnly
   const [file, base] = isRef
     ? await Promise.all([
@@ -751,55 +921,91 @@ const open = async (path: string): Promise<void> => {
         window.api.readHeadFile(workCwd.value as string, path, diffBase.value === 'commit')
       ])
   error.value = file.error
-  if (file.text === null) return
+  if (file.text === null) return false
+  if (!isRef && !file.text && !base && !files.value.includes(path)) error.value = `${path} is not in the worktree or on ${branch.value?.target ?? 'the base'}: it was renamed or deleted`
   baseText = base
   openPath.value = path
   isDirty.value = false
   why.value = null
-  const state = EditorState.create({
-    doc: file.text,
-    extensions: [
-      basicSetup,
-      darkPlus,
-      surface,
-      search({ createPanel: searchPanel, top: true }),
-      whySlot.of(whyExtension()),
-      commentSlot.of(commentExtension()),
-      EditorState.readOnly.of(isRef),
-      languageSlot.of(LANGS[languageOf(path)]()),
-      diffSlot.of(diffExtension()),
-      keymap.of([{ key: 'Mod-s', run: () => (void save(), true) }]),
-      EditorView.domEventHandlers({ mousedown: onCtrlClick }),
-      hoverTooltip(peekSource, { hoverTime: 500 }),
-      EditorView.updateListener.of((u) => {
-        if (u.docChanged) isDirty.value = u.state.doc.length !== savedText.length || u.state.doc.toString() !== savedText
-      })
-    ]
-  })
-  savedText = state.doc.toString()
+  const paneExtensions = [
+    basicSetup,
+    darkPlus,
+    surface,
+    search({ createPanel: searchPanel, top: true }),
+    whySlot.of(whyExtension()),
+    partSlot.of(partExtension()),
+    commentSlot.of(commentExtension()),
+    EditorState.readOnly.of(isRef),
+    languageSlot.of(LANGS[languageOf(path)]()),
+    keymap.of([{ key: 'Mod-s', run: () => (void save(), true) }]),
+    EditorView.domEventHandlers({ mousedown: onCtrlClick }),
+    hoverTooltip(peekSource, { hoverTime: 500 }),
+    EditorView.updateListener.of((u) => {
+      countChanges(u.state)
+      if (u.docChanged) isDirty.value = u.state.doc.length !== savedText.length || u.state.doc.toString() !== savedText
+    })
+  ]
+  const sides = sidesFor(layout.value, isDiff.value, base, file.text)
+  savedText = file.text
   await nextTick()
-  if (editor.value) editor.value.setState(state)
-  else editor.value = new EditorView({ state, parent: host.value as HTMLDivElement })
+  if (sides.left !== null) {
+    destroyEditors()
+    mergeView.value = new MergeView({
+      a: {
+        doc: sides.left,
+        extensions: [basicSetup, darkPlus, surface, EditorState.readOnly.of(true), EditorView.editable.of(false), languageSlotA.of(LANGS[languageOf(path)]())]
+      },
+      b: { doc: sides.right, extensions: paneExtensions },
+      parent: host.value as HTMLDivElement,
+      collapseUnchanged: { margin: 4, minSize: 8 },
+      gutter: true
+    })
+    editor.value = mergeView.value.b
+  } else {
+    if (mergeView.value) destroyEditors()
+    const state = EditorState.create({ doc: sides.right, extensions: [...paneExtensions, diffSlot.of(diffExtension())] })
+    if (editor.value) editor.value.setState(state)
+    else editor.value = new EditorView({ state, parent: host.value as HTMLDivElement })
+  }
+  changeIndex.value = -1
+  countChanges(editor.value.state)
   emit('fileShown', path, branch.value?.folder ?? null, !!branch.value?.isReadOnly)
+  return true
 }
 
 const setDiffMode = async (mode: 'off' | 'target' | 'commit'): Promise<void> => {
+  const isReopening = layout.value === 'split' && !!openPath.value
+  if (isReopening && !confirmDiscard()) return
   isDiff.value = mode !== 'off'
   if (mode !== 'off' && mode !== diffBase.value) {
     diffBase.value = mode
     const path = openPath.value
     if (path && workCwd.value && !branch.value?.isReadOnly) baseText = await window.api.readHeadFile(workCwd.value, path, mode === 'commit')
   }
-  editor.value?.dispatch({ effects: diffSlot.reconfigure(diffExtension()) })
+  if (isReopening) await open(openPath.value as string, true)
+  else editor.value?.dispatch({ effects: diffSlot.reconfigure(diffExtension()) })
 }
-const diffLabel = computed(() => (!isDiff.value ? 'Diff off' : diffBase.value === 'commit' ? 'Diff: uncommitted' : `Diff: ${branch.value?.target ?? 'base'}`))
+const setLayout = async (next: DiffLayout): Promise<void> => {
+  if (next === layout.value || (openPath.value && !confirmDiscard())) return
+  layout.value = next
+  writeSize('dash.diffUnified', next === 'unified')
+  if (openPath.value) await open(openPath.value, true)
+}
+const diffLabel = computed(() =>
+  pushedRef.value && props.pushedMr
+    ? `MR !${props.pushedMr.iid}`
+    : !isDiff.value ? 'Diff off' : diffBase.value === 'commit' ? 'Diff: uncommitted' : `Diff: ${branch.value?.target ?? 'base'}`
+)
 const diffItems = computed<MenuItem[]>(() => [
   {
     label: `Whole branch vs ${branch.value?.target ?? 'base'}`,
     hint: 'Everything this branch changes, including what is already in the MR',
     icon: 'diff',
-    run: () => void setDiffMode('target')
+    run: () => void (pushedRef.value ? showWorktree() : setDiffMode('target'))
   },
+  ...(props.pushedMr
+    ? [{ label: `MR !${props.pushedMr.iid} (pushed)`, hint: 'What GitLab shows, read-only, with MR comments', icon: 'pr' as const, run: () => void showPushed() }]
+    : []),
   {
     label: 'Only uncommitted changes',
     hint: 'What changed since the last commit, so not in the MR yet',
@@ -817,23 +1023,30 @@ const applyExplain = (found: ExplainFile | null): void => {
 
 const loadExplain = async (): Promise<void> => applyExplain(await window.api.getExplainDoc(props.ticketKey))
 
-const waitForExplain = (since: number): void => {
-  pollTimer = setTimeout(async () => {
-    const found = await window.api.getExplainDoc(props.ticketKey)
-    if (found && found.updatedAt > since) {
-      applyExplain(found)
-      isExplaining.value = false
-      view.value = 'flow'
-      return
-    }
-    if (Date.now() - since > EXPLAIN_WAIT_MS) {
-      isExplaining.value = false
-      error.value = 'The explanation did not appear. Check the Claude session.'
-      return
-    }
-    waitForExplain(since)
+const waitForNewer = <T extends { updatedAt: number }>(load: () => Promise<T | null>, since: number, done: (found: T | null) => void): void => {
+  const timer = setTimeout(async () => {
+    pollTimers.delete(timer)
+    const found = await load()
+    if (found && found.updatedAt > since) return done(found)
+    if (Date.now() - since > EXPLAIN_WAIT_MS) return done(null)
+    waitForNewer(load, since, done)
   }, EXPLAIN_POLL_MS)
+  pollTimers.add(timer)
 }
+
+const readExplain = (): Promise<ExplainFile | null> => window.api.getExplainDoc(props.ticketKey)
+
+const finishExplain = (found: ExplainFile | null): void => {
+  isExplaining.value = false
+  if (!found) {
+    error.value = 'The explanation did not appear. Check the Claude session.'
+    return
+  }
+  applyExplain(found)
+  view.value = 'flow'
+}
+
+const waitForExplain = (since: number): void => waitForNewer(readExplain, since, finishExplain)
 
 const runExplain = async (): Promise<void> => {
   if (isExplaining.value || !props.cwd) return
@@ -850,6 +1063,142 @@ const runExplain = async (): Promise<void> => {
   waitForExplain(since)
 }
 
+const readReview = (): Promise<ReviewFile | null> => window.api.getReviewDoc(props.ticketKey)
+
+const readStored = (key: string): string | null => {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+const applyParts = (found: ReviewFile | null): void => {
+  partsDoc.value = found
+  partsProgress.value = found ? restoreProgress(found, readStored(progressKey(found))) : { head: '', updatedAt: 0, reviewed: [], remarks: {} }
+  activePart.value = null
+  editor.value?.dispatch({ effects: partSlot.reconfigure(partExtension()) })
+}
+
+const loadParts = async (): Promise<void> => {
+  const found = await readReview()
+  if (found?.updatedAt !== partsDoc.value?.updatedAt) applyParts(found)
+}
+
+const updateProgress = (next: PartProgress): void => {
+  partsProgress.value = next
+  const doc = partsDoc.value
+  try {
+    if (doc) localStorage.setItem(progressKey(doc), JSON.stringify(next))
+  } catch {
+    return
+  }
+}
+
+const finishReviewParts = (found: ReviewFile | null): void => {
+  isReviewing.value = false
+  if (!found) {
+    error.value = 'The review parts did not appear. Check the Claude session.'
+    return
+  }
+  applyParts(found)
+  view.value = 'parts'
+}
+
+const runReviewParts = async (): Promise<void> => {
+  const cwd = workCwd.value ?? props.cwd
+  if (isReviewing.value || !cwd) return
+  isReviewing.value = true
+  error.value = null
+  const since = Date.now()
+  const result = await window.api.startReviewParts(props.ticketKey, cwd, reviewMr.value)
+  if (result.error || !result.sessionId) {
+    isReviewing.value = false
+    error.value = result.error ?? 'The review session did not start'
+    return
+  }
+  waitForNewer(readReview, since, finishReviewParts)
+}
+
+const selectPart = async (index: number): Promise<void> => {
+  const first = partsDoc.value?.parts[index]?.hunks[0]
+  if (!first) return
+  activePart.value = index
+  note.value = null
+  if (!isMrSource.value && (!isDiff.value || diffBase.value === 'commit')) {
+    isUncommittedOnly.value = false
+    await setDiffMode('target')
+  }
+  await goToFileLine(first.file, first.start)
+  editor.value?.dispatch({ effects: partSlot.reconfigure(partExtension()) })
+  if (openPath.value === first.file && !isPartChanged(index)) error.value = `These lines no longer differ from ${branch.value?.target ?? 'the base'}: the parts are out of date. Use Run again.`
+}
+
+const isPartChanged = (index: number): boolean => {
+  const v = editor.value
+  const chunks = v ? getChunks(v.state)?.chunks : null
+  if (!v || !chunks) return true
+  const doc = v.state.doc
+  const lineOf = (pos: number): number => doc.lineAt(Math.min(pos, doc.length)).number
+  const ranges = chunks.map((c) => ({ from: lineOf(c.fromB), to: lineOf(Math.max(c.fromB, c.toB - 1)) }))
+  const hunks = (partsDoc.value?.parts[index]?.hunks ?? []).filter((h) => h.file === openPath.value)
+  return hunks.some((h) => ranges.some((r) => r.from <= h.end && r.to >= h.start))
+}
+
+const sendDrafts = async (doc: ReviewFile): Promise<void> => {
+  const sha = props.commentable?.headSha
+  const review = props.review
+  if (!review || !sha) {
+    error.value = 'Commenting on this MR is not available yet. Open a changed file and try again.'
+    return
+  }
+  if (!isSameHead(doc.head, sha)) {
+    error.value = 'The MR moved since the parts were generated. Use "Run again" in Parts; your remarks are kept.'
+    return
+  }
+  const drafts = remarkDrafts(doc, partsProgress.value)
+  const sent = remarkedParts(doc, partsProgress.value)
+  if (!window.confirm(`Add ${drafts.length} draft ${drafts.length === 1 ? 'note' : 'notes'} to the MR? They stay unpublished until you submit the review.`)) return
+  for (const [i, d] of drafts.entries()) {
+    if (!(await review({ kind: 'draft-add', body: d.body, anchor: { path: d.path, line: d.line, side: 'new', sha } }))) return
+    updateProgress(setRemark(partsProgress.value, sent[i].index, ''))
+  }
+}
+
+const sendRemarks = async (): Promise<void> => {
+  const doc = partsDoc.value
+  if (!doc || isSendingRemarks.value) return
+  if (isMrOfOther.value) {
+    isSendingRemarks.value = true
+    try {
+      await sendDrafts(doc)
+    } finally {
+      isSendingRemarks.value = false
+    }
+    return
+  }
+  if (!props.sendToSession && !props.canAsk) {
+    error.value = 'Open the Claude session in the dashboard first, then send the remarks.'
+    return
+  }
+  const prompt = remarksPrompt(doc, partsProgress.value)
+  if (props.sendToSession) {
+    if (!props.sendToSession(prompt)) {
+      error.value = 'Open the main Claude session of this ticket in the dashboard first, then send the remarks.'
+      return
+    }
+  } else emit('ask', prompt)
+  updateProgress({ ...partsProgress.value, remarks: {} })
+}
+
+const rerunReviewParts = (): void => {
+  const unsent = partsDoc.value ? remarkedParts(partsDoc.value, partsProgress.value).length : 0
+  const isConfirmed =
+    !unsent ||
+    window.confirm(`${unsent} unsent ${unsent === 1 ? 'remark' : 'remarks'} will be discarded when the parts are regenerated. Send them first if you want to keep them. Run again anyway?`)
+  if (isConfirmed) void runReviewParts()
+}
+
 const PEEK_LINES = 12
 interface PeekBlock {
   path: string
@@ -857,7 +1206,7 @@ interface PeekBlock {
   snippet: string
 }
 const readText = async (path: string): Promise<string | null> => {
-  const ref = props.branchRef
+  const ref = activeRef.value
   if (ref && branch.value?.isReadOnly && props.cwd) return window.api.readRefFile(props.cwd, ref.source, ref.target, path, false)
   return workCwd.value ? (await window.api.readFile(workCwd.value, path)).text : null
 }
@@ -973,17 +1322,6 @@ const openMd = async (): Promise<void> => {
 }
 const openMdInVscode = (): void => window.api.openExplainMd(props.ticketKey)
 
-const askAboutSelection = (): void => {
-  const v = editor.value
-  if (!v || !openPath.value) return
-  const range = v.state.selection.main
-  const from = v.state.doc.lineAt(range.from).number
-  const to = v.state.doc.lineAt(range.to).number
-  const code = range.empty ? '' : v.state.sliceDoc(range.from, range.to)
-  const where = from === to ? `${openPath.value}:${from}` : `${openPath.value}:${from}-${to}`
-  emit('ask', code ? `W ${where}:\n\`\`\`\n${code}\n\`\`\`\n` : `W ${where}: `)
-}
-
 const toggleFolder = (node: TreeNode): void => {
   const next = new Set(expanded.value)
   if (next.has(node.path)) next.delete(node.path)
@@ -1005,17 +1343,18 @@ const flatTree = computed(() => {
 const refreshAll = (): void => {
   void refresh()
   if (!isExplaining.value) void loadExplain()
+  if (!isReviewing.value) void loadParts()
 }
 
 onMounted(refreshAll)
 watch(
-  () => [props.cwd, props.branchRef?.source],
+  () => [props.cwd, props.branchRef?.source, props.pushedMr?.source],
   () => refreshAll()
 )
 onActivated(refreshAll)
 onBeforeUnmount(() => {
-  if (pollTimer) clearTimeout(pollTimer)
-  editor.value?.destroy()
+  pollTimers.forEach(clearTimeout)
+  destroyEditors()
 })
 </script>
 
@@ -1028,6 +1367,7 @@ onBeforeUnmount(() => {
       </button>
       <button :class="{ on: view === 'files' }" title="All files" @click="showView('files')"><Icon name="folder" :size="16" /></button>
       <button :class="{ on: view === 'flow' }" :disabled="!flow.length" title="Flow" @click="showView('flow')"><Icon name="flow" :size="16" /></button>
+      <button :class="{ on: view === 'parts' }" :disabled="!partsDoc" title="Review in parts" @click="showView('parts')"><Icon name="clipboard" :size="16" /></button>
       <button :class="{ on: view === 'search' }" title="Search the code" @click="showView('search')"><Icon name="search" :size="16" /></button>
       <button title="Refresh" @click="refresh"><Icon name="refresh" :size="16" /></button>
     </aside>
@@ -1036,6 +1376,7 @@ onBeforeUnmount(() => {
         <button :class="{ on: view === 'changes' }" title="Changed files" @click="view = 'changes'"><Icon name="diff" :size="14" /><span class="lbl">Changes</span><span class="n">{{ changes.length }}</span></button>
         <button :class="{ on: view === 'files' }" title="All files" @click="view = 'files'"><Icon name="folder" :size="14" /><span class="lbl">Files</span></button>
         <button :class="{ on: view === 'flow' }" :disabled="!flow.length" title="The process this ticket changes, step by step" @click="view = 'flow'"><Icon name="flow" :size="14" /><span class="lbl">Flow</span></button>
+        <button :class="{ on: view === 'parts' }" :disabled="!partsDoc" title="Walk the diff part by part" @click="view = 'parts'"><Icon name="clipboard" :size="14" /><span class="lbl">Parts</span></button>
         <button :class="{ on: view === 'search' }" title="Search the code in the whole repository" @click="view = 'search'"><Icon name="search" :size="14" /><span class="lbl">Search</span></button>
         <button class="refresh push" title="Refresh" @click="refresh"><Icon name="refresh" :size="14" /></button>
         <button class="refresh" title="Collapse to icons" @click="toggleSide"><Icon name="panelClose" :size="14" /></button>
@@ -1071,11 +1412,27 @@ onBeforeUnmount(() => {
           </li>
         </ol>
       </div>
+      <ReviewParts
+        v-else-if="view === 'parts' && partsDoc"
+        :key="partsDoc.updatedAt"
+        :doc="partsDoc"
+        :progress="partsProgress"
+        :is-stale="!!partsStaleReason"
+        :stale-reason="partsStaleReason"
+        :is-mr-of-other="isMrOfOther"
+        :current="activePart"
+        :is-sending="isSendingRemarks"
+        @select="selectPart"
+        @update="updateProgress"
+        @send="sendRemarks"
+        @rerun="rerunReviewParts"
+      />
       <template v-else-if="view === 'changes'">
         <div v-if="branch" class="branch" :class="{ warn: isOtherBranch }">
           <Icon name="branch" :size="13" /><code>{{ branch.branch }}</code><span class="vs">vs</span><code>{{ branch.target }}</code>
           <span v-if="isOtherBranch">This folder is on another ticket's branch, so these are not {{ ticketKey }}'s changes.</span>
-          <span v-if="branch.isReadOnly" class="ro">Read-only, straight from origin: no local folder has this branch checked out.</span>
+          <span v-if="pushedRef" class="ro">Read-only: the MR as pushed to GitLab, with its comments.</span>
+          <span v-else-if="branch.isReadOnly" class="ro">Read-only, straight from origin: no local folder has this branch checked out.</span>
           <span v-else-if="folderName" class="ro">Showing the worktree {{ folderName }}, which has this branch checked out, with its uncommitted changes.</span>
           <button v-if="branch.uncommitted?.length" class="unctoggle" :class="{ on: isUncommittedOnly }" title="Only files changed locally and not committed yet; the diff is against the last commit" @click="toggleUncommitted">
             <i />{{ isUncommittedOnly ? 'Showing uncommitted only' : 'Uncommitted' }}<span>{{ branch.uncommitted.length }}</span>
@@ -1094,6 +1451,17 @@ onBeforeUnmount(() => {
           {{ isExplaining ? 'The explain session is writing…' : explain ? `Explained ${explainedCount} changes · run again` : 'Explain changes' }}
         </button>
         <button v-if="explain" class="mdlink" @click="openMd"><Icon name="fileText" :size="12" />Read the explanation</button>
+        <button
+          class="explain"
+          :disabled="isReviewing || !changes.length"
+          title="Starts a background Claude session that runs /review-in-parts and splits this diff into small parts you walk through one by one."
+          @click="rerunReviewParts"
+        >
+          <span v-if="isReviewing" class="spin" />
+          <Icon v-else name="clipboard" :size="14" />
+          {{ isReviewing ? 'The review session is splitting the diff…' : partsDoc ? `${partsDoc.parts.length} review parts · run again` : 'Review in parts' }}
+        </button>
+        <button v-if="partsDoc" class="mdlink" @click="view = 'parts'"><Icon name="clipboard" :size="12" />Walk the parts</button>
         <p v-if="!changes.length" class="muted">{{ isUncommittedOnly ? 'Nothing uncommitted.' : 'No code changes on this branch yet.' }}</p>
         <div v-else class="totals">
           <span>{{ changes.length }} {{ changes.length === 1 ? 'file' : 'files' }}</span>
@@ -1231,17 +1599,21 @@ onBeforeUnmount(() => {
         <span class="path"><Icon name="file" :size="13" /><span class="pdir">{{ openPath.split('/').slice(0, -1).join('/') }}{{ openPath.includes('/') ? '/' : '' }}</span><b>{{ openPath.split('/').pop() }}</b><i v-if="isDirty" class="dirty" title="Unsaved changes" /><span v-if="openCounts && (openCounts.added || openCounts.removed)" class="fstat"><i class="plus">+{{ openCounts.added ?? 0 }}</i><i class="minus">−{{ openCounts.removed ?? 0 }}</i></span></span>
         <span class="grow" />
         <span v-if="error" class="warn">{{ error }}</span>
-        <span v-else-if="review && commentable && !commentable.isAllowed" class="nocmt" :title="`Commenting is off: ${commentable.reason ?? ''}`"><Icon name="message" :size="14" /><i class="off" /></span>
-        <span v-else-if="review && commentable?.isAllowed" class="nocmt on" title="Hover the narrow column left of the code and click + to comment on a line"><Icon name="message" :size="14" /><i /></span>
+        <span v-else-if="mrReview && mrCommentable && !mrCommentable.isAllowed" class="nocmt" :title="`Commenting is off: ${mrCommentable.reason ?? ''}`"><Icon name="message" :size="14" /><i class="off" /></span>
+        <span v-else-if="mrReview && mrCommentable?.isAllowed" class="nocmt on" title="Hover the narrow column left of the code and click + to comment on a line"><Icon name="message" :size="14" /><i /></span>
+        <span v-if="changeCount" class="cnav" title="Jump between the changes in this file">
+          <button class="tb icon" title="Previous change" @click="stepChange(-1)"><Icon name="chevronRight" :size="14" class="flip" /></button>
+          <span class="cpos">Change {{ changeIndex >= 0 ? changeIndex + 1 : '–' }}/{{ changeCount }}</span>
+          <button class="tb icon" title="Next change" @click="stepChange(1)"><Icon name="chevronRight" :size="14" /></button>
+        </span>
         <span v-if="activeComments.length" class="cnav" title="Jump between unresolved comments and your pending drafts">
           <button class="tb icon" title="Previous comment" @click="stepComment(-1)"><Icon name="chevronRight" :size="14" class="flip" /></button>
           <span class="cpos">{{ commentIndex >= 0 ? commentIndex + 1 : '–' }}/{{ activeComments.length }}</span>
           <button class="tb icon" title="Next comment" @click="stepComment(1)"><Icon name="chevronRight" :size="14" /></button>
         </span>
-        <button class="tb" :disabled="!canAsk" :title="canAsk ? 'Paste the selected lines into the Claude session, then type your question' : 'Open the Claude session in the dashboard first'" @click="askAboutSelection">
-          <Icon name="message" :size="14" /><span class="lbl">Ask Claude</span>
-        </button>
         <MenuButton :label="diffLabel" icon="diff" title="What to highlight in the file" :items="diffItems" />
+        <button class="tb" :class="{ on: layout === 'split' }" title="Old and new side by side" @click="setLayout('split')"><Icon name="panelLeft" :size="14" /><span class="lbl">Split</span></button>
+        <button class="tb" :class="{ on: layout === 'unified' }" title="Old and new in one column" @click="setLayout('unified')"><Icon name="fileText" :size="14" /><span class="lbl">Unified</span></button>
         <button v-if="!branch?.isReadOnly" class="tb primary" :disabled="!isDirty || isSaving" title="Save (Ctrl+S)" @click="save"><Icon name="save" :size="14" /><span class="lbl">{{ isSaving ? 'Saving…' : 'Save' }}</span></button>
       </div>
       <div v-if="openPath && fileWhys.length" class="whys" :style="isWhyOpen ? { maxHeight: `${whyHeight}px` } : undefined">
@@ -1276,6 +1648,10 @@ onBeforeUnmount(() => {
     </section>
 
     <div v-if="why" class="whypop" :style="{ top: `${why.top}px`, left: `${why.left}px` }">{{ why.text }}</div>
+    <div v-if="note" class="whypop notepop" :style="{ top: `${note.top}px`, left: `${note.left}px` }" @mouseenter="keepNote" @mouseleave="closeNoteSoon">
+      <span>{{ note.text }}</span>
+      <button class="tb" @click="askAboutNote"><Icon name="message" :size="13" /><span class="lbl">Zapytaj w czacie</span></button>
+    </div>
   </div>
 </template>
 
@@ -2319,6 +2695,13 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: hidden;
 }
+.editor :deep(.cm-mergeView) {
+  height: 100%;
+  overflow: auto;
+}
+.editor :deep(.cm-mergeView .cm-editor) {
+  height: auto;
+}
 .editor :deep(.why-dot) {
   display: inline-grid;
   place-items: center;
@@ -2376,5 +2759,18 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   box-shadow: var(--shadow);
   pointer-events: none;
+}
+.notepop {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  border-left-color: #e8b84a;
+  pointer-events: auto;
+}
+.editor :deep(.note-dot) {
+  color: #e8b84a;
+  background: rgba(232, 184, 74, 0.14);
+  border-color: rgba(232, 184, 74, 0.5);
 }
 </style>

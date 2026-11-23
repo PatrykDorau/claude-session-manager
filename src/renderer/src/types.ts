@@ -268,6 +268,7 @@ export interface BranchChanges {
   branch: string
   target: string
   base: string
+  head?: string
   files: ChangedFile[]
   isReadOnly?: boolean
   folder?: string
@@ -300,6 +301,36 @@ export interface ExplainDoc {
   process: string
   flow: FlowStep[]
   changes: ExplainChange[]
+}
+
+export interface ReviewHunk {
+  file: string
+  start: number
+  end: number
+}
+
+export interface ReviewPart {
+  title: string
+  why: string
+  check: string
+  hunks: ReviewHunk[]
+  notes: ReviewNote[]
+}
+
+export interface ReviewNote {
+  file: string
+  line: number
+  text: string
+}
+
+export interface ReviewDoc {
+  key: string
+  source: 'branch' | 'mr'
+  mrIid: number | null
+  branch: string
+  base: string
+  head: string
+  parts: ReviewPart[]
 }
 
 export interface ExplainFile {
@@ -602,4 +633,25 @@ export interface PromptEntry {
   project: string
   sessionId: string | null
   isIncomplete: boolean
+}
+
+export interface CatalogItem {
+  name: string
+  description: string
+  kind: 'skill' | 'agent' | 'command'
+  path: string
+}
+
+export interface CatalogGroup {
+  id: string
+  title: string
+  version: string | null
+  isEnabled: boolean | null
+  items: CatalogItem[]
+}
+
+export interface CatalogRead {
+  meta: Record<string, string>
+  body: string
+  siblings: string[]
 }

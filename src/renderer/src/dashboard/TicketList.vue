@@ -9,7 +9,7 @@ import { useWorkday } from './useWorkday'
 import PriorityIcon from './PriorityIcon.vue'
 import Icon from './Icon.vue'
 import { useManualOrder } from './useOrder'
-import { splitStarred, starredBlock } from './order'
+import { splitStarred, starredBlock, sortByStatus } from './order'
 import SessionBadge from './SessionBadge.vue'
 import type { Session } from '../types'
 
@@ -63,7 +63,13 @@ const groups = computed(() => {
 })
 const orderLane = (key: string, rows: TaskRow[]): TaskRow[] => {
   const split = splitStarred(rows, props.starred)
-  return [...order.ordered(starredBlock(key), split.starred, rankTicket), ...order.ordered(key, split.rest, rankTicket)]
+  const ordered = [...order.ordered(starredBlock(key), split.starred, rankTicket), ...order.ordered(key, split.rest, rankTicket)]
+  return isStatusSort.value ? sortByStatus(ordered, (r) => liveSession(r)?.status ?? null) : ordered
+}
+const isStatusSort = ref(readFlag('dash.statusSortTickets'))
+const setStatusSort = (next: boolean): void => {
+  isStatusSort.value = next
+  writeSize('dash.statusSortTickets', next)
 }
 const blockOf = (key: string, row: TaskRow): string => (isStarred(row) ? starredBlock(key) : key)
 const blockKeys = (key: string, rows: TaskRow[], row: TaskRow): string[] =>
@@ -101,6 +107,7 @@ const toggleOutside = (key: string): void => {
     </label>
     <div class="filters">
       <label title="Only tickets with a Claude session active since midnight"><input :checked="isTodayOnly" type="checkbox" @change="setTodayOnly(($event.target as HTMLInputElement).checked)" />Today</label>
+      <label title="Sort by session status: needs you, working, idle, then tickets without a session"><input :checked="isStatusSort" type="checkbox" @change="setStatusSort(($event.target as HTMLInputElement).checked)" />By status</label>
     </div>
     <div v-if="jiraError" class="note">
       {{ JIRA_HINT[jiraError] }}
@@ -327,6 +334,8 @@ const toggleOutside = (key: string): void => {
 .tile.sel {
   background: var(--bg-3);
   border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .tile.sel::before {
   background: var(--accent);

@@ -130,6 +130,10 @@ describe('findWorkSession', () => {
     const sessions = [s('work', 'SOFRMPT-3954', 'SOFRMPT-3954', 1), s('cr', 'SOFRMPT-3954', 'SOFRMPT-3954-cr', 9)]
     expect(findWorkSession(sessions, 'SOFRMPT-3954')?.id).toBe('work')
   })
+  it('skips the review-in-parts session', () => {
+    const sessions = [s('work', 'SOFRMPT-3954', 'SOFRMPT-3954', 1), s('parts', 'SOFRMPT-3954', 'SOFRMPT-3954 review', 9)]
+    expect(findWorkSession(sessions, 'SOFRMPT-3954')?.id).toBe('work')
+  })
   it('finds nothing without a ticket', () => {
     expect(findWorkSession([s('a', null, null, 1)], null)).toBeUndefined()
   })
@@ -156,5 +160,13 @@ describe('findAddressSession and findMineSession', () => {
     expect(findMineSession([work, cr], row)?.id).toBe('c')
     expect(findMineSession([{ ...work, status: 'waiting' } as Session, cr], row)?.id).toBe('w')
     expect(findMineSession([work, { ...cr, isLive: false } as Session], row)?.id).toBe('w')
+  })
+
+  it('falls back to the stored MR session id when nothing matches by name', () => {
+    const stored = s('stored-id-1', 'other', 1, true)
+    const bare = { ticket: null, iid: 527 }
+    expect(findMineSession([stored], { ...bare, sessionId: 'stored-id-1' })?.id).toBe('stored-id-1')
+    expect(findMineSession([stored], { ...bare, sessionId: 'stored-' })?.id).toBe('stored-id-1')
+    expect(findMineSession([stored], { ...bare, sessionId: null })).toBeUndefined()
   })
 })

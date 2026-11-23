@@ -26,7 +26,7 @@ import { createPtyHost } from './ptyhost'
 import { pickPort, serverCommand, bashCandidates, isPortFree, DEFAULT_SERVER_COMMAND } from './devserver'
 import { stvOptions, webOptions, mergeEnvLocal, stvCommand, serverHost as serverHostName, chromeArgs, isChoiceMismatch, type StvChoice } from './serverprofile'
 import { createConnection } from 'node:net'
-import type { LocalHost, BranchChanges, ChangedFile, ExplainFile, ServerProfile, ServerSpec } from '../renderer/src/types'
+import type { LocalHost, BranchChanges, ChangedFile, ExplainFile, ReviewDoc, ServerProfile, ServerSpec } from '../renderer/src/types'
 import { terminalMode, attachArgs, resumeBackgroundArgs, pasteInput, STOP_TURN, createOpenGuard, isHandedOff, type TerminalMode } from './terminal'
 import { readdir } from 'node:fs/promises'
 import { join as joinPath, dirname, basename } from 'node:path'
@@ -71,7 +71,7 @@ import { formatDiagnostics } from './diagnostics'
 import { contextAlerts, idleAlerts } from './contextalert'
 import { parseHandoffSize, type HandoffSize } from './handoffsize'
 import { isHandoffDue, autoHandoffArgs, autoHandoffPrompt } from './autohandoff'
-import { findContinuations, carryOver, type Continuations } from './continuation'
+import { findContinuations, carryOver, launchIdsOf, type Continuations } from './continuation'
 import { parseWorkflow, parseHandoffStage, parseAgentFile, parseBoosters } from './flow'
 import { collectDigests, ensureGuide, dayStamp, parseInsights, applyProposal, isInsightsDue, dismissedList, withDismissed, latestDay, reportDay, migrateFactoryDir, aggregateDay, expiredDayFiles, recentDayFiles, isEmptyInsights, storedInsights, appliedList, withProposalStates, type InsightsProposal, type DayMetrics, type Incident } from './insights'
 import type { InsightsReport, FlowAgent, FlowState, FlowTicket } from '../renderer/src/types'
@@ -111,7 +111,9 @@ import { worktreeRows, parseCount, isLinkedWorktreeGitFile, branchToDelete, node
 import { taskContext, startPrompt, parseBgId, ticketPrefix, repoRoots, startArgs, claudeExeCandidates, attachCommand, repoForProject, reviewArgs, addressArgs, scoreArgs, insightsTestArgs, warmUpTask, mediaFiles } from './tasks'
 import { searchIssues, fetchDescription, postComment, fetchTransitions, doTransition, fetchTicketDetail, fetchPriority, releaseTransition } from './jira'
 import { isSafeRef, worktreeForBranch, parseStatusPaths, safeRelPath, parseStatus, isNoisePath, parseNameStatus, countChanges, parseGrep, searchArgs, parseNumstat, parseRawBlobs, type CodeMatch, type LineCounts } from './ide'
-import { parseExplainDoc, explainArgs } from './explaindoc'
+import { parseExplainDoc, explainArgs, explainName } from './explaindoc'
+import { buildCatalog, readCatalogItem, isInsideDir } from './catalog'
+import { parseReviewDoc, reviewArgs as reviewPartsArgs, reviewName } from './reviewdoc'
 import { fetchMrsToReview, enrichMrs, forgetApprovals, fetchDiffStats, fetchMrSha, isInProjects, reviewState, approvalState, carryEnrichment, pruneApproved, sortMrs } from './gitlab'
 import type { JiraTicket, MrFile, MrItem, MyMrs } from '../renderer/src/types'
 import {
@@ -122,6 +124,7 @@ import {
   applyName,
   applyFinished,
   applyTicketOverride,
+  resolveById,
   applyTicketWatched,
   applyTicketFinished,
   overrideTicket,
@@ -134,6 +137,7 @@ import { migrateUserData } from './migrate'
 import { listAgentGroups, readAgentRun } from './agents'
 import { startBridge, ticketFromPath } from './bridge'
 import { pickChromePort, taskChromeProfile, writeTaskMcp, seedProfile, writeTaskMcpFile, taskMcpArgs } from './taskbrowser'
+import { writeSessionSettings, sessionSettingsArgs } from './sessionsettings'
 import {
   fetchMrStatus,
   runMrAction,
@@ -186,7 +190,6 @@ const throughCleared = (links: Map<string, string>): Map<string, string> =>
       .map(([from, to]): [string, string] => [clearedIds.get(from) ?? from, clearedIds.get(to) ?? to])
       .filter(([from, to]) => from !== to)
   )
-const predecessorsOf = (id: string): string[] => [...activeLinks].filter(([, to]) => to === id).map(([from]) => from)
 const triedHandoffs = new Map<string, number>()
 const liveSince = new Map<string, number>()
 const AUTO_HANDOFF_TIMEOUT = 10 * 60_000
@@ -306,7 +309,7 @@ function decorate(sessions: Session[]): Session[] {
     const key = s.projectPath ? normalizePath(s.projectPath) : ''
     const repo = worktreeRepo.get(key)
     const fin = computeFinished(s, key, finishCtx)
-    const ov = appState.ticketOverride[s.id]
+    const ov = resolveById(appState.ticketOverride, s.id)
     const before = [...followLinks].filter(([, to]) => to === s.id).map(([from]) => from)
     const inherited = s.ticket ?? before.map((id) => sessions.find((x) => x.id === id)?.ticket).find((t) => !!t) ?? null
     const next = followLinks.get(s.id)
@@ -318,7 +321,7 @@ function decorate(sessions: Session[]): Session[] {
       worktree: !!repo,
       repo: repo ?? null,
       watched: appState.watched.includes(s.id),
-      name: appState.names[s.id] ?? bgAgents.get(s.id)?.name ?? s.name ?? null,
+      name: resolveById(appState.names, s.id) ?? bgAgents.get(s.id)?.name ?? s.name ?? null,
       dirty: dirtyMap[key] ?? false,
       changes: changeMap[key] ?? 0,
       bg: bgAgents.has(s.id),
@@ -849,7 +852,8 @@ const spawnBackground = (exe: string, cwd: string, args: string[]): Promise<stri
     let out = ''
     const env = { ...process.env }
     delete env.NO_COLOR
-    const p = spawn(exe, args, {
+    const settingsFile = writeSessionSettings(app.getPath('userData'), appState.settings.gitlabToken.trim())
+    const p = spawn(exe, sessionSettingsArgs(args, settingsFile), {
       cwd,
       shell: false,
       windowsHide: true,
@@ -1395,12 +1399,13 @@ const diffBase = async (cwd: string): Promise<{ base: string; target: string; br
 
 const ideChanges = async (cwd: string): Promise<BranchChanges> => {
   const { base, target, branch } = await diffBase(cwd)
-  const [tracked, untracked, status, numstat, headNumstat] = await Promise.all([
+  const [tracked, untracked, status, numstat, headNumstat, head] = await Promise.all([
     runGit(cwd, ['diff', '--name-status', base]),
     runGit(cwd, ['ls-files', '-o', '--exclude-standard']),
     runGit(cwd, ['status', '--porcelain', '--untracked-files=all']),
     runGit(cwd, ['diff', '--numstat', base]),
-    runGit(cwd, ['diff', '--numstat', 'HEAD'])
+    runGit(cwd, ['diff', '--numstat', 'HEAD']),
+    runGit(cwd, ['rev-parse', 'HEAD'])
   ])
   const counts = parseNumstat(numstat.out)
   const untrackedFiles = untracked.out
@@ -1418,7 +1423,7 @@ const ideChanges = async (cwd: string): Promise<BranchChanges> => {
     ...parseNumstat(headNumstat.out),
     ...untrackedFiles.map((f): [string, LineCounts] => [f.path, { added: f.added, removed: f.removed }])
   ])
-  return { branch, target: target.replace(/^origin\//, ''), base: base.slice(0, 8), files, folder: cwd, uncommitted, uncommittedCounts }
+  return { branch, target: target.replace(/^origin\//, ''), base: base.slice(0, 8), head: head.isOk ? head.out.trim() : undefined, files, folder: cwd, uncommitted, uncommittedCounts }
 }
 
 const contentIdOf = (cwd: string, path: string): string => {
@@ -1461,12 +1466,15 @@ const refBase = async (cwd: string, source: string, target: string): Promise<str
   return merge.isOk ? merge.out.trim() : null
 }
 
-const ideRefChanges = async (cwd: string, source: string, target: string): Promise<BranchChanges> => {
-  const branch = (await runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])).out.trim()
-  if (!isSafeRef(source) || !isSafeRef(target) || branch === source) return ideChanges(cwd)
-  const list = await runGit(cwd, ['worktree', 'list', '--porcelain'])
-  const local = list.isOk ? worktreeForBranch(list.out, source) : null
-  if (local && existsSync(local)) return ideChanges(local.replace(/\//g, '\\'))
+const ideRefChanges = async (cwd: string, source: string, target: string, isPushedOnly = false): Promise<BranchChanges> => {
+  if (isPushedOnly && (!isSafeRef(source) || !isSafeRef(target))) return { branch: source, target, base: '', files: [], isReadOnly: true }
+  if (!isPushedOnly) {
+    const branch = (await runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])).out.trim()
+    if (!isSafeRef(source) || !isSafeRef(target) || branch === source) return ideChanges(cwd)
+    const list = await runGit(cwd, ['worktree', 'list', '--porcelain'])
+    const local = list.isOk ? worktreeForBranch(list.out, source) : null
+    if (local && existsSync(local)) return ideChanges(local.replace(/\//g, '\\'))
+  }
   await fetchRefs(cwd, source, target)
   const base = await refBase(cwd, source, target)
   if (!base) return { branch: source, target, base: '', files: [], isReadOnly: true }
@@ -1508,29 +1516,51 @@ const EXPLAIN_ROOT = joinPath(homedir(), 'Desktop', 'Opis zadan')
 
 const startingExplains = new Set<string>()
 
-const startExplain = async (
+const startNamedBackground = async (
+  starting: Set<string>,
+  busy: string,
   key: string,
   cwd: string,
-  sourceSessionId: string | null
+  args: () => string[],
+  name: string
 ): Promise<{ error: string | null; sessionId?: string }> => {
-  if (startingExplains.has(key)) return { error: 'The explanation is already starting' }
+  if (starting.has(key)) return { error: busy }
   const exe = resolveClaudeExe()
   if (!exe) return { error: 'claude.exe not found' }
   if (!existsSync(cwd)) return { error: `Folder not found: ${cwd}` }
-  startingExplains.add(key)
+  starting.add(key)
   try {
-    const transcript = sourceSessionId ? transcriptFile(sourceSessionId) : null
-    const out = await spawnBackground(exe, cwd, explainArgs(key, transcript ? transcript.replace(/\\/g, '/') : null))
+    const out = await spawnBackground(exe, cwd, args())
     const shortId = parseBgId(out)
     if (!shortId) return { error: out.trim().split(/\r?\n/).pop() || 'claude did not start' }
     const id = (await waitForSessionId(shortId, 10000)) ?? shortId
     appState = applyTicketOverride(appState, id, key)
+    appState = applyName(appState, id, name)
     saveState(statePath, appState)
     void refreshAgents().then(() => pushSessions())
     return { error: null, sessionId: id }
   } finally {
-    setTimeout(() => startingExplains.delete(key), 30000)
+    setTimeout(() => starting.delete(key), 30000)
   }
+}
+
+const startExplain = (key: string, cwd: string, sourceSessionId: string | null): Promise<{ error: string | null; sessionId?: string }> => {
+  const buildExplainArgs = (): string[] => {
+    const transcript = sourceSessionId ? transcriptFile(sourceSessionId) : null
+    return explainArgs(key, transcript ? transcript.replace(/\\/g, '/') : null)
+  }
+  return startNamedBackground(startingExplains, 'The explanation is already starting', key, cwd, buildExplainArgs, explainName(key))
+}
+
+const startingReviewParts = new Set<string>()
+
+const startReviewParts = (
+  key: string,
+  cwd: string,
+  mr: { iid: number; source: string; target: string } | null
+): Promise<{ error: string | null; sessionId?: string }> => {
+  const buildReviewArgs = (): string[] => reviewPartsArgs(key, mr)
+  return startNamedBackground(startingReviewParts, 'The review in parts is already starting', key, cwd, buildReviewArgs, reviewName(key))
 }
 
 const INSIGHTS_DIR = joinPath(homedir(), '.claude', 'insights')
@@ -1779,7 +1809,7 @@ const runAutoHandoff = (sessions: Session[], cleared: Map<string, string>): void
   for (const x of sessions) if (x.isLive && !liveSince.has(x.id)) liveSince.set(x.id, now)
   if (isAutoHandoffRunning) return
   const isUntried = (x: Session): boolean => triedHandoffs.get(x.id) !== x.lastActive
-  const isDue = (x: Session, handoffAt: number | null): boolean => !/\bexplain$/.test(x.name ?? '') && isHandoffDue({ ...x, liveSince: liveSince.get(x.id) ?? now }, handoffAt, now)
+  const isDue = (x: Session, handoffAt: number | null): boolean => !/\bexplain$| review$/.test(x.name ?? '') && isHandoffDue({ ...x, liveSince: liveSince.get(x.id) ?? now }, handoffAt, now)
   const s = sessions.find((x) => {
     if (!x.ticket || !isUntried(x) || !isDue(x, null)) return false
     if (isDue(x, handoffMtime(findHandoff(x.ticket)))) return true
@@ -1921,7 +1951,9 @@ const startAddress = async (key: string): Promise<{ error: string | null; sessio
     isStarted = true
     const id = (await waitForSessionId(shortId, 10000)) ?? shortId
     appState = applyTicketOverride(appState, id, ticket)
+    appState = { ...appState, mrSessions: { ...appState.mrSessions, [key]: id } }
     saveState(statePath, appState)
+    pushMyMrs()
     void refreshAgents().then(() => pushSessions())
     return { error: null, sessionId: id }
   } finally {
@@ -1930,20 +1962,37 @@ const startAddress = async (key: string): Promise<{ error: string | null; sessio
   }
 }
 
-const findExplainFile = (key: string): ExplainFile | null => {
+const newestTaskFile = (key: string, fileName: string): { json: string; updatedAt: number } | null => {
   const candidates = listDir(EXPLAIN_ROOT).flatMap((month) => {
-    const json = joinPath(EXPLAIN_ROOT, month, key, 'wyjasnienie-zmian.json')
+    const json = joinPath(EXPLAIN_ROOT, month, key, fileName)
     try {
-      return [{ json, md: joinPath(EXPLAIN_ROOT, month, key, 'wyjasnienie-zmian.md'), updatedAt: statSync(json).mtimeMs }]
+      return [{ json, updatedAt: statSync(json).mtimeMs }]
     } catch {
       return []
     }
   })
-  const newest = candidates.sort((a, b) => b.updatedAt - a.updatedAt)[0]
+  return candidates.sort((a, b) => b.updatedAt - a.updatedAt)[0] ?? null
+}
+
+const readTaskJson = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''))
+
+const findExplainFile = (key: string): ExplainFile | null => {
+  const newest = newestTaskFile(key, 'wyjasnienie-zmian.json')
   if (!newest) return null
   try {
-    const doc = parseExplainDoc(JSON.parse(readFileSync(newest.json, 'utf8').replace(/^\uFEFF/, '')))
-    return doc ? { doc, mdPath: newest.md, updatedAt: newest.updatedAt } : null
+    const doc = parseExplainDoc(readTaskJson(newest.json))
+    return doc ? { doc, mdPath: joinPath(dirname(newest.json), 'wyjasnienie-zmian.md'), updatedAt: newest.updatedAt } : null
+  } catch {
+    return null
+  }
+}
+
+const findReviewFile = (key: string): (ReviewDoc & { updatedAt: number }) | null => {
+  const newest = newestTaskFile(key, 'review-parts.json')
+  if (!newest) return null
+  try {
+    const doc = parseReviewDoc(readTaskJson(newest.json))
+    return doc ? { ...doc, updatedAt: newest.updatedAt } : null
   } catch {
     return null
   }
@@ -2237,7 +2286,7 @@ const takeOverInteractive = async (id: string, cols: number, rows: number): Prom
   const answer = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options)
   if (answer.response !== 1) return { error: 'cancelled' }
   handedToVscode.delete(id)
-  for (const launchId of [id, ...predecessorsOf(id)]) for (const pid of await runningResumePids(launchId)) await killProcess(pid, true)
+  for (const launchId of launchIdsOf(id, activeLinks)) for (const pid of await runningResumePids(launchId)) await killProcess(pid, true)
   await new Promise((r) => setTimeout(r, 800))
   await Promise.all([refreshRunning(), refreshAgents()])
   await pushSessions()
@@ -2270,11 +2319,11 @@ const closeSessionTab = async (id: string): Promise<{ error: string | null }> =>
   const exe = resolveClaudeExe()
   if (exe && bgAgents.has(id)) await stopBackground(exe, id)
   await killSessions([id])
-  for (const launchId of [id, ...predecessorsOf(id)]) for (const pid of await runningResumePids(launchId)) await killProcess(pid, true)
+  for (const launchId of launchIdsOf(id, activeLinks)) for (const pid of await runningResumePids(launchId)) await killProcess(pid, true)
   await new Promise((r) => setTimeout(r, 800))
   await Promise.all([refreshRunning(), refreshAgents()])
   await pushSessions()
-  const isStillRunning = (await Promise.all([id, ...predecessorsOf(id)].map(runningResumePids))).some((pids) => pids.length)
+  const isStillRunning = (await Promise.all(launchIdsOf(id, activeLinks).map(runningResumePids))).some((pids) => pids.length)
   return isStillRunning ? { error: 'The Claude process is still running' } : { error: null }
 }
 
@@ -3047,7 +3096,7 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle('ide-search', (_e, cwd: string, query: string, scope: string, isWord: boolean) => ideSearch(cwd, query, scope, isWord))
   ipcMain.handle('ide-status', (_e, cwd: string) => ideStatus(cwd))
   ipcMain.handle('ide-changes', (_e, cwd: string) => ideChanges(cwd))
-  ipcMain.handle('ide-ref-changes', (_e, cwd: string, source: string, target: string) => ideRefChanges(cwd, source, target))
+  ipcMain.handle('ide-ref-changes', (_e, cwd: string, source: string, target: string, isPushedOnly?: boolean) => ideRefChanges(cwd, source, target, isPushedOnly === true))
   ipcMain.handle('ide-ref-read', (_e, cwd: string, source: string, target: string, rel: string, isBase: boolean) =>
     ideReadRef(cwd, source, target, rel, isBase)
   )
@@ -3062,6 +3111,15 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle('explain-start', (_e, key: string, cwd: string, sourceSessionId: string | null) =>
     startExplain(key, cwd, sourceSessionId)
   )
+  ipcMain.handle('review-parts-doc', (_e, key: string) => findReviewFile(key))
+  ipcMain.handle('review-parts-start', (_e, key: string, cwd: string, mr: { iid: number; source: string; target: string } | null) =>
+    startReviewParts(key, cwd, mr)
+  )
+  ipcMain.handle('catalog-list', () => buildCatalog(homedir()))
+  ipcMain.handle('catalog-read', (_e, path: string) => readCatalogItem(homedir(), path))
+  ipcMain.on('catalog-open-folder', (_e, path: string) => {
+    if (typeof path === 'string' && isInsideDir(joinPath(homedir(), '.claude'), path)) void shell.openPath(dirname(path))
+  })
   ipcMain.handle('insights-report', () => insightsReport())
   ipcMain.handle('flow-state', (_e, keys: string[]) => flowState(keys))
   ipcMain.on('flow-open-skill', () => void shell.openPath(FLOW_SKILL))

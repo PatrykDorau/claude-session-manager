@@ -321,6 +321,12 @@ export function applyTicketOverride(state: State, id: string, value: string | nu
   return { ...state, ticketOverride }
 }
 
+export function resolveById<T>(map: Record<string, T>, id: string): T | undefined {
+  if (id in map) return map[id]
+  const shortKey = Object.keys(map).find((k) => k.length >= 8 && id.startsWith(k))
+  return shortKey === undefined ? undefined : map[shortKey]
+}
+
 export function overrideTicket(auto: string | null, override: string | undefined): string | null {
   if (override === undefined) return auto
   if (override === '') return null

@@ -8,7 +8,7 @@ const RESUME =
 export function extractResumeIds(commandLines: string[]): string[] {
   const ids = new Set<string>()
   for (const line of commandLines) {
-    if (line.includes('--fork-session')) continue
+    if (line.includes('--fork-session') && !line.includes('--session-id')) continue
     RESUME.lastIndex = 0
     let m: RegExpExecArray | null
     while ((m = RESUME.exec(line)) !== null) ids.add(m[1])

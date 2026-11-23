@@ -6,6 +6,14 @@ describe('extractResumeIds', () => {
     expect(extractResumeIds(['claude -p P --resume 3367d315-46a2-4000-bc43-7e3a5c0a43a5 --fork-session --no-session-persistence'])).toEqual([])
   })
 
+  it('keeps the resumed id of a background worker forked into a new session id', () => {
+    expect(
+      extractResumeIds([
+        'claude.exe --session-id 87a512c2-1713-4ca6-9718-bed38d3fe490 --fork-session --resume 3d74bfe1-49c1-4908-895e-3e68e2c3e123 --name SOFNJJ-2402'
+      ])
+    ).toEqual(['3d74bfe1-49c1-4908-895e-3e68e2c3e123'])
+  })
+
   it('pulls a single resume id', () => {
     expect(extractResumeIds(['claude --resume 3367d315-46a2-4000-bc43-7e3a5c0a43a5'])).toEqual([
       '3367d315-46a2-4000-bc43-7e3a5c0a43a5'

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { findContinuations, carryOver } from '../src/main/continuation'
+import { findContinuations, carryOver, launchIdsOf } from '../src/main/continuation'
 
 const A = 'aaaaaaaa-0000-4000-8000-000000000001'
 const B = 'bbbbbbbb-0000-4000-8000-000000000002'
@@ -92,5 +92,16 @@ describe('carryOver', () => {
     const out = carryOver({ ...state, names: { [A]: 'old', [B]: 'mine' }, watched: [A, B] }, A, B)
     expect(out.names[B]).toBe('mine')
     expect(out.watched).toEqual([A, B])
+  })
+})
+
+describe('launchIdsOf', () => {
+  it('kills the processes started for the session and for the sessions it continues', () => {
+    expect(launchIdsOf(B, new Map([[A, B]]))).toEqual([B, A])
+  })
+
+  it('leaves alone a process resumed from the session when it now runs a newer one', () => {
+    expect(launchIdsOf(A, new Map([[A, B]]))).toEqual([])
+    expect(launchIdsOf(A, new Map([[A, B], [C, A]]))).toEqual([C])
   })
 })

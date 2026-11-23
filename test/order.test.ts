@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { orderRows, moveKey, splitStarred } from '../src/renderer/src/dashboard/order'
+import { orderRows, moveKey, splitStarred, sortByStatus } from '../src/renderer/src/dashboard/order'
 
 type Row = { key: string; isActive: boolean; priority?: string }
 const rank = (r: Row): { isActive: boolean; priority: string | undefined } => ({ isActive: r.isActive, priority: r.priority })
@@ -52,5 +52,18 @@ describe('splitStarred', () => {
     const split = splitStarred(rows, ['C', 'A'])
     expect(split.starred.map((r) => r.key)).toEqual(['A', 'C'])
     expect(split.rest.map((r) => r.key)).toEqual(['B'])
+  })
+})
+
+describe('sortByStatus', () => {
+  it('puts sessions that need you first, then working, idle and rows without a session, keeping the order inside each status', () => {
+    const rows = [
+      { key: 'none', status: null },
+      { key: 'idle', status: 'idle' },
+      { key: 'work1', status: 'working' },
+      { key: 'wait', status: 'waiting' },
+      { key: 'work2', status: 'working' }
+    ]
+    expect(sortByStatus(rows, (r) => r.status).map((r) => r.key)).toEqual(['wait', 'work1', 'work2', 'idle', 'none'])
   })
 })

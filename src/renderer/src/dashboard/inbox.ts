@@ -1,4 +1,5 @@
 import type { MrRow, Session } from '../types'
+import { findAddressSession } from './mrs'
 
 export const PERMISSION_KEYS: Record<'yes' | 'always' | 'no', string> = { yes: '1', always: '2', no: '3' }
 
@@ -16,11 +17,12 @@ export interface InboxRow {
 
 const isInboxStatus = (status: Session['status']): boolean => status === 'waiting' || status === 'checkout'
 
-const mrOfSession = (mrs: MrRow[], id: string): MrRow | undefined =>
-  mrs.find((m) => !!m.sessionId && (m.sessionId === id || id.startsWith(m.sessionId)))
+const mrOfSession = (mrs: MrRow[], s: Session): MrRow | undefined =>
+  mrs.find((m) => !!m.sessionId && (m.sessionId === s.id || s.id.startsWith(m.sessionId))) ??
+  mrs.find((m) => findAddressSession([s], m))
 
 const toRow = (s: Session, status: InboxRow['status'], titles: Record<string, string | null>, mrs: MrRow[]): InboxRow => {
-  const mr = s.ticket ? undefined : mrOfSession(mrs, s.id)
+  const mr = s.ticket ? undefined : mrOfSession(mrs, s)
   return {
     sessionId: s.id,
     label: s.ticket ?? (mr ? `!${mr.iid}` : (s.name ?? s.projectName)),
