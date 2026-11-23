@@ -3,6 +3,9 @@ import {
   AUTO_HANDOFF_LIMIT,
   LOG_LIMIT,
   addLog,
+  adoptJob,
+  withAdopted,
+  isAdopted,
   handAddressToLiveTicket,
   handoffStopAction,
   defaultAutonomy,
@@ -435,5 +438,41 @@ describe('isPromptSkipping', () => {
 
   it('ignores other modes', () => {
     expect(isPromptSkipping('claude.exe --permission-mode acceptEdits')).toBe(false)
+  })
+})
+
+describe('adoptJob', () => {
+  const session = { id: 'abcdef1234567890', ticket: 'SOFRMPT-1', repo: 'C:/repo', title: 'Fix focus' }
+
+  it('makes a working manual ticket job that owns the session', () => {
+    const job = adoptJob(session, 5)
+    expect(job).toMatchObject({ id: 'ticket:SOFRMPT-1', kind: 'ticket', key: 'SOFRMPT-1', title: 'Fix focus', repo: 'C:/repo', autonomy: 'manual', state: 'working', sessionId: 'abcdef1234567890' })
+    expect(job.log).toEqual([{ at: 5, text: 'adopted' }])
+  })
+})
+
+describe('isAdopted', () => {
+  it('is true when a job already owns the session', () => {
+    const job = adoptJob({ id: 's1', ticket: 'A-1', repo: null, title: '' }, 1)
+    expect(isAdopted([job], 's1')).toBe(true)
+    expect(isAdopted([job], 's2')).toBe(false)
+  })
+})
+
+describe('withAdopted', () => {
+  const adopted = adoptJob({ id: 's2', ticket: 'A-1', repo: null, title: '' }, 9)
+
+  it('replaces a finished job of the same ticket', () => {
+    const finished = { ...adoptJob({ id: 's1', ticket: 'A-1', repo: null, title: '' }, 1), state: 'finished' as const }
+    expect(withAdopted([finished], adopted)).toEqual([adopted])
+  })
+
+  it('refuses when a running job owns the same ticket', () => {
+    const queued = { ...adopted, sessionId: null, state: 'queued' as const }
+    expect(withAdopted([queued], adopted)).toBeNull()
+  })
+
+  it('adds the job when nothing owns the ticket', () => {
+    expect(withAdopted([], adopted)).toEqual([adopted])
   })
 })

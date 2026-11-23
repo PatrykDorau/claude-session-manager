@@ -217,8 +217,8 @@ const updatedAgo = (row: MrRow): string => {
           <PriorityIcon :name="r.priority" />
           <span class="proj" :style="{ color: projectColor(r.projectName), background: `${projectColor(r.projectName)}1f` }">{{ r.projectName }}</span>
           <span class="iid">!{{ r.iid }}</span>
-          <span v-if="mrMark(r) === 'merged'" class="mark merged" title="This merge request is already merged"><Icon name="pr" :size="11" />merged</span>
-          <span v-else-if="mrMark(r) === 'approved'" class="mark approved" title="You approved this merge request"><Icon name="check" :size="11" />approved by me</span>
+          <span v-if="mrMark(r) === 'merged'" class="mark merged" title="This merge request is already merged"><Icon name="pr" :size="13" /></span>
+          <span v-else-if="mrMark(r) === 'approved'" class="mark approved" title="You approved this merge request"><Icon name="check" :size="13" /></span>
           <span v-if="isWaiting(r)" class="live needs" title="Claude is waiting for your answer"><i />needs you</span>
           <span v-else-if="isLive(r)" class="live" title="A Claude session for this merge request is running"><i /></span>
           <span class="who"><span class="av">{{ initials(r.author) }}</span>{{ r.author }}</span>
@@ -600,11 +600,6 @@ select:focus {
 .mark {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 0 5px;
-  border: 1px solid currentColor;
-  border-radius: 6px;
-  font-size: 10.5px;
 }
 .mark.merged {
   color: #a371f7;

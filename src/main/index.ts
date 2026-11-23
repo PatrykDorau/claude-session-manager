@@ -24,7 +24,7 @@ import { rmSync, readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync
 import { parseTail, countTurns, lastMessages, createDetailCache, pendingRawInput } from './transcript'
 import { createPtyHost } from './ptyhost'
 import { pickPort, serverCommand, bashCandidates, isPortFree, DEFAULT_SERVER_COMMAND } from './devserver'
-import { stvOptions, webOptions, mergeEnvLocal, stvCommand, serverHost as serverHostName, chromeArgs, isChoiceMismatch, type StvChoice } from './serverprofile'
+import { stvOptions, webOptions, mergeEnvLocal, stvCommand, serverHost as serverHostName, chromeArgs, sideScreen, isChoiceMismatch, type StvChoice } from './serverprofile'
 import { createConnection } from 'node:net'
 import type { LocalHost, BranchChanges, ChangedFile, ExplainFile, ReviewDoc, ServerProfile, ServerSpec } from '../renderer/src/types'
 import { terminalMode, attachArgs, resumeBackgroundArgs, pasteInput, STOP_TURN, createOpenGuard, isHandedOff, type TerminalMode } from './terminal'
@@ -136,6 +136,7 @@ import { installHooks } from './hooks'
 import { migrateUserData } from './migrate'
 import { listAgentGroups, readAgentRun } from './agents'
 import { startBridge, ticketFromPath } from './bridge'
+import { idleHosts } from './hostidle'
 import { pickChromePort, taskChromeProfile, writeTaskMcp, seedProfile, writeTaskMcpFile, taskMcpArgs } from './taskbrowser'
 import { writeSessionSettings, sessionSettingsArgs } from './sessionsettings'
 import {
@@ -178,6 +179,9 @@ import {
   nextHandoffTick,
   requeueFromRequest,
   isJobOver,
+  adoptJob,
+  withAdopted,
+  isAdopted,
   isPromptSkipping,
   jobId,
   type ClearMark,
@@ -2400,6 +2404,20 @@ const removeJob = (id: string): void => {
   setJobs(appState.orchestrator.jobs.filter((j) => j.id !== id))
 }
 
+const adoptSession = (sessionId: string): { error: string | null } => {
+  const session = lastSessions.find((s) => s.id === sessionId)
+  if (!session?.isLive) return { error: 'The session is not live' }
+  if (isAdopted(appState.orchestrator.jobs, sessionId)) return { error: null }
+  const ticket = session.ticket?.toUpperCase()
+  if (!ticket) return { error: 'Only a session with a ticket can be adopted' }
+  const job = adoptJob({ id: session.id, ticket, repo: session.repo ?? null, title: appState.jira[ticket]?.summary || session.firstPrompt || '' }, Date.now())
+  const next = withAdopted(appState.orchestrator.jobs, job)
+  if (!next) return { error: `A running job already handles ${ticket}` }
+  forgetJob(job.id)
+  setJobs(next)
+  return { error: null }
+}
+
 const watchMr = async (job: Job, token: string, me: string): Promise<void> => {
   const base = appState.settings.gitlabBase
   const mr = mrItems.find((m) => m.key === job.key)
@@ -2534,8 +2552,10 @@ const prepareTaskBrowser = (key: string, folder: string): string | null => {
 
 const openInChrome = async (url: string, key?: string | null): Promise<void> => {
   const exe = existsSync(CHROME_PATH) ? CHROME_PATH : 'chrome.exe'
+  if (key) delete hostIdleSince[key.toUpperCase()]
   if (key) await seedProfile(CHROME_PROFILE, taskChromeProfile(key))
-  const args = key ? chromeArgs(taskChromeProfile(key), chromePortFor(key), url, key.toUpperCase()) : chromeArgs(CHROME_PROFILE, CHROME_DEBUG_PORT, url)
+  const area = sideScreen(screen.getAllDisplays(), screen.getPrimaryDisplay().id)
+  const args = key ? chromeArgs(taskChromeProfile(key), chromePortFor(key), url, key.toUpperCase(), area) : chromeArgs(CHROME_PROFILE, CHROME_DEBUG_PORT, url, undefined, area)
   spawn(exe, args, { detached: true, stdio: 'ignore', shell: false }).unref()
 }
 
@@ -2693,6 +2713,32 @@ const stopServer = (key: string): void => {
   serverHost.close(key)
   servers.delete(key)
   pushServers()
+}
+
+let hostIdleSince: Record<string, number> = {}
+
+const closeIdleHosts = async (): Promise<void> => {
+  const chromeKeys = await Promise.all(Object.keys(appState.chromePorts).map(async (key) => ((await isChromeDebugUp(chromePortFor(key))) ? key : null)))
+  const openKeys = [...new Set([...servers.keys(), ...chromeKeys.filter((k): k is string => !!k)])]
+  const liveSessions = lastSessions.filter((s) => s.isLive)
+  const mrTickets = mrTicketMap()
+  const mrTicketOf = (key: string): string | undefined => mrItems.find((m) => `MR-${m.iid}` === key)?.ticket?.toUpperCase() ?? mrTickets.get(key)
+  const sessionKeys = liveSessions.flatMap((s) => [s.ticket?.toUpperCase(), s.projectPath ? ticketFromPath(s.projectPath) : null])
+  const mrKeys = Object.entries(appState.mrSessions).filter(([, id]) => liveSessions.some((s) => s.id === id)).map(([key]) => key)
+  const liveKeys = [...sessionKeys, ...mrKeys].filter((k): k is string => !!k)
+  const liveTickets = new Set([...liveKeys, ...liveKeys.map(mrTicketOf).filter((k): k is string => !!k)])
+  const since = { ...hostIdleSince }
+  for (const [key, server] of servers) if (since[key] !== undefined) since[key] = Math.max(since[key], server.startedAt)
+  const result = idleHosts(openKeys, liveTickets, since, Date.now())
+  hostIdleSince = result.idleSince
+  for (const key of result.toClose) {
+    if (servers.has(key)) stopServer(key)
+    if (key in appState.chromePorts) await closeChrome(key)
+  }
+}
+
+const checkIdleHosts = (): void => {
+  void closeIdleHosts()
 }
 const openGuard = createOpenGuard()
 const rekeyTerminal = (from: string, to: string): void => {
@@ -3722,6 +3768,7 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle('orchestrator-start', (_e, jobs: unknown) => startJobs(jobs))
   ipcMain.handle('orchestrator-set-autonomy', (_e, id: string, autonomy: Autonomy) => setJobAutonomy(id, autonomy))
   ipcMain.handle('orchestrator-remove', (_e, id: string) => removeJob(id))
+  ipcMain.handle('orchestrator-adopt', (_e, sessionId: string) => adoptSession(sessionId))
   ipcMain.handle('orchestrator-get', () => appState.orchestrator)
   ipcMain.handle('local-hosts', () => listLocalHosts())
   ipcMain.handle('close-chrome', async (_e, key: string | null) => ({ error: await closeChrome(typeof key === 'string' ? key : null) }))
@@ -4082,6 +4129,7 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
   }
   checkInsights()
   setInterval(checkInsights, INSIGHTS_CHECK)
+  setInterval(checkIdleHosts, 60_000)
 
   mainWindow.on('close', (e) => {
     console.log('[diag] window close event, isQuiting=', (app as never as { isQuiting?: boolean }).isQuiting)

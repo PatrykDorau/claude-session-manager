@@ -41,6 +41,10 @@ const isUnplacedOpen = ref(false)
 const toggleUnplaced = (): void => {
   isUnplacedOpen.value = !isUnplacedOpen.value
 }
+const openStage = ref<number | null>(null)
+const toggleStage = (n: number): void => {
+  openStage.value = openStage.value === n ? null : n
+}
 const summaryOf = (key: string): string => props.rows.find((r) => r.key === key)?.summary ?? ''
 const chipTitle = (t: FlowTicket): string =>
   [summaryOf(t.key), t.stage && `Etap: ${t.stage}`, t.next && `Następny: ${t.next}`, t.firstStep && `Krok 1: ${t.firstStep}`].filter(Boolean).join('\n')
@@ -109,7 +113,7 @@ const agentTitle = (name: string): string => agentOf(name)?.description ?? name
                 <span class="sicon"><Icon :name="stageIcon(s)" :size="15" /></span>
                 <span class="grow" />
                 <span v-if="s.isGated" class="gate" title="Runs only when the browser gate said yes"><Icon name="globe" :size="13" /></span>
-                <span v-if="ticketsAt(s.n).length" class="count">{{ ticketsAt(s.n).length }}</span>
+                <button v-if="ticketsAt(s.n).length" class="count" :class="{ on: openStage === s.n }" :title="`Show the tickets at stage ${s.n}`" @click="toggleStage(s.n)">{{ ticketsAt(s.n).length }}</button>
               </div>
               <h2>{{ s.title }}</h2>
               <div v-for="r in s.roles" :key="r.stage" class="role">
@@ -128,13 +132,14 @@ const agentTitle = (name: string): string => agentOf(name)?.description ?? name
                   <span class="m" :class="modelClass(r.model)">{{ r.model }}</span>
                 </div>
               </div>
-              <div class="chips">
-                <button v-for="t in ticketsAt(s.n)" :key="t.key" class="chip" :class="t.risk" :title="chipTitle(t)" @click="open(t.key)">
-                  <b>{{ t.key }}</b><span v-if="sizeLabel(t)">{{ sizeLabel(t) }}</span>
-                </button>
-              </div>
             </section>
           </template>
+        </div>
+        <div v-if="openStage !== null && ticketsAt(openStage).length" class="chips staged">
+          <span class="slabel">Stage {{ openStage }}</span>
+          <button v-for="t in ticketsAt(openStage)" :key="t.key" class="chip" :class="t.risk" :title="chipTitle(t)" @click="open(t.key)">
+            <b>{{ t.key }}</b><span v-if="sizeLabel(t)">{{ sizeLabel(t) }}</span>
+          </button>
         </div>
         <div v-if="unplaced.length" class="unplaced">
           <button class="toggle" @click="toggleUnplaced">
@@ -327,6 +332,11 @@ const agentTitle = (name: string): string => agentOf(name)?.description ?? name
   color: var(--bg-1);
   background: var(--accent);
   border-radius: 9px;
+  border: 0;
+  cursor: pointer;
+}
+.count.on {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
 }
 .stage h2 {
   margin: 0;
@@ -405,6 +415,15 @@ const agentTitle = (name: string): string => agentOf(name)?.description ?? name
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
+}
+.chips.staged {
+  margin-top: 10px;
+  align-items: center;
+}
+.slabel {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-right: 4px;
 }
 .chip {
   display: inline-flex;

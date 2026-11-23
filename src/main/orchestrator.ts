@@ -229,6 +229,34 @@ export const newJob = (request: JobRequest, now: number, isThreadOpen: boolean):
   createdAt: now
 })
 
+export const adoptJob = (session: { id: string; ticket: string; repo: string | null; title: string }, now: number): Job => {
+  const key = session.ticket
+  return {
+    id: jobId('ticket', key),
+    kind: 'ticket',
+    key,
+    title: session.title,
+    repo: session.repo,
+    autonomy: 'manual',
+    state: 'working',
+    sessionId: session.id,
+    handoffPhase: 'none',
+    lastSeenNoteId: null,
+    isCommentsPending: false,
+    autoHandoffs: 0,
+    log: [{ at: now, text: 'adopted' }],
+    createdAt: now
+  }
+}
+
+export const isAdopted = (jobs: Job[], sessionId: string): boolean => jobs.some((j) => j.sessionId === sessionId)
+
+export const withAdopted = (jobs: Job[], job: Job): Job[] | null => {
+  const existing = jobs.find((j) => j.id === job.id)
+  if (existing && !isJobOver(existing)) return null
+  return [...jobs.filter((j) => j.id !== job.id), job]
+}
+
 export const isJobOver = (job: Job): boolean => job.state === 'finished' || job.state === 'failed'
 
 export const requeueJob = (job: Job, now: number): Job =>

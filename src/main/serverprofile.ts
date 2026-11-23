@@ -61,13 +61,24 @@ export const serverHost = (key: string, tenant: string | null, environment: stri
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '')}.localhost`
 
-export const chromeArgs = (profileDir: string, debugPort: number, url: string, windowName?: string): string[] => [
+export interface ScreenArea {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export const chromeArgs = (profileDir: string, debugPort: number, url: string, windowName?: string, area?: ScreenArea | null): string[] => [
   `--user-data-dir=${profileDir}`,
   `--remote-debugging-port=${debugPort}`,
   '--disable-web-security',
   ...(windowName ? [`--window-name=${windowName}`] : []),
+  ...(area ? [`--window-position=${area.x},${area.y}`, `--window-size=${area.width},${area.height}`] : []),
   url
 ]
+
+export const sideScreen = (displays: { id: number; workArea: ScreenArea }[], primaryId: number): ScreenArea | null =>
+  displays.find((d) => d.id !== primaryId)?.workArea ?? null
 
 export const isChoiceMismatch = (label: string, tenant: string, environment: string): boolean => {
   if (label === 'custom') return false

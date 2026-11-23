@@ -237,6 +237,7 @@ declare global {
       startJobs: (jobs: import('../main/orchestrator').JobRequest[]) => Promise<{ error: string | null }>
       setJobAutonomy: (id: string, autonomy: import('../main/orchestrator').Autonomy) => Promise<void>
       removeJob: (id: string) => Promise<void>
+      adoptSession: (sessionId: string) => Promise<{ error: string | null }>
       getOrchestrator: () => Promise<import('../main/orchestrator').OrchestratorState>
       onOrchestrator: (cb: (state: import('../main/orchestrator').OrchestratorState) => void) => () => void
       setAllProjects: (isAll: boolean) => void

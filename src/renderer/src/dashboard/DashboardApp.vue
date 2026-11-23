@@ -165,6 +165,13 @@ const openJob = (job: Job): void => {
   if (job.kind === 'ticket') openTicket(job.key)
   else openMr(job.key, job.sessionId)
 }
+const openSessionTask = (session: Session): void => {
+  const key = session.ticket?.toUpperCase()
+  if (!key) return
+  if (isListHidden.value) toggleList()
+  openTicket(key)
+  tabRequest.value = { key, tab: 'work', sessionId: session.id, at: Date.now() }
+}
 const orchestratorJobs = ref<Job[]>([])
 const isStartJobsOpen = ref(false)
 const applyOrchestrator = (state: OrchestratorState): void => {
@@ -340,6 +347,7 @@ onBeforeUnmount(() => {
       :my-name="myMrs.myName ?? null"
       :sessions="sessions"
       @open="openJob"
+      @open-task="openSessionTask"
     />
     <FlowView v-else-if="page === 'flow'" :rows="rows" @open-ticket="openTicket" />
     <InsightsView v-else-if="page === 'insights'" />

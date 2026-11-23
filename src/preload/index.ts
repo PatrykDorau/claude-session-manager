@@ -369,6 +369,7 @@ const api = {
   setJobAutonomy: (id: string, autonomy: import('../main/orchestrator').Autonomy): Promise<void> =>
     ipcRenderer.invoke('orchestrator-set-autonomy', id, autonomy),
   removeJob: (id: string): Promise<void> => ipcRenderer.invoke('orchestrator-remove', id),
+  adoptSession: (sessionId: string): Promise<{ error: string | null }> => ipcRenderer.invoke('orchestrator-adopt', sessionId),
   getOrchestrator: (): Promise<import('../main/orchestrator').OrchestratorState> => ipcRenderer.invoke('orchestrator-get'),
   onOrchestrator: (cb: (state: import('../main/orchestrator').OrchestratorState) => void): (() => void) => {
     const handler = (_e: unknown, state: import('../main/orchestrator').OrchestratorState): void => cb(state)

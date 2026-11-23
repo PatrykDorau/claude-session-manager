@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { stvOptions, webOptions, mergeEnvLocal, stvCommand, serverHost, chromeArgs, isChoiceMismatch } from '../src/main/serverprofile'
+import { stvOptions, webOptions, mergeEnvLocal, stvCommand, serverHost, chromeArgs, isChoiceMismatch, sideScreen } from '../src/main/serverprofile'
 
 describe('stvOptions', () => {
   it('lists tenants and environments from config/<tenant>/.env.<env>', () => {
@@ -72,5 +72,32 @@ describe('isChoiceMismatch', () => {
     expect(isChoiceMismatch('krs · dev · web · 1080', 'krs', 'dev')).toBe(false)
     expect(isChoiceMismatch('krs · dev', '', '')).toBe(false)
     expect(isChoiceMismatch('custom', 'kan', 'uat')).toBe(false)
+  })
+})
+
+describe('chromeArgs on a side screen', () => {
+  it('places the window on the given screen area', () => {
+    expect(chromeArgs('C:\p', 9301, 'http://x', 'A-1', { x: 1920, y: 0, width: 1280, height: 1000 })).toEqual([
+      '--user-data-dir=C:\p',
+      '--remote-debugging-port=9301',
+      '--disable-web-security',
+      '--window-name=A-1',
+      '--window-position=1920,0',
+      '--window-size=1280,1000',
+      'http://x'
+    ])
+  })
+})
+
+describe('sideScreen', () => {
+  const primary = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } }
+  const side = { id: 2, workArea: { x: 1920, y: 0, width: 1280, height: 1000 } }
+
+  it('picks the work area of the first screen that is not the primary one', () => {
+    expect(sideScreen([primary, side], 1)).toEqual(side.workArea)
+  })
+
+  it('is null with a single screen', () => {
+    expect(sideScreen([primary], 1)).toBeNull()
   })
 })
