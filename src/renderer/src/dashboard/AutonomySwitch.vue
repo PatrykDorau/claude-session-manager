@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import type { Autonomy } from '../../../main/orchestrator'
+import type { AutonomyChoice } from '../../../main/orchestrator'
 import { AUTONOMY_LEVELS } from './orchestrator'
 
-defineProps<{ value: Autonomy | null; isDisabled?: boolean; disabledHint?: string }>()
-const emit = defineEmits<{ change: [autonomy: Autonomy] }>()
-const pick = (autonomy: Autonomy): void => emit('change', autonomy)
+defineProps<{ value: AutonomyChoice | null; isDisabled?: boolean; disabledHint?: string }>()
+const emit = defineEmits<{ change: [choice: AutonomyChoice] }>()
+const pick = (autonomy: AutonomyChoice): void => emit('change', autonomy)
 </script>
 
 <template>

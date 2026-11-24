@@ -1,22 +1,38 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { Autonomy } from '../../../main/orchestrator'
+import type { AutonomyChoice } from '../../../main/orchestrator'
 import { AUTONOMY_LEVELS } from './orchestrator'
 import { useEscapeClose } from './escape'
 import Icon from './Icon.vue'
 
-const props = defineProps<{ value: Autonomy | null; isDisabled?: boolean; disabledHint?: string }>()
-const emit = defineEmits<{ change: [autonomy: Autonomy] }>()
+const props = defineProps<{ value: AutonomyChoice | null; isDisabled?: boolean; disabledHint?: string; isCompact?: boolean }>()
+const emit = defineEmits<{ change: [choice: AutonomyChoice] }>()
+
+const LIST_WIDTH = 300
+const LIST_HEIGHT = 190
+const EDGE = 8
+const GAP = 4
 
 const isOpen = ref(false)
+const anchor = ref<HTMLButtonElement | null>(null)
+const listStyle = ref<Record<string, string>>({})
 const current = computed(() => AUTONOMY_LEVELS.find((l) => l.value === props.value) ?? null)
 const close = (): void => {
   isOpen.value = false
 }
-const toggle = (): void => {
-  if (!props.isDisabled) isOpen.value = !isOpen.value
+const placeList = (): void => {
+  const rect = anchor.value?.getBoundingClientRect()
+  if (!rect) return
+  const left = Math.max(EDGE, Math.min(rect.right - LIST_WIDTH, window.innerWidth - LIST_WIDTH - EDGE))
+  const isAbove = window.innerHeight - rect.bottom < LIST_HEIGHT && rect.top > LIST_HEIGHT
+  listStyle.value = isAbove ? { left: `${left}px`, bottom: `${window.innerHeight - rect.top + GAP}px` } : { left: `${left}px`, top: `${rect.bottom + GAP}px` }
 }
-const pick = (autonomy: Autonomy): void => {
+const toggle = (): void => {
+  if (props.isDisabled) return
+  placeList()
+  isOpen.value = !isOpen.value
+}
+const pick = (autonomy: AutonomyChoice): void => {
   close()
   emit('change', autonomy)
 }
@@ -26,16 +42,17 @@ useEscapeClose(isOpen, close)
 <template>
   <span class="menu">
     <button
+      ref="anchor"
       class="btn"
-      :class="{ on: !!current && current.value !== 'manual' }"
+      :class="{ on: !!current && current.value !== 'off', compact: isCompact }"
       :disabled="isDisabled"
       :title="isDisabled ? disabledHint : `Orchestrator: ${current ? current.hint : 'not orchestrated'}`"
       @click="toggle"
     >
-      <Icon name="bot" :size="14" />{{ current ? current.label : 'Orchestrator' }}<span class="caret">▾</span>
+      <Icon name="bot" :size="isCompact ? 12 : 14" />{{ current ? current.label : 'Orchestrator' }}<span class="caret">▾</span>
     </button>
     <span v-if="isOpen" class="scrim" @click="close" />
-    <span v-if="isOpen" class="list">
+    <span v-if="isOpen" class="list" :style="listStyle">
       <button v-for="level in AUTONOMY_LEVELS" :key="level.value" class="item" :class="{ on: level.value === value }" @click="pick(level.value)">
         <b>{{ level.label }}</b>
         <span>{{ level.hint }}</span>
@@ -71,6 +88,15 @@ useEscapeClose(isOpen, close)
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 50%, transparent);
 }
+.btn.compact {
+  box-sizing: border-box;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  font-size: 11px;
+  background: var(--bg-3);
+  border-radius: 5px;
+}
 .btn:disabled {
   opacity: 0.45;
   cursor: default;
@@ -85,10 +111,9 @@ useEscapeClose(isOpen, close)
   z-index: 20;
 }
 .list {
-  position: absolute;
-  top: 32px;
-  right: 0;
+  position: fixed;
   z-index: 21;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 2px;

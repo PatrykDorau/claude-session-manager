@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { panelSessions, followPin, pinnedSessions, togglePin, gridColumns, resolvePins, needsYou, parsePins, mrOfSession, startableRows, pinStarted, isDoneStatus, matchesQuery, groupByStatus, movePin, cellKey, parseCellLooks } from '../src/renderer/src/dashboard/commandpanel'
+import { panelSessions, lastClosedSession, followPin, pinnedSessions, togglePin, gridColumns, resolvePins, needsYou, parsePins, mrOfSession, startableRows, pinStarted, isDoneStatus, matchesQuery, groupByStatus, movePin, cellKey, parseCellLooks } from '../src/renderer/src/dashboard/commandpanel'
 import type { MrRow, Session } from '../src/renderer/src/types'
 import type { PickRow } from '../src/renderer/src/dashboard/orchestrator'
 import type { Job } from '../src/main/orchestrator'
@@ -16,6 +16,19 @@ describe('panelSessions', () => {
       s('check', { status: 'checkout', lastActive: 2 })
     ])
     expect(rows.map((r) => r.id)).toEqual(['check', 'wait', 'work', 'idle'])
+  })
+})
+
+describe('lastClosedSession', () => {
+  it('picks the newest closed session of the ticket and skips live ones and other tickets', () => {
+    const sessions = [
+      s('old', { isLive: false, ticket: 'sofrmpt-4033', lastActive: 1 }),
+      s('new', { isLive: false, ticket: 'SOFRMPT-4033', lastActive: 5 }),
+      s('live', { ticket: 'SOFRMPT-4033', lastActive: 9 }),
+      s('other', { isLive: false, ticket: 'SOFRMPT-1', lastActive: 9 })
+    ]
+    expect(lastClosedSession('SOFRMPT-4033', sessions)?.id).toBe('new')
+    expect(lastClosedSession('SOFRMPT-2', sessions)).toBeNull()
   })
 })
 

@@ -25,7 +25,8 @@ import StatusMenu from './StatusMenu.vue'
 import Splitter from './Splitter.vue'
 import ContextChip from './ContextChip.vue'
 import AutonomyMenu from './AutonomyMenu.vue'
-import type { Autonomy, Job, OrchestratorState } from '../../../main/orchestrator'
+import { choiceOf } from './orchestrator'
+import type { AutonomyChoice, Job, OrchestratorState } from '../../../main/orchestrator'
 import { readPins, togglePin, writePins } from './commandpanel'
 import { clampSize, readSize, writeSize, readFlag, uncommittedCount } from './dashboard'
 import MenuButton from './MenuButton.vue'
@@ -133,7 +134,7 @@ const applyOrchestrator = (state: OrchestratorState): void => {
 const stopOrchestrator = window.api.onOrchestrator(applyOrchestrator)
 void window.api.getOrchestrator().then(applyOrchestrator)
 onBeforeUnmount(stopOrchestrator)
-const setSessionAutonomy = async (autonomy: Autonomy): Promise<void> => {
+const setSessionAutonomy = async (autonomy: AutonomyChoice): Promise<void> => {
   if (!session.value) return
   autonomyError.value = (await window.api.setSessionAutonomy(session.value.id, autonomy)).error
 }
@@ -506,7 +507,7 @@ onBeforeUnmount(() => {
         <button v-if="session" class="btn" :class="{ on: isPinned }" :title="isPinned ? 'Unpin from the command panel grid' : 'Pin this session to the command panel grid'" @click="togglePanelPin"><Icon name="dashboard" :size="14" />{{ isPinned ? 'Pinned' : 'Pin' }}</button>
         <AutonomyMenu
           v-if="session?.isLive"
-          :value="sessionJob?.autonomy ?? null"
+          :value="choiceOf(sessionJob)"
           :is-disabled="!sessionJob && !session.ticket"
           :disabled-hint="autonomyError ?? 'Only a session with a ticket can be orchestrated'"
           :title="autonomyError ?? 'Orchestrator autonomy for this session'"

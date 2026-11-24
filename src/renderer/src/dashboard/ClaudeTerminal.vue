@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, onActivated, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, onActivated, nextTick } from 'vue'
 import '@xterm/xterm/css/xterm.css'
 import type { SessionDetail, TerminalMode } from '../types'
 import { isQuickExit } from './dashboard'
 import { acquireTerminal, releaseTerminal, showTerminalIn } from './terminalpool'
 
-const props = defineProps<{ sessionId: string; projectName: string }>()
+const props = defineProps<{ sessionId: string; projectName: string; isAutoResume?: boolean }>()
 const emit = defineEmits<{ mode: [mode: TerminalMode | null]; exited: []; focusVscode: [] }>()
 
 const mode = ref<TerminalMode | null>(null)
@@ -107,6 +107,11 @@ const paste = (text: string): void => {
   shared.term.focus()
 }
 
+const resumeWhenAsked = (isAsked: boolean | undefined): void => {
+  if (isAsked && mode.value === 'resume') void resumeHere()
+}
+watch(() => props.isAutoResume, resumeWhenAsked)
+
 defineExpose({ takeOver, paste })
 
 const lastReply = computed(() => {
@@ -125,7 +130,7 @@ onMounted(async () => {
     return
   }
   const initial = await window.api.terminalMode(props.sessionId)
-  if (initial === 'attach') {
+  if (initial === 'attach' || (initial === 'resume' && props.isAutoResume)) {
     await resumeHere()
     return
   }

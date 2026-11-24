@@ -2,6 +2,7 @@ import type { Status } from '../renderer/src/types'
 import { handoffPath } from '../renderer/src/dashboard/context'
 
 export type Autonomy = 'manual' | 'autonomous' | 'routine'
+export type AutonomyChoice = 'off' | 'routine' | 'autonomous'
 export type JobKind = 'ticket' | 'review' | 'address' | 'watch'
 export type JobState = 'queued' | 'starting' | 'working' | 'waiting' | 'handoff' | 'finished' | 'failed'
 export type HandoffPhase = 'none' | 'handoff' | 'clearing' | 'resuming'

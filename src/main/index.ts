@@ -193,6 +193,7 @@ import {
   resumePrompt,
   PROMPT_SKIP_WARNING,
   type Autonomy,
+  type AutonomyChoice,
   type Job,
   type JobRequest,
   type SessionView
@@ -2415,9 +2416,15 @@ const adoptSession = (sessionId: string): { error: string | null } => {
   return { error: null }
 }
 
-const setSessionAutonomy = (sessionId: string, autonomy: Autonomy): { error: string | null } => {
+const setSessionAutonomy = (sessionId: string, choice: AutonomyChoice): { error: string | null } => {
   const jobOfSession = (): Job | undefined => appState.orchestrator.jobs.find((j) => j.sessionId === sessionId)
-  if (!jobOfSession()) {
+  const existing = jobOfSession()
+  if (choice === 'off') {
+    if (existing) removeJob(existing.id)
+    return { error: null }
+  }
+  const autonomy: Autonomy = choice === 'autonomous' ? 'autonomous' : 'routine'
+  if (!existing) {
     const adopted = adoptSession(sessionId)
     if (adopted.error) return adopted
   }
@@ -3777,7 +3784,7 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle('orchestrator-set-autonomy', (_e, id: string, autonomy: Autonomy) => setJobAutonomy(id, autonomy))
   ipcMain.handle('orchestrator-remove', (_e, id: string) => removeJob(id))
   ipcMain.handle('orchestrator-adopt', (_e, sessionId: string) => adoptSession(sessionId))
-  ipcMain.handle('orchestrator-session-autonomy', (_e, sessionId: string, autonomy: Autonomy) => setSessionAutonomy(sessionId, autonomy))
+  ipcMain.handle('orchestrator-session-autonomy', (_e, sessionId: string, choice: AutonomyChoice) => setSessionAutonomy(sessionId, choice))
   ipcMain.handle('orchestrator-get', () => appState.orchestrator)
   ipcMain.handle('local-hosts', () => listLocalHosts())
   ipcMain.handle('close-chrome', async (_e, key: string | null) => ({ error: await closeChrome(typeof key === 'string' ? key : null) }))

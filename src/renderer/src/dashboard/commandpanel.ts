@@ -61,7 +61,10 @@ export const resolvePins = (pins: string[], sessions: Session[]): string[] => {
   return resolved.filter((id, i) => resolved.indexOf(id) === i)
 }
 
-export const togglePin = (pins: string[], id: string): string[] => (pins.includes(id) ? pins.filter((p) => p !== id) : [...pins, id])
+export const lastClosedSession = (ticket: string, sessions: Session[]): Session | null =>
+  sessions.filter((s) => !s.isLive && s.ticket?.toUpperCase() === ticket.toUpperCase()).sort((a, b) => b.lastActive - a.lastActive)[0] ?? null
+
+export const togglePin =(pins: string[], id: string): string[] => (pins.includes(id) ? pins.filter((p) => p !== id) : [...pins, id])
 
 export const movePin = (pins: string[], fromId: string, toId: string): string[] => {
   const from = pins.indexOf(fromId)

@@ -2,14 +2,14 @@
 import { nextTick, ref } from 'vue'
 import type { Session, TerminalMode } from '../types'
 import type { CellLook } from './commandpanel'
-import type { Autonomy, Job } from '../../../main/orchestrator'
-import { AUTONOMY_LEVELS, activityTone, stateLabel } from './orchestrator'
+import type { AutonomyChoice, Job } from '../../../main/orchestrator'
+import { AUTONOMY_LEVELS, activityTone, choiceOf, stateLabel } from './orchestrator'
 import ClaudeTerminal from './ClaudeTerminal.vue'
 import ContextChip from './ContextChip.vue'
 import AutonomySwitch from './AutonomySwitch.vue'
 import Icon from './Icon.vue'
 
-const props = defineProps<{ session: Session; title: string; jiraStatus: string | null; job: Job | null; look: CellLook }>()
+const props = defineProps<{ session: Session; title: string; jiraStatus: string | null; job: Job | null; look: CellLook; isAutoResume?: boolean }>()
 const emit = defineEmits<{ 'open-task': [session: Session]; unpin: [id: string]; look: [session: Session, look: CellLook]; move: [fromId: string, toId: string] }>()
 
 const COLORS = ['#3dd68c', '#6aa9ff', '#a371f7', '#f778ba', '#f0b429', '#ff7b72', '#39c5cf']
@@ -53,8 +53,8 @@ const openTask = (): void => emit('open-task', props.session)
 const unpin = (): void => emit('unpin', props.session.id)
 const isOrchOpen = ref(false)
 const error = ref<string | null>(null)
-const levelLabel = (autonomy: Autonomy): string => AUTONOMY_LEVELS.find((l) => l.value === autonomy)?.label ?? autonomy
-const setAutonomy = async (autonomy: Autonomy): Promise<void> => {
+const levelLabel = (job: Job | null): string => AUTONOMY_LEVELS.find((l) => l.value === choiceOf(job))?.label ?? 'Off'
+const setAutonomy = async (autonomy: AutonomyChoice): Promise<void> => {
   error.value = (await window.api.setSessionAutonomy(props.session.id, autonomy)).error
 }
 </script>
@@ -88,12 +88,12 @@ const setAutonomy = async (autonomy: Autonomy): Promise<void> => {
       <span v-if="jiraStatus" class="jira">{{ jiraStatus }}</span>
       <span class="pill" :class="session.status">{{ session.status }}</span>
       <span class="orch">
-        <button class="auto" :class="{ on: !!job }" title="Orchestrator: autonomy and recent decisions" @click="isOrchOpen = !isOrchOpen">
-          <Icon name="bot" :size="11" />{{ job ? levelLabel(job.autonomy) : 'Off' }}
+        <button class="auto" :class="{ on: choiceOf(job) !== 'off' }" title="Orchestrator: autonomy and recent decisions" @click="isOrchOpen = !isOrchOpen">
+          <Icon name="bot" :size="11" />{{ levelLabel(job) }}
         </button>
         <span v-if="isOrchOpen" class="scrim" @click="isOrchOpen = false" />
         <span v-if="isOrchOpen" class="orch-pop">
-          <AutonomySwitch :value="job?.autonomy ?? null" :is-disabled="!job && !session.ticket" disabled-hint="Only a session with a ticket can be orchestrated" @change="setAutonomy" />
+          <AutonomySwitch :value="choiceOf(job)" :is-disabled="!job && !session.ticket" disabled-hint="Only a session with a ticket can be orchestrated" @change="setAutonomy" />
           <span v-if="error" class="err">{{ error }}</span>
           <span v-if="!job" class="hint">Not orchestrated. Pick a level to hand it to the orchestrator.</span>
           <template v-else>
@@ -109,7 +109,7 @@ const setAutonomy = async (autonomy: Autonomy): Promise<void> => {
       </div>
     </header>
     <div class="term">
-      <ClaudeTerminal :session-id="session.id" :project-name="session.projectName" @mode="setMode" />
+      <ClaudeTerminal :session-id="session.id" :project-name="session.projectName" :is-auto-resume="isAutoResume" @mode="setMode" />
     </div>
   </section>
 </template>
@@ -263,7 +263,6 @@ const setAutonomy = async (autonomy: Autonomy): Promise<void> => {
   border-color: color-mix(in srgb, var(--accent) 50%, transparent);
 }
 .orch {
-  position: relative;
   flex: none;
 }
 .scrim {
@@ -273,13 +272,14 @@ const setAutonomy = async (autonomy: Autonomy): Promise<void> => {
 }
 .orch-pop {
   position: absolute;
-  top: 24px;
-  right: 0;
+  top: calc(100% + 4px);
+  left: 8px;
   z-index: 11;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  width: 320px;
+  box-sizing: border-box;
+  width: min(340px, calc(100% - 16px));
   padding: 10px;
   background: var(--bg-3);
   border: 1px solid var(--line-2);

@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import type { JiraTicket, MrRow, Session } from '../types'
-import { LOG_LIMIT, jobId, type Autonomy, type Job, type OrchestratorState } from '../../../main/orchestrator'
-import { activityFeed, activityTone, attentionCount, mrPickRows, repoChoices, stateLabel, ticketPickRows, type PickRow } from './orchestrator'
+import { LOG_LIMIT, jobId, type Autonomy, type AutonomyChoice, type Job, type OrchestratorState } from '../../../main/orchestrator'
+import { activityFeed, activityTone, attentionCount, autonomyOfChoice, choiceOf, choiceOfAutonomy, mrPickRows, repoChoices, stateLabel, ticketPickRows, type PickRow } from './orchestrator'
 import { cellKey, movePin, readCellLooks, writeCellLooks, type CellLook } from './commandpanel'
-import { gridColumns, groupByStatus, isDoneStatus, matchesQuery, mrOfSession, needsYou, panelSessions, pinStarted, pinnedSessions, readPins, resolvePins, startableRows, togglePin, writePins } from './commandpanel'
+import { gridColumns, groupByStatus, isDoneStatus, lastClosedSession, matchesQuery,mrOfSession, needsYou, panelSessions, pinStarted, pinnedSessions, readPins, resolvePins, startableRows, togglePin, writePins } from './commandpanel'
 import { splitTag } from '../taskview'
 import { reviewLabel } from './mrs'
 import PriorityIcon from './PriorityIcon.vue'
 import StartJobsDialog from './StartJobsDialog.vue'
 import PanelCell from './PanelCell.vue'
-import AutonomySwitch from './AutonomySwitch.vue'
+import AutonomyMenu from './AutonomyMenu.vue'
 import Icon from './Icon.vue'
 
 const props = defineProps<{ tickets: JiraTicket[]; mrs: MrRow[]; myName: string | null; sessions: Session[] }>()
@@ -70,7 +70,7 @@ const openTask = (s: Session): void => {
   else emit('open-task', s)
 }
 const notice = ref<string | null>(null)
-const setAutonomy = async (s: Session, autonomy: Autonomy): Promise<void> => {
+const setAutonomy = async (s: Session, autonomy: AutonomyChoice): Promise<void> => {
   notice.value = (await window.api.setSessionAutonomy(s.id, autonomy)).error
 }
 const remove = (job: Job): void => {
@@ -137,6 +137,14 @@ const startRow = async (r: PickRow): Promise<void> => {
   pinAwaiting()
 }
 
+const resumeIds = ref<Set<string>>(new Set())
+const resumableOf = (r: PickRow): Session | null => lastClosedSession(r.key, props.sessions)
+const resumeRow = (s: Session): void => {
+  resumeIds.value = new Set([...resumeIds.value, s.id])
+  if (!pins.value.includes(s.id)) savePins([...pins.value, s.id])
+  view.value = 'grid'
+}
+
 const applyState = (state: OrchestratorState): void => {
   jobs.value = state.jobs
   pinAwaiting()
@@ -197,9 +205,8 @@ onBeforeUnmount(unload)
             <button class="act" :class="{ on: gridIds.has(s.id) }" :title="gridIds.has(s.id) ? 'Unpin from the grid' : 'Pin to the grid'" @click="gridIds.has(s.id) ? unpin(s.id) : pin(s)">
               <Icon name="dashboard" :size="12" />{{ gridIds.has(s.id) ? 'Pinned' : 'Pin' }}
             </button>
-            <AutonomySwitch :value="jobOf(s)?.autonomy ?? null" :is-disabled="!jobOf(s) && !s.ticket" disabled-hint="Only a session with a ticket can be orchestrated" @change="(a) => setAutonomy(s, a)" />
+            <AutonomyMenu is-compact :value="choiceOf(jobOf(s))":is-disabled="!jobOf(s) && !s.ticket" disabled-hint="Only a session with a ticket can be orchestrated" @change="(a) => setAutonomy(s, a)" />
             <span class="grow" />
-            <button v-if="jobOf(s)" class="act" title="Stop orchestrating, keep the session" @click="remove(jobOf(s)!)">Release</button>
             <button class="act danger" title="Stop the session" @click="stop(s)"><Icon name="stop" :size="12" /></button>
           </div>
         </div>
@@ -240,9 +247,10 @@ onBeforeUnmount(unload)
               <select class="repo" :value="repoOf(r) ?? ''" title="Repository" @change="repoPicks = { ...repoPicks, [r.key]: ($event.target as HTMLSelectElement).value }">
                 <option v-for="p in roots" :key="p.path" :value="p.path">{{ p.name }}</option>
               </select>
-              <AutonomySwitch :value="autonomyOf(r)" @change="(a) => pickAutonomy(r, a)" />
+              <AutonomyMenu is-compact :value="choiceOfAutonomy(autonomyOf(r))"@change="(a) => pickAutonomy(r, autonomyOfChoice(a))" />
               <span class="grow" />
-              <button class="act start" :disabled="!repoOf(r)" title="Start the task and pin its session" @click="startRow(r)"><Icon name="play" :size="12" />Start</button>
+              <button v-if="resumableOf(r)" class="act start" title="Resume the last session of this task and pin it" @click="resumeRow(resumableOf(r)!)"><Icon name="refresh" :size="12" />Resume</button>
+              <button class="act start" :disabled="!repoOf(r)"title="Start the task and pin its session" @click="startRow(r)"><Icon name="play" :size="12" />Start</button>
             </div>
           </div>
           </template>
@@ -301,6 +309,7 @@ onBeforeUnmount(unload)
           :jira-status="jiraStatusOf(s)"
           :job="jobOf(s)"
           :look="looks[cellKey(s)] ?? {}"
+          :is-auto-resume="resumeIds.has(s.id)"
           @open-task="openTask"
           @unpin="unpin"
           @look="setLook"

@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue'
 import type { JiraTicket, MrRow, Session } from '../types'
 import type { Autonomy } from '../../../main/orchestrator'
-import { ticketPickRows, mrPickRows, liveLast, repoChoices, type PickRow } from './orchestrator'
+import { ticketPickRows, mrPickRows, liveLast, repoChoices, autonomyOfChoice, choiceOfAutonomy, type PickRow } from './orchestrator'
 import { splitTag } from '../taskview'
 import { reviewLabel } from './mrs'
 import PriorityIcon from './PriorityIcon.vue'
@@ -100,7 +100,7 @@ const start = async (): Promise<void> => {
               <select v-model="r.repo" :disabled="isStarting">
                 <option v-for="p in roots" :key="p.path" :value="p.path">{{ p.name }}</option>
               </select>
-              <AutonomySwitch :value="r.autonomy" @change="(a) => setAutonomy(r, a)" />
+              <AutonomySwitch :value="choiceOfAutonomy(r.autonomy)" @change="(a) => setAutonomy(r, autonomyOfChoice(a))" />
             </span>
           </label>
         </section>

@@ -1,4 +1,4 @@
-import type { Autonomy, Job, JobKind, JobState } from '../../../main/orchestrator'
+import type { Autonomy, AutonomyChoice, Job, JobKind, JobState } from '../../../main/orchestrator'
 import type { MrRow } from '../types'
 
 export interface PickRow {
@@ -64,11 +64,17 @@ const STATE_LABELS: Record<JobState, string> = {
 export const stateLabel = (state: JobState, kind: JobKind): string =>
   kind === 'watch' && state === 'working' ? 'watching' : STATE_LABELS[state]
 
-export const AUTONOMY_LEVELS: { value: Autonomy; label: string; hint: string }[] = [
-  { value: 'manual', label: 'I decide', hint: 'Nothing is answered for you' },
+export const AUTONOMY_LEVELS: { value: AutonomyChoice; label: string; hint: string }[] = [
+  { value: 'off', label: 'Off', hint: 'Not orchestrated: nothing is answered for you' },
   { value: 'routine', label: 'Permissions', hint: 'The judge answers tool permissions, never questions; handoffs wait for you' },
   { value: 'autonomous', label: 'Autonomous', hint: 'The judge also answers single questions; handoff, /clear and resume run on their own' }
 ]
+
+export const choiceOfAutonomy = (autonomy: Autonomy): AutonomyChoice => (autonomy === 'manual' ? 'off' : autonomy)
+
+export const choiceOf = (job: Job | null): AutonomyChoice => (job ? choiceOfAutonomy(job.autonomy) : 'off')
+
+export const autonomyOfChoice = (choice: AutonomyChoice): Autonomy => (choice === 'off' ? 'manual' : choice)
 
 export interface ActivityEntry {
   at: number

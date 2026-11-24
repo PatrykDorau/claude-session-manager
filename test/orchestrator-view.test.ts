@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { attentionCount, ticketPickRows, mrPickRows, stateLabel, liveLast, activityFeed, activityTone } from '../src/renderer/src/dashboard/orchestrator'
+import { attentionCount, ticketPickRows, mrPickRows, stateLabel, liveLast, activityFeed, activityTone, choiceOf, autonomyOfChoice } from '../src/renderer/src/dashboard/orchestrator'
 import type { MrRow } from '../src/renderer/src/types'
 import type { Job } from '../src/main/orchestrator'
 
@@ -85,5 +85,18 @@ describe('activityTone', () => {
     expect(activityTone('escalated: needs your answer')).toBe('ask')
     expect(activityTone('start failed: x')).toBe('fail')
     expect(activityTone('queued')).toBe('info')
+  })
+})
+
+describe('autonomy choices', () => {
+  it('shows a missing or manual job as off', () => {
+    expect(choiceOf(null)).toBe('off')
+    expect(choiceOf({ autonomy: 'manual' } as Job)).toBe('off')
+    expect(choiceOf({ autonomy: 'routine' } as Job)).toBe('routine')
+  })
+
+  it('starts an off job as manual', () => {
+    expect(autonomyOfChoice('off')).toBe('manual')
+    expect(autonomyOfChoice('autonomous')).toBe('autonomous')
   })
 })
