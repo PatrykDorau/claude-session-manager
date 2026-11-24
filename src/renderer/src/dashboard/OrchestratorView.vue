@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import type { JiraTicket, MrRow, Session } from '../types'
 import { LOG_LIMIT, jobId, type Autonomy, type Job, type OrchestratorState } from '../../../main/orchestrator'
 import { activityFeed, activityTone, attentionCount, mrPickRows, repoChoices, stateLabel, ticketPickRows, type PickRow } from './orchestrator'
+import { cellKey, movePin, readCellLooks, writeCellLooks, type CellLook } from './commandpanel'
 import { gridColumns, groupByStatus, isDoneStatus, matchesQuery, mrOfSession, needsYou, panelSessions, pinStarted, pinnedSessions, readPins, resolvePins, startableRows, togglePin, writePins } from './commandpanel'
 import { splitTag } from '../taskview'
 import { reviewLabel } from './mrs'
@@ -54,6 +55,15 @@ const jiraStatusOf = (s: Session): string | null => ticketOf(s)?.status ?? s.jir
 
 const pin = (s: Session): void => savePins(togglePin(pins.value, s.id))
 const unpin = (id: string): void => savePins(pins.value.filter((p) => p !== id))
+const movePinned = (fromId: string, toId: string): void => savePins(movePin(pins.value, fromId, toId))
+const looks = ref<Record<string, CellLook>>(readCellLooks())
+const setLook = (s: Session, look: CellLook): void => {
+  const next = { ...looks.value }
+  if (look.color || look.title) next[cellKey(s)] = JSON.parse(JSON.stringify(look)) as CellLook
+  else delete next[cellKey(s)]
+  looks.value = next
+  writeCellLooks(next)
+}
 const openTask = (s: Session): void => {
   const job = jobOf(s)
   if (job) emit('open', job)
@@ -290,8 +300,11 @@ onBeforeUnmount(unload)
           :title="titleOf(s)"
           :jira-status="jiraStatusOf(s)"
           :job="jobOf(s)"
+          :look="looks[cellKey(s)] ?? {}"
           @open-task="openTask"
           @unpin="unpin"
+          @look="setLook"
+          @move="movePinned"
         />
       </section>
       <section v-else-if="view === 'grid'" class="empty">

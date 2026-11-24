@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { panelSessions, followPin, pinnedSessions, togglePin, gridColumns, resolvePins, needsYou, parsePins, mrOfSession, startableRows, pinStarted, isDoneStatus, matchesQuery, groupByStatus } from '../src/renderer/src/dashboard/commandpanel'
+import { panelSessions, followPin, pinnedSessions, togglePin, gridColumns, resolvePins, needsYou, parsePins, mrOfSession, startableRows, pinStarted, isDoneStatus, matchesQuery, groupByStatus, movePin, cellKey, parseCellLooks } from '../src/renderer/src/dashboard/commandpanel'
 import type { MrRow, Session } from '../src/renderer/src/types'
 import type { PickRow } from '../src/renderer/src/dashboard/orchestrator'
 import type { Job } from '../src/main/orchestrator'
@@ -135,5 +135,32 @@ describe('pinStarted', () => {
   it('does not pin a session twice', () => {
     const jobs = [job('ticket:A-1', { state: 'working', sessionId: 's1' })]
     expect(pinStarted(['s1'], ['ticket:A-1'], jobs)).toEqual({ pins: ['s1'], awaiting: [] })
+  })
+})
+
+describe('movePin', () => {
+  it('moves a pin onto the place of another one', () => {
+    expect(movePin(['a', 'b', 'c', 'd'], 'a', 'c')).toEqual(['b', 'c', 'a', 'd'])
+    expect(movePin(['a', 'b', 'c', 'd'], 'd', 'b')).toEqual(['a', 'd', 'b', 'c'])
+  })
+
+  it('leaves the order alone for unknown or equal ids', () => {
+    const pins = ['a', 'b']
+    expect(movePin(pins, 'a', 'a')).toBe(pins)
+    expect(movePin(pins, 'x', 'a')).toBe(pins)
+  })
+})
+
+describe('cellKey', () => {
+  it('uses the ticket so the look survives /clear, else the session id', () => {
+    expect(cellKey(s('abc', { ticket: 'sofkrs-1' }))).toBe('SOFKRS-1')
+    expect(cellKey(s('abc'))).toBe('abc')
+  })
+})
+
+describe('parseCellLooks', () => {
+  it('keeps only string colors and titles', () => {
+    expect(parseCellLooks('{"A":{"color":"#f00","title":"x"},"B":{"color":5},"C":7}')).toEqual({ A: { color: '#f00', title: 'x' }, B: {} })
+    expect(parseCellLooks('nope')).toEqual({})
   })
 })

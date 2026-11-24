@@ -63,7 +63,60 @@ export const resolvePins = (pins: string[], sessions: Session[]): string[] => {
 
 export const togglePin = (pins: string[], id: string): string[] => (pins.includes(id) ? pins.filter((p) => p !== id) : [...pins, id])
 
-export const gridColumns = (count: number): number => (count <= 1 ? 1 : count <= 4 ? 2 : 3)
+export const movePin = (pins: string[], fromId: string, toId: string): string[] => {
+  const from = pins.indexOf(fromId)
+  const to = pins.indexOf(toId)
+  if (from < 0 || to < 0 || from === to) return pins
+  const next = pins.filter((p) => p !== fromId)
+  next.splice(to, 0, fromId)
+  return next
+}
+
+export interface CellLook {
+  color?: string
+  title?: string
+}
+
+export const LOOK_KEY = 'orch.cellLooks'
+
+export const cellKey = (session: Session): string => session.ticket?.toUpperCase() ?? session.id
+
+export const parseCellLooks = (text: string): Record<string, CellLook> => {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const looks: Record<string, CellLook> = {}
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== 'object') continue
+      const raw = value as Record<string, unknown>
+      looks[key] = {
+        ...(typeof raw.color === 'string' ? { color: raw.color } : {}),
+        ...(typeof raw.title === 'string' ? { title: raw.title } : {})
+      }
+    }
+    return looks
+  } catch {
+    return {}
+  }
+}
+
+export const readCellLooks = (): Record<string, CellLook> => {
+  try {
+    return parseCellLooks(localStorage.getItem(LOOK_KEY) ?? '{}')
+  } catch {
+    return {}
+  }
+}
+
+export const writeCellLooks = (looks: Record<string, CellLook>): void => {
+  try {
+    localStorage.setItem(LOOK_KEY, JSON.stringify(looks))
+  } catch {
+    return
+  }
+}
+
+export const gridColumns =(count: number): number => (count <= 1 ? 1 : count <= 4 ? 2 : 3)
 
 export const startableRows = (rows: PickRow[], jobs: Job[]): PickRow[] =>
   rows.filter((r) => !r.isLive && !jobs.some((j) => j.id === jobId(r.kind, r.key) && !isJobOver(j)))

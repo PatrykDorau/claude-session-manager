@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
 import type { Session, TerminalMode } from '../types'
+import type { CellLook } from './commandpanel'
 import type { Autonomy, Job } from '../../../main/orchestrator'
 import { AUTONOMY_LEVELS, activityTone, stateLabel } from './orchestrator'
 import ClaudeTerminal from './ClaudeTerminal.vue'
@@ -8,8 +9,41 @@ import ContextChip from './ContextChip.vue'
 import AutonomySwitch from './AutonomySwitch.vue'
 import Icon from './Icon.vue'
 
-const props = defineProps<{ session: Session; title: string; jiraStatus: string | null; job: Job | null }>()
-const emit = defineEmits<{ 'open-task': [session: Session]; unpin: [id: string] }>()
+const props = defineProps<{ session: Session; title: string; jiraStatus: string | null; job: Job | null; look: CellLook }>()
+const emit = defineEmits<{ 'open-task': [session: Session]; unpin: [id: string]; look: [session: Session, look: CellLook]; move: [fromId: string, toId: string] }>()
+
+const COLORS = ['#3dd68c', '#6aa9ff', '#a371f7', '#f778ba', '#f0b429', '#ff7b72', '#39c5cf']
+const isPaletteOpen = ref(false)
+const pickColor = (color: string | null): void => {
+  isPaletteOpen.value = false
+  emit('look', props.session, { ...props.look, color: color ?? undefined })
+}
+const isEditing = ref(false)
+const draftTitle = ref('')
+const titleInput = ref<HTMLInputElement | null>(null)
+const editTitle = async (): Promise<void> => {
+  draftTitle.value = props.look.title || props.title
+  isEditing.value = true
+  await nextTick()
+  titleInput.value?.select()
+}
+const saveTitle = (): void => {
+  if (!isEditing.value) return
+  isEditing.value = false
+  const text = draftTitle.value.trim()
+  emit('look', props.session, { ...props.look, title: text && text !== props.title ? text : undefined })
+}
+const DRAG_TYPE = 'application/x-cockpit-cell'
+const isDropOn = ref(false)
+const onDragStart = (e: DragEvent): void => {
+  e.dataTransfer?.setData(DRAG_TYPE, props.session.id)
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move'
+}
+const onDrop = (e: DragEvent): void => {
+  isDropOn.value = false
+  const fromId = e.dataTransfer?.getData(DRAG_TYPE)
+  if (fromId && fromId !== props.session.id) emit('move', fromId, props.session.id)
+}
 
 const mode = ref<TerminalMode | null>(null)
 const setMode = (next: TerminalMode | null): void => {
@@ -26,10 +60,31 @@ const setAutonomy = async (autonomy: Autonomy): Promise<void> => {
 </script>
 
 <template>
-  <section class="cell" :class="session.status">
+  <section
+    class="cell"
+    :class="[session.status, { colored: !!look.color, 'drop-on': isDropOn }]"
+    :style="look.color ? { '--cell': look.color } : undefined"
+    @dragover.prevent="isDropOn = true"
+    @dragleave="isDropOn = false"
+    @drop.prevent="onDrop"
+  >
     <header class="bar">
-      <button class="key" :title="`Open ${session.ticket ?? session.name ?? 'session'}`" @click="openTask">{{ session.ticket ?? session.name ?? session.id.slice(0, 8) }}</button>
-      <span class="title" :title="title">{{ title }}</span>
+      <div class="row1" draggable="true" title="Drag to move this session in the grid" @dragstart="onDragStart">
+        <span class="grip">⠿</span>
+        <button class="key" :title="`Open ${session.ticket ?? session.name ?? 'session'}`" @click="openTask">{{ session.ticket ?? session.name ?? session.id.slice(0, 8) }}</button>
+        <input v-if="isEditing" ref="titleInput" v-model="draftTitle" class="title-edit" @keydown.enter="saveTitle" @keydown.esc="isEditing = false" @blur="saveTitle" />
+        <span v-else class="title" :title="`${look.title || title} — double-click to rename`" @dblclick="editTitle">{{ look.title || title }}</span>
+        <span class="paint">
+          <button class="swatch" :style="look.color ? { background: look.color } : undefined" title="Cell color" @click="isPaletteOpen = !isPaletteOpen" />
+          <span v-if="isPaletteOpen" class="scrim" @click="isPaletteOpen = false" />
+          <span v-if="isPaletteOpen" class="palette">
+            <button v-for="c in COLORS" :key="c" class="swatch" :class="{ on: look.color === c }" :style="{ background: c }" @click="pickColor(c)" />
+            <button class="swatch none" title="No color" @click="pickColor(null)">∅</button>
+          </span>
+        </span>
+        <button class="x" title="Unpin from the grid" @click="unpin">×</button>
+      </div>
+      <div class="row2">
       <span v-if="jiraStatus" class="jira">{{ jiraStatus }}</span>
       <span class="pill" :class="session.status">{{ session.status }}</span>
       <span class="orch">
@@ -49,8 +104,9 @@ const setAutonomy = async (autonomy: Autonomy): Promise<void> => {
           </template>
         </span>
       </span>
+      <span class="grow" />
       <ContextChip :session="session" :mode="mode" />
-      <button class="x" title="Unpin from the grid" @click="unpin">×</button>
+      </div>
     </header>
     <div class="term">
       <ClaudeTerminal :session-id="session.id" :project-name="session.projectName" @mode="setMode" />
@@ -72,12 +128,92 @@ const setAutonomy = async (autonomy: Autonomy): Promise<void> => {
 .cell.waiting {
   border-color: var(--warn);
 }
-.bar {
+.cell.colored {
+  border-color: var(--cell);
+}
+.cell.colored .bar {
+  background: color-mix(in srgb, var(--cell) 16%, var(--bg-3));
+  border-bottom-color: color-mix(in srgb, var(--cell) 50%, var(--line-2));
+}
+.cell.colored .key {
+  color: var(--cell);
+}
+.cell.drop-on {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+.row1,
+.row2 {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 32px;
-  padding: 0 8px;
+  min-width: 0;
+}
+.row1 {
+  height: 26px;
+  cursor: grab;
+}
+.row2 {
+  height: 24px;
+}
+.grow {
+  flex: 1;
+}
+.grip {
+  flex: none;
+  color: var(--text-4);
+  font-size: 13px;
+}
+.title-edit {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0 6px;
+  font: 12px var(--font-ui);
+  color: var(--text);
+  background: var(--bg-1);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  outline: none;
+}
+.paint {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+}
+.swatch {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-3);
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 50%;
+  cursor: pointer;
+}
+.swatch.on {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+.palette {
+  position: absolute;
+  top: 20px;
+  right: 0;
+  z-index: 11;
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.bar {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 8px 2px;
   background: var(--bg-3);
   border-bottom: 1px solid var(--line-2);
   border-radius: 8px 8px 0 0;

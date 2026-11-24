@@ -24,7 +24,7 @@ import ServerPanel from './ServerPanel.vue'
 import StatusMenu from './StatusMenu.vue'
 import Splitter from './Splitter.vue'
 import ContextChip from './ContextChip.vue'
-import AutonomySwitch from './AutonomySwitch.vue'
+import AutonomyMenu from './AutonomyMenu.vue'
 import type { Autonomy, Job, OrchestratorState } from '../../../main/orchestrator'
 import { readPins, togglePin, writePins } from './commandpanel'
 import { clampSize, readSize, writeSize, readFlag, uncommittedCount } from './dashboard'
@@ -504,7 +504,7 @@ onBeforeUnmount(() => {
         <span v-if="facts.length" class="facts">{{ facts.join('  ·  ') }}</span>
         <ContextChip v-if="session" :session="session" :mode="mode" />
         <button v-if="session" class="btn" :class="{ on: isPinned }" :title="isPinned ? 'Unpin from the command panel grid' : 'Pin this session to the command panel grid'" @click="togglePanelPin"><Icon name="dashboard" :size="14" />{{ isPinned ? 'Pinned' : 'Pin' }}</button>
-        <AutonomySwitch
+        <AutonomyMenu
           v-if="session?.isLive"
           :value="sessionJob?.autonomy ?? null"
           :is-disabled="!sessionJob && !session.ticket"
