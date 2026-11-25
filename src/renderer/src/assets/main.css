@@ -64,6 +64,7 @@ body {
   --danger-line: #552a2a;
   --ok: #3dd68c;
   --ok-line: #24452f;
+  --cr: #a371f7;
   --font-ui: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'Cascadia Mono', Consolas, monospace;
   --shadow: 0 12px 32px rgba(0, 0, 0, 0.5);

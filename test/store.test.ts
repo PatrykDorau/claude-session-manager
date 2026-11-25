@@ -60,7 +60,8 @@ const base: State = {
     startView: 'ask',
     mrMention: '@telco-frontend',
     orchestratorMaxParallel: 2,
-    orchestratorBots: 'dao-gitlab'
+    orchestratorBots: 'dao-gitlab',
+    timesheetHours: 8
   }
 }
 
@@ -120,6 +121,30 @@ describe('orchestratorMaxParallel loading', () => {
     const file = join(dir, 'state.json')
     writeFileSync(file, JSON.stringify({ settings: { orchestratorMaxParallel: 4 } }))
     expect(loadState(file).settings.orchestratorMaxParallel).toBe(4)
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('timesheetHours loading', () => {
+  it.each([undefined, 0, 30, '8', null])('loads %s as 8', (value) => {
+    const dir = mkdtempSync(join(tmpdir(), 'css-'))
+    const file = join(dir, 'state.json')
+    writeFileSync(file, JSON.stringify({ settings: { timesheetHours: value } }))
+    expect(loadState(file).settings.timesheetHours).toBe(8)
+    rmSync(dir, { recursive: true, force: true })
+  })
+  it('keeps a value in range', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'css-'))
+    const file = join(dir, 'state.json')
+    writeFileSync(file, JSON.stringify({ settings: { timesheetHours: 7.5 } }))
+    expect(loadState(file).settings.timesheetHours).toBe(7.5)
+    rmSync(dir, { recursive: true, force: true })
+  })
+  it('snaps a value to 0.25', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'css-'))
+    const file = join(dir, 'state.json')
+    writeFileSync(file, JSON.stringify({ settings: { timesheetHours: 7.3 } }))
+    expect(loadState(file).settings.timesheetHours).toBe(7.25)
     rmSync(dir, { recursive: true, force: true })
   })
 })
@@ -227,7 +252,8 @@ describe('store io', () => {
         startView: 'dashboard',
         mrMention: '@team',
         orchestratorMaxParallel: 3,
-        orchestratorBots: 'bot-a, bot-b'
+        orchestratorBots: 'bot-a, bot-b',
+        timesheetHours: 6
       }
     }
     saveState(file, next)

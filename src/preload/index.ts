@@ -34,6 +34,7 @@ import type {
   VscodeProfile,
   WorktreeRow
 } from '../renderer/src/types'
+import type { DayResult } from '../main/timesheet'
 
 // Custom APIs for renderer
 const api = {
@@ -144,6 +145,7 @@ const api = {
     mrMention: string
     orchestratorMaxParallel: number
     orchestratorBots: string
+    timesheetHours: number
   } => ipcRenderer.sendSync('get-settings'),
   setSettings: (patch: {
     jiraBase?: string
@@ -308,6 +310,10 @@ const api = {
   stopServer: (key: string): void => ipcRenderer.send('server-stop', key),
   writeServer: (key: string, data: string): void => ipcRenderer.send('server-write', key, data),
   resizeServer: (key: string, cols: number, rows: number): void => ipcRenderer.send('server-resize', key, cols, rows),
+  markActivity: (ticket: string | null): void => ipcRenderer.send('activity-mark', ticket),
+  setTimesheetHours: (hours: number): void => ipcRenderer.send('set-timesheet-hours', hours),
+  getTimesheetDay: (day: string, isForced?: boolean): Promise<DayResult> =>
+    ipcRenderer.invoke('timesheet-day', day, isForced === true),
   getServers: (): DevServer[] => ipcRenderer.sendSync('get-servers'),
   getServerLog: (key: string): string => ipcRenderer.sendSync('server-log', key),
   onServers: (cb: (list: DevServer[]) => void): void => {
@@ -385,7 +391,8 @@ const api = {
   setStarred: (key: string, isOn: boolean): void => ipcRenderer.send('set-starred', key, isOn),
   onStarred: (cb: (keys: string[]) => void): void => {
     ipcRenderer.on('starred', (_e, keys) => cb(keys))
-  }
+  },
+  setFullScreen: (isOn: boolean): void => ipcRenderer.send('set-full-screen', isOn)
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

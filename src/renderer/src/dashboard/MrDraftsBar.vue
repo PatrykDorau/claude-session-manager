@@ -13,6 +13,12 @@ const openDraft = (d: MrDraftNote): void => {
   isReviewListOpen.value = false
   emit('open-draft', d)
 }
+const toggleResolve = async (id: number, input: HTMLInputElement): Promise<void> => {
+  await runReview({ kind: 'draft-resolve', id, isResolving: input.checked })
+  const isTarget = (d: MrDraftNote): boolean => d.id === id
+  const current = drafts.value.find(isTarget)
+  if (current) input.checked = current.isResolving
+}
 </script>
 
 <template>
@@ -29,7 +35,15 @@ const openDraft = (d: MrDraftNote): void => {
   <div v-if="drafts.length && isReviewListOpen" class="reviewlist">
     <div v-for="d in sortedDrafts" :key="d.id" class="rvitem">
       <button class="rvwhere" :title="d.anchor ? 'Show this line in the code' : 'Scroll to this thread'" @click="openDraft(d)">{{ draftWhere(d) }}</button>
-      <span v-if="d.isResolving" class="muted" title="Submitting the review resolves this thread">resolves thread</span>
+      <label v-if="d.replyTo" class="muted" title="Submitting the review resolves this thread">
+        <input
+          type="checkbox"
+          :checked="d.isResolving"
+          :disabled="!!busyAction"
+          @change="toggleResolve(d.id, $event.target as HTMLInputElement)"
+        />
+        Resolve thread
+      </label>
       <template v-if="editKey === `d:${d.id}`">
         <textarea v-model="editText" rows="3" />
         <div class="crow">

@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import type { LocalHost, Session } from '../types'
 import { ago } from '../display'
+import { idleHosts } from './hosts'
+import { readSize, writeSize } from './dashboard'
 import Icon from './Icon.vue'
 
 const props = defineProps<{ sessions: Session[] }>()
-const emit = defineEmits<{ 'open-ticket': [key: string] }>()
+const emit = defineEmits<{ 'open-ticket': [key: string]; 'hosts-changed': [hosts: LocalHost[]] }>()
 
 const POLL_MS = 4000
 const ACTIVE_MS = 15000
@@ -19,6 +21,7 @@ let timer: ReturnType<typeof setTimeout> | null = null
 const load = async (): Promise<void> => {
   if (timer) clearTimeout(timer)
   hosts.value = await window.api.getLocalHosts()
+  emit('hosts-changed', hosts.value)
   now.value = Date.now()
   timer = setTimeout(load, POLL_MS)
 }
@@ -45,6 +48,42 @@ const startServer = (h: LocalHost): Promise<void> => run(`start-${h.key}`, () =>
 const closeChrome = (h: LocalHost): Promise<void> => run(`chrome-${h.key}`, () => window.api.closeChrome(h.key))
 const openChrome = (h: LocalHost): void => window.api.openInChrome(h.server?.url ?? 'about:blank', h.key ?? undefined)
 
+const IDLE_HOURS = [1, 3, 8, 24]
+const IDLE_HOURS_KEY = 'hosts.idleHours'
+const readIdleHours = (): number => {
+  const stored = readSize(IDLE_HOURS_KEY, 3)
+  return IDLE_HOURS.includes(stored) ? stored : 3
+}
+const isIdlePanelOpen = ref(false)
+const idleHours = ref(readIdleHours())
+const unticked = ref<string[]>([])
+const idleList = computed(() => (hosts.value ? idleHosts(hosts.value, props.sessions, now.value, idleHours.value) : []))
+const tickedIdle = computed(() => idleList.value.filter((i) => !unticked.value.includes(i.host.key as string)))
+watch(idleHours, (hours) => writeSize(IDLE_HOURS_KEY, hours))
+const toggleIdlePanel = (): void => {
+  unticked.value = []
+  isIdlePanelOpen.value = !isIdlePanelOpen.value
+}
+const toggleTick = (key: string): void => {
+  unticked.value = unticked.value.includes(key) ? unticked.value.filter((k) => k !== key) : [...unticked.value, key]
+}
+const idleHoursOf = (ms: number): number => Math.floor(ms / 3_600_000)
+const openParts = (isServer: boolean, isChrome: boolean): string => [isServer && 'server', isChrome && 'Chrome'].filter(Boolean).join(' + ')
+const closeIdle = (): Promise<void> =>
+  run('close-idle', async () => {
+    const errors: string[] = []
+    for (const { host, isServer, isChrome } of tickedIdle.value) {
+      const key = host.key as string
+      if (isServer) window.api.stopServer(key)
+      if (isChrome) {
+        const result = await window.api.closeChrome(key)
+        if (result.error) errors.push(`${key}: ${result.error}`)
+      }
+    }
+    isIdlePanelOpen.value = false
+    return { error: errors.length ? errors.join('; ') : null }
+  })
+
 onMounted(load)
 onBeforeUnmount(() => {
   if (timer) clearTimeout(timer)
@@ -58,8 +97,34 @@ onBeforeUnmount(() => {
       <h1>Local servers</h1>
       <span class="sub">Dev servers and task Chromes running on this computer</span>
       <span class="grow" />
+      <button class="btn" @click="toggleIdlePanel"><Icon name="close" :size="14" />Close idle…</button>
       <button class="btn" @click="load"><Icon name="refresh" :size="14" />Refresh</button>
     </header>
+    <section v-if="isIdlePanelOpen" class="idle">
+      <div class="idlehead">
+        <b>Close servers and Chromes idle for at least</b>
+        <select v-model.number="idleHours" class="sel">
+          <option v-for="hours in IDLE_HOURS" :key="hours" :value="hours">{{ hours }} h</option>
+        </select>
+      </div>
+      <p v-if="!idleList.length" class="muted">Nothing idle for {{ idleHours }} h</p>
+      <ul v-else class="idlelist">
+        <li v-for="i in idleList" :key="i.host.key ?? ''">
+          <label>
+            <input type="checkbox" :checked="!unticked.includes(i.host.key as string)" @change="toggleTick(i.host.key as string)" />
+            <b class="ikey">{{ i.host.key }}</b>
+            <span>{{ openParts(i.isServer, i.isChrome) }}</span>
+            <span class="meta">idle for {{ idleHoursOf(i.idleMs) }} h</span>
+          </label>
+        </li>
+      </ul>
+      <div class="acts">
+        <button v-if="idleList.length" class="btn sm danger" :disabled="!tickedIdle.length || busy === 'close-idle'" @click="closeIdle">
+          <Icon name="close" :size="12" />Close {{ tickedIdle.length }}
+        </button>
+        <button class="btn sm" @click="isIdlePanelOpen = false">Cancel</button>
+      </div>
+    </section>
     <p v-if="notice" class="notice">{{ notice }}</p>
     <div class="body">
       <p v-if="hosts === null" class="muted">Loading…</p>
@@ -360,6 +425,52 @@ onBeforeUnmount(() => {
 }
 .muted {
   color: var(--text-4);
+}
+.idle {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 10px 16px 0;
+  padding: 12px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+}
+.idlehead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.sel {
+  height: 26px;
+  padding: 0 6px;
+  font: 12px var(--font-ui);
+  color: var(--text-2);
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+}
+.idlelist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.idlelist label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.ikey {
+  font: 600 13px var(--font-mono);
+  color: var(--text);
 }
 .empty {
   display: flex;

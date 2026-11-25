@@ -83,6 +83,7 @@ export const reviewConfirm = (action: MrReviewAction, iid: number): { question: 
   switch (action.kind) {
     case 'draft-add':
     case 'draft-edit':
+    case 'draft-resolve':
       return null
     case 'draft-delete':
       return { question: `Delete this pending draft note on !${iid}?`, button: 'Delete' }

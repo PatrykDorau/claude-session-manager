@@ -120,6 +120,10 @@ const refreshPins = (): void => {
   panelPins.value = readPins()
 }
 onActivated(refreshPins)
+const markTicket = (): void => window.api.markActivity(props.row.key)
+onMounted(markTicket)
+onActivated(markTicket)
+const markTerminal = (s: Session): void => window.api.markActivity(s.ticket)
 const togglePanelPin = (): void => {
   if (!session.value) return
   panelPins.value = togglePin(readPins(), session.value.id)
@@ -338,6 +342,7 @@ const pushedMr = computed(() => (ownMr.value ? { iid: ownMr.value.iid, source: o
 const codeComments = computed(() => mrState.value?.codeComments.value)
 const commentable = computed(() => mrState.value?.commentable.value ?? null)
 const onFileShown = (path: string, folder: string | null, isReadOnly: boolean): void => {
+  markTicket()
   if (isReadOnly) void mrState.value?.checkCommentable(path, folder, isReadOnly)
 }
 const onVersion = (href: string, path: string | null, line: number | null): void => void mrState.value?.openVersion(href, path, line)
@@ -600,6 +605,8 @@ onBeforeUnmount(() => {
           :ref="bindTerminal(s.id)"
           :session-id="s.id"
           :project-name="s.projectName"
+          @pointerdown.capture="markTerminal(s)"
+          @keydown.capture="markTerminal(s)"
           @mode="setMode(s.id, $event)"
           @exited="onTerminalExited(s.id)"
           @focus-vscode="focusVscode"

@@ -65,6 +65,16 @@ const saveOrchestratorMaxParallel = (): void => {
   window.api.setSettings({ orchestratorMaxParallel: value })
 }
 const saveOrchestratorBots = (): void => window.api.setSettings({ orchestratorBots: orchestratorBots.value })
+const timesheetHours = ref(initial.timesheetHours)
+const saveTimesheetHours = (): void => {
+  const value = Math.round(Number(timesheetHours.value) * 4) / 4
+  if (!Number.isFinite(value) || value < 1 || value > 24) {
+    timesheetHours.value = window.api.getSettings().timesheetHours
+    return
+  }
+  timesheetHours.value = value
+  window.api.setTimesheetHours(value)
+}
 const startView = ref(initial.startView)
 const saveStartView = (): void => window.api.setSettings({ startView: startView.value })
 const quickActions = ref(initial.quickActions.map((a) => ({ ...a })))
@@ -267,6 +277,19 @@ function copyDiag(): void {
         @blur="saveOrchestratorBots"
       />
       <small class="hint">Comma-separated GitLab usernames whose MR comments the orchestrator ignores.</small>
+    </label>
+    <label class="field">
+      <span class="flbl">Timesheet base hours</span>
+      <input
+        v-model.number="timesheetHours"
+        class="inp"
+        type="number"
+        min="1"
+        max="24"
+        step="0.5"
+        @change="saveTimesheetHours"
+      />
+      <small class="hint">Hours a day of activity is scaled to on the Timesheet page.</small>
     </label>
 
     <div class="field">

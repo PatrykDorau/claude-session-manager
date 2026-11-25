@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, onActivated, nextTick
 import '@xterm/xterm/css/xterm.css'
 import type { SessionDetail, TerminalMode } from '../types'
 import { isQuickExit } from './dashboard'
-import { acquireTerminal, releaseTerminal, showTerminalIn } from './terminalpool'
+import { acquireTerminal, releaseTerminal, showTerminalIn, syncPtySize } from './terminalpool'
 
 const props = defineProps<{ sessionId: string; projectName: string; isAutoResume?: boolean }>()
 const emit = defineEmits<{ mode: [mode: TerminalMode | null]; exited: []; focusVscode: [] }>()
@@ -35,7 +35,7 @@ const fitTerminal = (): void => {
   const next = shared.fit.proposeDimensions()
   if (!next || (next.cols === shared.term.cols && next.rows === shared.term.rows)) return
   shared.fit.fit()
-  window.api.resizeTerminal(props.sessionId, shared.term.cols, shared.term.rows)
+  syncPtySize(shared, props.sessionId)
 }
 const scheduleFit = (): void => {
   if (fitTimer) clearTimeout(fitTimer)
@@ -54,18 +54,20 @@ shared.onExit.add(onExit)
 onActivated(() => {
   adopt()
   fitTerminal()
-  shared.term.focus()
+  if (isVisible()) shared.term.focus()
 })
 
 const createTerminal = async (): Promise<{ cols: number; rows: number }> => {
   await nextTick()
-  if (host.value) showTerminalIn(shared, host.value)
+  if (host.value && (isVisible() || !shared.element.parentElement))
+    showTerminalIn(shared, host.value)
   shared.fit.fit()
+  syncPtySize(shared, props.sessionId)
   if (!observer && host.value) {
     observer = new ResizeObserver(onHostResize)
     observer.observe(host.value)
   }
-  shared.term.focus()
+  if (isVisible()) shared.term.focus()
   return { cols: shared.term.cols, rows: shared.term.rows }
 }
 
@@ -112,7 +114,15 @@ const resumeWhenAsked = (isAsked: boolean | undefined): void => {
 }
 watch(() => props.isAutoResume, resumeWhenAsked)
 
-defineExpose({ takeOver, paste })
+const focusTerminal = (): boolean => {
+  if (mode.value !== 'attach') return false
+  adopt()
+  if (shared.element.parentElement !== host.value) return false
+  shared.term.textarea?.focus({ preventScroll: true })
+  return true
+}
+
+defineExpose({ takeOver, paste, refit: fitTerminal, focus: focusTerminal })
 
 const lastReply = computed(() => {
   const text = [...(detail.value?.messages ?? [])].reverse().find((m) => m.role === 'assistant')?.text.trim() ?? ''

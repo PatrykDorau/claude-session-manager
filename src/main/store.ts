@@ -33,6 +33,7 @@ export interface Settings {
   mrMention: string
   orchestratorMaxParallel: number
   orchestratorBots: string
+  timesheetHours: number
 }
 
 export type StartView = 'ask' | 'sidebar' | 'dashboard'
@@ -123,7 +124,8 @@ const DEFAULT_SETTINGS: Settings = {
   startView: 'ask',
   mrMention: '@telco-frontend',
   orchestratorMaxParallel: 2,
-  orchestratorBots: 'dao-gitlab'
+  orchestratorBots: 'dao-gitlab',
+  timesheetHours: 8
 }
 
 const DEFAULT_DOCK: DockState = {
@@ -284,7 +286,11 @@ export function loadState(file: string): State {
             ? s.orchestratorMaxParallel
             : DEFAULT_SETTINGS.orchestratorMaxParallel,
         orchestratorBots:
-          typeof s.orchestratorBots === 'string' ? s.orchestratorBots : DEFAULT_SETTINGS.orchestratorBots
+          typeof s.orchestratorBots === 'string' ? s.orchestratorBots : DEFAULT_SETTINGS.orchestratorBots,
+        timesheetHours:
+          typeof s.timesheetHours === 'number' && s.timesheetHours >= 1 && s.timesheetHours <= 24
+            ? Math.round(s.timesheetHours * 4) / 4
+            : DEFAULT_SETTINGS.timesheetHours
       }
     }
   } catch {

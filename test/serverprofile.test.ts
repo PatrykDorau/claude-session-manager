@@ -50,6 +50,9 @@ describe('chromeArgs', () => {
       '--user-data-dir=C:\\Chrome dev session',
       '--remote-debugging-port=9222',
       '--disable-web-security',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
       'http://a.localhost:8081'
     ])
   })
@@ -59,6 +62,9 @@ describe('chromeArgs', () => {
       '--user-data-dir=C:\\p',
       '--remote-debugging-port=9301',
       '--disable-web-security',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
       '--window-name=SOFRMPT-3958',
       'http://a.localhost:8081'
     ])
@@ -81,6 +87,9 @@ describe('chromeArgs on a side screen', () => {
       '--user-data-dir=C:\p',
       '--remote-debugging-port=9301',
       '--disable-web-security',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
       '--window-name=A-1',
       '--window-position=1920,0',
       '--window-size=1280,1000',

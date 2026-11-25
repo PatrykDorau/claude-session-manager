@@ -142,6 +142,14 @@ const session = computed(
 watch(() => session.value?.id ?? null, (id) => emitViewing('viewing', id), { immediate: true })
 onActivated(() => emitViewing('viewing', session.value?.id ?? null))
 onDeactivated(() => emitViewing('viewing', null))
+const markMr = (): void => window.api.markActivity(props.row.ticket)
+onMounted(markMr)
+onActivated(markMr)
+const markTerminal = (): void => window.api.markActivity(session.value?.ticket ?? props.row.ticket ?? null)
+const showFile = (path: string, folder: string | null, isReadOnly: boolean): void => {
+  markMr()
+  void checkCommentable(path, folder, isReadOnly)
+}
 const repoPath = ref<string | null>(null)
 const loadRepo = async (): Promise<void> => {
   repoPath.value = await window.api.getMrRepo(props.row.key)
@@ -325,7 +333,7 @@ onBeforeUnmount(() => {
           :review="runReview"
           @ask="askClaude"
           @version="openVersion"
-          @file-shown="checkCommentable"
+          @file-shown="showFile"
         />
       </section>
       <section v-show="tab === 'overview'" class="pane doc" :style="isOverviewClaudeOpen ? { flex: 'none', width: `${docWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
@@ -351,6 +359,8 @@ onBeforeUnmount(() => {
         :key="`${session.id}-${terminalTick}`"
         :session-id="session.id"
         :project-name="session.projectName"
+        @pointerdown.capture="markTerminal"
+        @keydown.capture="markTerminal"
         @mode="mode = $event"
         @exited="remountTerminal"
         @focus-vscode="focusVscode"

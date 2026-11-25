@@ -23,6 +23,7 @@ import type {
   VscodeProfile,
   WorktreeRow
 } from '../renderer/src/types'
+import type { DayResult } from '../main/timesheet'
 
 declare global {
   interface Window {
@@ -88,6 +89,7 @@ declare global {
     mrMention: string
     orchestratorMaxParallel: number
     orchestratorBots: string
+    timesheetHours: number
       }
       setSettings: (patch: {
         jiraBase?: string
@@ -171,6 +173,9 @@ declare global {
       stopServer: (key: string) => void
       writeServer: (key: string, data: string) => void
       resizeServer: (key: string, cols: number, rows: number) => void
+      markActivity: (ticket: string | null) => void
+      setTimesheetHours: (hours: number) => void
+      getTimesheetDay: (day: string, isForced?: boolean) => Promise<DayResult>
       getServers: () => DevServer[]
       getServerLog: (key: string) => string
       getServerProfile: (cwd: string) => ServerProfile
@@ -245,6 +250,7 @@ declare global {
       getStarred: () => string[]
       setStarred: (key: string, isOn: boolean) => void
       onStarred: (cb: (keys: string[]) => void) => void
+      setFullScreen: (isOn: boolean) => void
     }
   }
 }

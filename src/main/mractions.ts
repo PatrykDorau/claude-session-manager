@@ -355,11 +355,36 @@ export const createDraftNote = async (
 ): Promise<string | null> =>
   (await request(base, token, 'POST', `${mrPath(projectId, iid)}/draft_notes`, draftNoteBody(input))).problem
 
+export interface DraftOps {
+  create: (input: DraftNoteInput) => Promise<string | null>
+  remove: (draftId: number) => Promise<string | null>
+}
+
+export const recreateDraft = async (ops: DraftOps, draft: { id: number; body: string; replyTo: string }, isResolving: boolean): Promise<string | null> => {
+  const createProblem = await ops.create({ body: draft.body, replyTo: draft.replyTo, isResolving })
+  if (createProblem) return createProblem
+  const removeProblem = await ops.remove(draft.id)
+  return removeProblem ? `The new draft was saved but the old one could not be deleted: ${removeProblem}` : null
+}
+
 export const updateDraftNote = async (base: string, token: string, projectId: number, iid: number, draftId: number, body: string): Promise<string | null> =>
   (await request(base, token, 'PUT', `${mrPath(projectId, iid)}/draft_notes/${draftId}`, { note: body })).problem
 
 export const deleteDraftNote = async (base: string, token: string, projectId: number, iid: number, draftId: number): Promise<string | null> =>
   (await request(base, token, 'DELETE', `${mrPath(projectId, iid)}/draft_notes/${draftId}`)).problem
+
+export const draftOpsFor = (
+  base: string,
+  token: string,
+  projectId: number,
+  iid: number
+): DraftOps => {
+  const create = (input: DraftNoteInput): Promise<string | null> =>
+    createDraftNote(base, token, projectId, iid, input)
+  const remove = (draftId: number): Promise<string | null> =>
+    deleteDraftNote(base, token, projectId, iid, draftId)
+  return { create, remove }
+}
 
 export const publishDraftNotes = async (base: string, token: string, projectId: number, iid: number): Promise<string | null> =>
   (await request(base, token, 'POST', `${mrPath(projectId, iid)}/draft_notes/bulk_publish`)).problem

@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { ICONS, type IconName } from './icons'
 
-const props = defineProps<{ name: IconName; size?: number }>()
+const props = defineProps<{ name: IconName; size?: number; strokeWidth?: number }>()
 const body = computed(() => ICONS[props.name])
 </script>
 
@@ -14,7 +14,7 @@ const body = computed(() => ICONS[props.name])
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
-    stroke-width="1.8"
+    :stroke-width="strokeWidth ?? 1.8"
     stroke-linecap="round"
     stroke-linejoin="round"
     aria-hidden="true"

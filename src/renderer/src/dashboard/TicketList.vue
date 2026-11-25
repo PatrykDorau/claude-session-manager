@@ -1,16 +1,15 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { laneGroups, splitTag, statusLane, type TaskRow } from '../taskview'
+import { laneGroups, statusLane, type TaskRow } from '../taskview'
 import type { MrRow } from '../types'
 import { ago } from '../display'
 import { filterRows, rowChip, lastActivity, uncommittedCount, readFlag, writeSize } from './dashboard'
 import { isActiveToday } from './workday'
 import { useWorkday } from './useWorkday'
-import PriorityIcon from './PriorityIcon.vue'
 import Icon from './Icon.vue'
 import { useManualOrder } from './useOrder'
 import { splitStarred, starredBlock, sortByStatus } from './order'
-import SessionBadge from './SessionBadge.vue'
+import TaskTile from './TaskTile.vue'
 import SessionWorkList from './SessionWorkList.vue'
 import { sessionWorkRows, WITH_SESSION_FLAG } from './sessionwork'
 import type { Session } from '../types'
@@ -136,12 +135,16 @@ const toggleOutside = (key: string): void => {
         <span v-if="isFolded(g.lane.key)" class="fold-lbl">{{ isLaneOpen(g.lane.key) ? 'Hide' : 'Show' }}</span>
         <button v-else-if="isLaneManual(g.lane.key)" class="autoorder" title="Drop your order and sort by running sessions, then priority" @click.stop="resetLane(g.lane.key)">Auto order</button>
       </h3>
-      <article
+      <TaskTile
         v-for="r in rowsOf(g)"
         :key="r.key"
-        class="tile"
+        :ticket-key="r.key"
+        :summary="r.summary"
+        :priority="r.priority"
+        :mr="mrOf(r) ?? null"
+        :session="liveSession(r)"
+        :is-selected="selectedKey === r.key"
         :class="{
-          sel: selectedKey === r.key,
           'has-session': r.sessions.some((s) => s.isLive),
           'needs-input': r.sessions.some((s) => s.isLive && s.status === 'waiting'),
           'drop-before': order.dropTarget.value?.key === r.key && !order.dropTarget.value.isAfter,
@@ -156,27 +159,9 @@ const toggleOutside = (key: string): void => {
         @dragend="order.onDragEnd"
         @click="emit('select', r.key)"
         @keydown.enter="emit('select', r.key)"
+        @open-mr="emit('open-mr', $event)"
       >
-        <SessionBadge v-if="liveSession(r)" :status="liveSession(r)?.status ?? 'idle'" :model="liveSession(r)?.model" :context-tokens="liveSession(r)?.contextTokens" />
-        <p class="summary">{{ splitTag(r.summary).text || 'No title' }}</p>
-        <div
-          v-if="mrOf(r)"
-          class="mrinfo"
-          :class="{ attn: (mrOf(r)?.openThreads ?? 0) > 0 }"
-          title="Open the merge request"
-          @click.stop="emit('open-mr', mrOf(r)?.key ?? '')"
-        >
-          <Icon name="pr" :size="12" />!{{ mrOf(r)?.iid }}
-          <span v-if="mrOf(r)?.isDraft" class="dr">Draft</span>
-          <span v-if="(mrOf(r)?.openThreads ?? 0) > 0" class="thr" title="Unresolved threads to address"><Icon name="message" :size="11" />{{ mrOf(r)?.openThreads }}</span>
-          <span v-if="mrOf(r)?.approvals" class="ap"><Icon name="check" :size="11" />{{ mrOf(r)?.approvals }}</span>
-        </div>
-        <div class="top">
-          <PriorityIcon :name="r.priority" />
-          <span class="key">{{ r.key }}</span>
-          <span v-if="r.sessions.some((s) => s.isLive && s.status === 'waiting')" class="live needs" title="Claude is waiting for your answer"><i />needs you</span>
-          <span v-else-if="r.sessions.some((s) => s.isLive)" class="live" title="A Claude session for this ticket is running"><i />session</span>
-          <span v-if="splitTag(r.summary).tag" class="tag">{{ splitTag(r.summary).tag }}</span>
+        <template #top>
           <span v-if="rowChip(r)" class="chip" :style="{ color: rowChip(r)?.color, borderColor: rowChip(r)?.color }">
             {{ rowChip(r)?.label }}
           </span>
@@ -199,8 +184,8 @@ const toggleOutside = (key: string): void => {
           >
             <Icon name="star" :size="14" />
           </button>
-        </div>
-      </article>
+        </template>
+      </TaskTile>
     </div>
     </template>
   </section>
@@ -318,63 +303,9 @@ const toggleOutside = (key: string): void => {
 .fold-lbl {
   margin-left: auto;
 }
-.tile {
-  position: relative;
-  margin: 0 2px 6px;
-  padding: 10px 30px 9px 14px;
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-  border-radius: 9px;
+.list .tile {
+  padding-right: 30px;
   cursor: pointer;
-  outline: none;
-}
-.tile:hover {
-  border-color: var(--line-3);
-}
-.tile:focus-visible {
-  border-color: var(--text-4);
-}
-.tile::before {
-  content: '';
-  position: absolute;
-  left: -1px;
-  top: 10px;
-  bottom: 10px;
-  width: 3px;
-  border-radius: 0 2px 2px 0;
-  background: var(--edge);
-}
-.tile.sel {
-  background: var(--bg-3);
-  border-color: var(--accent);
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-.tile.sel::before {
-  background: var(--accent);
-}
-.top {
-  display: flex;
-  flex-wrap: wrap;
-  row-gap: 4px;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  margin-top: 8px;
-}
-.key {
-  flex: none;
-  font: 600 11.5px var(--font-mono);
-  color: var(--text-3);
-}
-.tag {
-  flex: none;
-  padding: 1px 6px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-3);
-  background: var(--bg-4);
-  border-radius: 5px;
 }
 .chip {
   flex: none;
@@ -443,34 +374,6 @@ const toggleOutside = (key: string): void => {
 .star.on :deep(path) {
   fill: currentColor;
 }
-.summary {
-  margin: 0;
-  font: 500 13.5px/1.4 var(--font-ui);
-  color: var(--text);
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.live {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 7px 0 6px;
-  font: 600 11px/18px var(--font-ui);
-  color: var(--ok);
-  background: rgba(61, 214, 140, 0.1);
-  border: 1px solid var(--ok-line);
-  border-radius: 9px;
-}
-.live i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--ok);
-  box-shadow: 0 0 0 2px rgba(61, 214, 140, 0.25);
-}
 .tile.has-session {
   border-color: var(--ok-line);
   box-shadow: inset 0 0 0 1px rgba(61, 214, 140, 0.18);
@@ -494,51 +397,6 @@ const toggleOutside = (key: string): void => {
     animation: none;
     box-shadow: 0 0 0 2px rgba(232, 184, 74, 0.35);
   }
-}
-.live.needs {
-  color: var(--warn);
-  background: var(--warn-soft);
-  border-color: rgba(232, 184, 74, 0.5);
-}
-.live.needs i {
-  background: var(--warn);
-  box-shadow: 0 0 0 2px rgba(232, 184, 74, 0.3);
-}
-.mrinfo:hover {
-  filter: brightness(1.25);
-}
-.mrinfo {
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 7px;
-  padding: 1px 8px;
-  font: 600 11.5px/18px var(--font-ui);
-  color: var(--text-3);
-  background: var(--bg-4);
-  border-radius: 9px;
-}
-.mrinfo.attn {
-  color: var(--warn);
-  background: var(--warn-soft);
-}
-.mrinfo .thr,
-.mrinfo .ap {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-.mrinfo .ap {
-  color: var(--ok);
-}
-.mrinfo .dr {
-  padding: 0 5px;
-  font-size: 10px;
-  line-height: 15px;
-  color: var(--bg-0);
-  background: var(--warn);
-  border-radius: 4px;
 }
 .unc {
   flex: none;

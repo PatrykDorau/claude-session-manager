@@ -23,7 +23,16 @@ import { searchPanel } from './searchpanel'
 import { barCells, type BarCell, type LineCounts } from './diffstat'
 import { changeSignature, isFileViewed, toggleViewed } from './viewed'
 import { importAt, wordAt, listImports, importLineOf, definitionLine, defaultExportLine, resolveImport, isIdentifierQuery, groupHits, peekTarget, memberSites, snippetAt } from './codenav'
-import { openTab, rememberTab, closeTab, tabScope, type CodeTab } from './codetabs'
+import { openTab, rememberTab, closeTab, tabScope, TAB_LIMIT, type CodeTab } from './codetabs'
+import {
+  emptyFileCache,
+  readFileCache,
+  writeFileCache,
+  dropFileCache,
+  fileCacheIdentity,
+  isFreshFile,
+  type CachedFile
+} from './codecache'
 import { parseVersionLink } from './mrhtml'
 import { clampSize, readSize, writeSize, readFlag } from './dashboard'
 import { mapToSideA, readDiffLayout, sidesFor, type DiffLayout } from './difflayout'
@@ -235,6 +244,12 @@ const whySlot = new Compartment()
 const partSlot = new Compartment()
 let baseText = ''
 let savedText = ''
+let fileCache = emptyFileCache<EditorState>()
+let loadedIdentity: string | null = null
+const clearFileCache = (): void => {
+  fileCache = emptyFileCache<EditorState>()
+  loadedIdentity = null
+}
 const peekCache = new Map<string, { path: string; line: number; snippet: string } | null>()
 
 const workCwd = computed(() => (branch.value?.isReadOnly ? props.cwd : (branch.value?.folder ?? props.cwd)))
@@ -562,6 +577,7 @@ const leavePushedWhenGone = (mr: typeof props.pushedMr): void => {
 watch(() => props.pushedMr, leavePushedWhenGone)
 const resetTabs = (): void => {
   tabs.value = []
+  clearFileCache()
 }
 watch(() => tabScope(props.cwd ?? null, activeRef.value?.source ?? null), resetTabs)
 defineExpose({ goToFileLine, showPushed })
@@ -885,6 +901,7 @@ const diffExtension = (): Extension =>
 const refresh = async (): Promise<void> => {
   if (!props.cwd) return
   peekCache.clear()
+  clearFileCache()
   const ref = activeRef.value
   const changed = ref ? await window.api.listRefChanges(props.cwd, ref.source, ref.target, !!pushedRef.value) : await window.api.listBranchChanges(props.cwd)
   branch.value = changed
@@ -933,6 +950,72 @@ const closeFileTab = async (path: string): Promise<void> => {
   const { next } = closeTab(tabs.value, path)
   if (path === openPath.value && next && !(await open(next))) return
   tabs.value = closeTab(tabs.value, path).tabs
+  fileCache = dropFileCache(fileCache, path)
+}
+type FileRead = { text: string | null; error: string | null }
+const currentIdentity = (): string =>
+  fileCacheIdentity([
+    props.cwd,
+    workCwd.value,
+    activeRef.value?.source,
+    activeRef.value?.target,
+    !!branch.value?.isReadOnly,
+    branch.value?.base,
+    branch.value?.head,
+    diffBase.value,
+    isDiff.value,
+    layout.value
+  ])
+const stashFile = (path: string, v: EditorView): void => {
+  const identity = currentIdentity()
+  const file = { text: savedText, baseText, state: mergeView.value ? null : v.state }
+  const isReusable = !isDirty.value && loadedIdentity === identity
+  fileCache = isReusable
+    ? writeFileCache(fileCache, identity, path, file, TAB_LIMIT)
+    : dropFileCache(fileCache, path)
+}
+const readBase = (path: string): Promise<string> => {
+  const ref = activeRef.value
+  if (!ref || !branch.value?.isReadOnly) {
+    return window.api.readHeadFile(workCwd.value as string, path, diffBase.value === 'commit')
+  }
+  const toBase = (text: string | null): string => text ?? ''
+  const cwd = props.cwd as string
+  return window.api.readRefFile(cwd, ref.source, ref.target, path, true).then(toBase)
+}
+const readSides = (path: string): Promise<[FileRead, string]> => {
+  const cwd = props.cwd as string
+  const ref = activeRef.value
+  if (!ref || !branch.value?.isReadOnly) {
+    return Promise.all([window.api.readFile(workCwd.value as string, path), readBase(path)])
+  }
+  const toFile = (text: string | null): FileRead => ({
+    text,
+    error: text === null ? `${path} is not on ${ref.source}` : null
+  })
+  return Promise.all([
+    window.api.readRefFile(cwd, ref.source, ref.target, path, false).then(toFile),
+    readBase(path)
+  ])
+}
+let openCount = 0
+const revalidate = async (
+  path: string,
+  identity: string,
+  cached: CachedFile<EditorState>
+): Promise<void> => {
+  const startedAt = openCount
+  const base = await readBase(path)
+  if (base === cached.baseText) return
+  fileCache = dropFileCache(fileCache, path)
+  const v = editor.value
+  const isStillShown = openPath.value === path && openCount === startedAt
+  if (!isStillShown || isDirty.value || !v || currentIdentity() !== identity) return
+  const line = v.state.doc.lineAt(v.state.selection.main.head).number
+  tabs.value = rememberTab(tabs.value, path, line, topLineOf(v))
+  const isThisTab = (tab: CodeTab): boolean => tab.path === path
+  const tab = tabs.value.find(isThisTab)
+  if ((await open(path, true)) && tab) restoreTab(tab)
 }
 const onTabAuxClick = (e: MouseEvent, path: string): void => {
   if (e.button === 1) void closeFileTab(path)
@@ -941,25 +1024,27 @@ const onTabAuxClick = (e: MouseEvent, path: string): void => {
 const open = async (path: string, isConfirmed = false): Promise<boolean> => {
   if (!props.cwd) return false
   if (!isConfirmed && !confirmDiscard()) return false
+  openCount += 1
   const previous = openPath.value
   const current = editor.value
   if (previous && previous !== path && current) {
     tabs.value = rememberTab(tabs.value, previous, current.state.doc.lineAt(current.state.selection.main.head).number, topLineOf(current))
+    stashFile(previous, current)
   }
   docText.value = null
   const ref = activeRef.value
   const isRef = !!ref && !!branch.value?.isReadOnly
-  const [file, base] = isRef
-    ? await Promise.all([
-        window.api.readRefFile(props.cwd, ref.source, ref.target, path, false).then((text) => ({ text, error: text === null ? `${path} is not on ${ref.source}` : null })),
-        window.api.readRefFile(props.cwd, ref.source, ref.target, path, true).then((text) => text ?? '')
-      ])
-    : await Promise.all([
-        window.api.readFile(workCwd.value as string, path),
-        window.api.readHeadFile(workCwd.value as string, path, diffBase.value === 'commit')
-      ])
+  const identity = currentIdentity()
+  const hit = previous === path ? null : readFileCache(fileCache, identity, path)
+  const diskText =
+    hit && !isRef ? (await window.api.readFile(workCwd.value as string, path)).text : hit?.text
+  const cached = hit && isFreshFile(hit, diskText) ? hit : null
+  const [file, base]: [FileRead, string] = cached
+    ? [{ text: cached.text, error: null }, cached.baseText]
+    : await readSides(path)
   error.value = file.error
   if (file.text === null) return false
+  loadedIdentity = identity
   if (!isRef && !file.text && !base && !files.value.includes(path)) error.value = `${path} is not in the worktree or on ${branch.value?.target ?? 'the base'}: it was renamed or deleted`
   baseText = base
   openPath.value = path
@@ -1001,9 +1086,22 @@ const open = async (path: string, isConfirmed = false): Promise<boolean> => {
     editor.value = mergeView.value.b
   } else {
     if (mergeView.value) destroyEditors()
-    const state = EditorState.create({ doc: sides.right, extensions: [...paneExtensions, diffSlot.of(diffExtension())] })
+    const state =
+      cached?.state ??
+      EditorState.create({
+        doc: sides.right,
+        extensions: [...paneExtensions, diffSlot.of(diffExtension())]
+      })
     if (editor.value) editor.value.setState(state)
     else editor.value = new EditorView({ state, parent: host.value as HTMLDivElement })
+    if (cached?.state) {
+      const slots = [
+        whySlot.reconfigure(whyExtension()),
+        partSlot.reconfigure(partExtension()),
+        commentSlot.reconfigure(commentExtension())
+      ]
+      editor.value.dispatch({ effects: slots })
+    }
   }
   changeIndex.value = -1
   countChanges(editor.value.state)
@@ -1011,6 +1109,7 @@ const open = async (path: string, isConfirmed = false): Promise<boolean> => {
   tabs.value = openTab(tabs.value, path, Date.now())
   if (known && previous !== path) restoreTab(known)
   emit('fileShown', path, branch.value?.folder ?? null, !!branch.value?.isReadOnly)
+  if (cached) void revalidate(path, identity, cached)
   return true
 }
 

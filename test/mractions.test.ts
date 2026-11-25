@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { pickTicketMr, parseMrState, parseApprovals, parseDiscussions, parseMrOverview, snippetAround, snippetFromDiff, diffRows, parseDraftNotes, draftNoteBody } from '../src/main/mractions'
+import { describe, it, expect, vi } from 'vitest'
+import { pickTicketMr, parseMrState, parseApprovals, parseDiscussions, parseMrOverview, snippetAround, snippetFromDiff, diffRows, parseDraftNotes, draftNoteBody, recreateDraft } from '../src/main/mractions'
 
 describe('draft note resolve', () => {
   it('reads resolve_discussion into isResolving', () => {
@@ -220,5 +220,31 @@ describe('pickTicketMr', () => {
   it('skips closed MRs and returns null when nothing matches', () => {
     expect(pickTicketMr([mr(4, 'closed', 'SOFX-10', 'feat/SOFX-10')], 'SOFX-10')).toBeNull()
     expect(pickTicketMr(null, 'SOFX-10')).toBeNull()
+  })
+})
+
+describe('recreateDraft', () => {
+  const draft = { id: 7, body: 'b', replyTo: 'd1' }
+
+  it('creates the draft with the new flag before deleting the old one', async () => {
+    const create = vi.fn().mockResolvedValue(null)
+    const remove = vi.fn().mockResolvedValue(null)
+    expect(await recreateDraft({ create, remove }, draft, false)).toBeNull()
+    expect(create).toHaveBeenCalledWith({ body: 'b', replyTo: 'd1', isResolving: false })
+    expect(remove).toHaveBeenCalledWith(7)
+    expect(create.mock.invocationCallOrder[0]).toBeLessThan(remove.mock.invocationCallOrder[0])
+  })
+
+  it('keeps the old draft when creating fails', async () => {
+    const create = vi.fn().mockResolvedValue('boom')
+    const remove = vi.fn()
+    expect(await recreateDraft({ create, remove }, draft, true)).toBe('boom')
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('reports a failed delete after a successful create', async () => {
+    const create = vi.fn().mockResolvedValue(null)
+    const remove = vi.fn().mockResolvedValue('nope')
+    expect(await recreateDraft({ create, remove }, draft, true)).toBe('The new draft was saved but the old one could not be deleted: nope')
   })
 })

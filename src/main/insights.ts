@@ -683,7 +683,7 @@ const digestFile = async (
   return { digest, incidents: incidentsOf(entries, { sessionId: meta.sessionId, ticket }) }
 }
 
-const recentTranscripts = (projectsDir: string, since: number): { path: string; project: string; sessionId: string }[] =>
+export const recentTranscripts = (projectsDir: string, since: number): { path: string; project: string; sessionId: string }[] =>
   readdirSync(projectsDir).flatMap((project) => {
     if (SKIPPED_PROJECTS.some((suffix) => project.endsWith(suffix))) return []
     try {

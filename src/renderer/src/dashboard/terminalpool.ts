@@ -63,6 +63,9 @@ export const acquireTerminal = (sessionId: string): PooledTerminal => {
   return entry
 }
 
+export const syncPtySize = (entry: PooledTerminal, sessionId: string): void =>
+  window.api.resizeTerminal(keys.get(entry) ?? sessionId, entry.term.cols, entry.term.rows)
+
 export const showTerminalIn = (entry: PooledTerminal, host: HTMLElement): void => {
   if (entry.element.parentElement === host) return
   host.appendChild(entry.element)
@@ -78,15 +81,31 @@ export const releaseTerminal = (sessionId: string): void => {
   if (!entry) return
   entry.users -= 1
   if (entry.users > 0) return
-  if (key !== sessionId) {
-    setTimeout(() => disposeIdle(key, entry), 0)
-    return
-  }
-  disposeIdle(key, entry)
+  const disposeLater = (): void => disposeIdle(key, entry)
+  setTimeout(disposeLater, 0)
+}
+
+const retained = new Set<string>()
+const isRetained = (key: string): boolean => {
+  const isKeyOf = (sessionId: string): boolean => currentKey(sessionId) === key
+  return [...retained].some(isKeyOf)
+}
+
+export const retainTerminal = (sessionId: string): void => {
+  retained.add(sessionId)
+}
+
+export const releaseRetained = (sessionId: string): void => {
+  if (!retained.delete(sessionId)) return
+  const key = currentKey(sessionId)
+  const entry = pool.get(key)
+  if (!entry || entry.users > 0) return
+  const disposeLater = (): void => disposeIdle(key, entry)
+  setTimeout(disposeLater, 0)
 }
 
 const disposeIdle = (key: string, entry: PooledTerminal): void => {
-  if (entry.users > 0 || pool.get(key) !== entry) return
+  if (entry.users > 0 || pool.get(key) !== entry || isRetained(key)) return
   if (entry.isAttached) window.api.closeTerminal(key)
   entry.term.dispose()
   entry.element.remove()

@@ -33,6 +33,8 @@ const mrItem = (t: any, projectId: number | null, projectPath: string, projectNa
       hasOpenThreads: t.blocking_discussions_resolved === false,
       notes: asNumber(t.user_notes_count) ?? 0,
       openThreads: 0,
+      waitingThreads: null,
+      othersNotes: null,
       approvals: 0,
       isApprovedByMe: false,
       isDraft,
@@ -160,12 +162,40 @@ export const countOpenThreads = (json: unknown): number =>
       }).length
     : 0
 
+interface ThreadNote {
+  system?: boolean
+  resolvable?: boolean
+  resolved?: boolean
+  author?: { name?: string }
+}
+
+export const threadCounts = (
+  json: unknown,
+  me: string
+): { openThreads: number; waitingThreads: number; othersNotes: number } => {
+  const counts = { openThreads: 0, waitingThreads: 0, othersNotes: 0 }
+  if (!Array.isArray(json)) return counts
+  const isWritten = (n: ThreadNote | undefined): boolean => n?.system !== true
+  const isOthers = (n: ThreadNote | undefined): boolean => n?.author?.name !== me
+  for (const d of json as { notes?: unknown }[]) {
+    const notes = (Array.isArray(d?.notes) ? d.notes : []) as ThreadNote[]
+    const written = notes.filter(isWritten)
+    counts.othersNotes += written.filter(isOthers).length
+    if (notes[0]?.resolvable === true && notes[0]?.resolved !== true) {
+      counts.openThreads += 1
+      const last = written[written.length - 1]
+      if (last && last.author?.name !== me) counts.waitingThreads += 1
+    }
+  }
+  return counts
+}
+
 const withThreadCounts = async (base: string, token: string, items: MrItem[], me: string | null): Promise<MrItem[]> =>
   Promise.all(
     items.map(async (item) => {
       if (!me || item.author !== me) return item
       const json = await apiGet(base, token, `/projects/${item.projectId}/merge_requests/${item.iid}/discussions?per_page=100`)
-      return json === null ? item : { ...item, openThreads: countOpenThreads(json) }
+      return json === null ? item : { ...item, ...threadCounts(json, me) }
     })
   )
 
@@ -184,7 +214,16 @@ export const carryEnrichment = (items: MrItem[], previous: MrItem[]): MrItem[] =
   const byKey = new Map(previous.map((m) => [m.key, m]))
   return items.map((m) => {
     const old = byKey.get(m.key)
-    return old ? { ...m, approvals: old.approvals, openThreads: old.openThreads, isApprovedByMe: old.isApprovedByMe } : m
+    return old
+      ? {
+          ...m,
+          approvals: old.approvals,
+          openThreads: old.openThreads,
+          waitingThreads: old.waitingThreads,
+          othersNotes: old.othersNotes,
+          isApprovedByMe: old.isApprovedByMe
+        }
+      : m
   })
 }
 

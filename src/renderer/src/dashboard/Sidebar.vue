@@ -15,18 +15,22 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ select: [page: DashboardPage]; settings: []; startJobs: [] }>()
 
-const ENTRIES: { page: DashboardPage; label: string; icon: IconName; isSoon: boolean }[] = [
-  { page: 'today', label: 'Orchestrator', icon: 'dashboard', isSoon: false },
+type Entry = { page: DashboardPage; label: string; icon: IconName; isSoon: boolean }
+const TOP_ENTRIES: Entry[] = [
   { page: 'inbox', label: 'Inbox', icon: 'bell', isSoon: false },
+  { page: 'today', label: 'Orchestrator', icon: 'dashboard', isSoon: false },
   { page: 'tickets', label: 'My tickets', icon: 'ticket', isSoon: false },
   { page: 'mrs', label: 'Merge requests to review', icon: 'pr', isSoon: false },
+  { page: 'hosts', label: 'Local servers', icon: 'server', isSoon: false }
+]
+const BOTTOM_ENTRIES: Entry[] = [
   { page: 'tree', label: 'Agent tree', icon: 'tree', isSoon: false },
-  { page: 'hosts', label: 'Local servers', icon: 'server', isSoon: false },
   { page: 'insights', label: 'Insights', icon: 'sparkles', isSoon: false },
+  { page: 'timesheet', label: 'Timesheet', icon: 'gauge', isSoon: false },
   { page: 'flow', label: 'Flow', icon: 'flow', isSoon: false },
   { page: 'catalog', label: 'Catalog', icon: 'fileText', isSoon: false }
 ]
-const select = (entry: (typeof ENTRIES)[number]): void => {
+const select = (entry: Entry): void => {
   if (!entry.isSoon) emit('select', entry.page)
 }
 const SHORT_LABELS: Record<string, string> = { session: '5h', weekly_all: '7d' }
@@ -65,21 +69,25 @@ const showSidebar = (): void => window.api.showSidebar()
 <template>
   <nav class="rail">
     <div class="mark" title="Claude Cockpit"><Icon name="dashboard" :size="17" /></div>
-    <button
-      v-for="e in ENTRIES"
-      :key="e.page"
-      class="nav"
-      :class="{ on: page === e.page && isListOpen, active: page === e.page, ringing: e.page === 'inbox' && !!alerts?.inbox }"
-      :disabled="e.isSoon"
-      :title="e.label"
-      @click="select(e)"
-    >
-      <Icon :name="e.icon" :size="20" />
-      <span v-if="!e.isSoon && counts[e.page]" class="badge">{{ counts[e.page] > 99 ? '99+' : counts[e.page] }}</span>
-      <i v-if="alerts?.[e.page]" class="alert" :title="`${alerts[e.page]} waiting for your answer`" />
-    </button>
-    <button class="nav" title="Start jobs…" @click="emit('startJobs')"><Icon name="play" :size="19" /></button>
-    <span class="grow" />
+    <template v-for="(entries, groupIndex) in [TOP_ENTRIES, BOTTOM_ENTRIES]" :key="groupIndex">
+      <button
+        v-for="e in entries"
+        :key="e.page"
+        class="nav"
+        :class="{ on: page === e.page && isListOpen, active: page === e.page, ringing: e.page === 'inbox' && !!alerts?.inbox }"
+        :disabled="e.isSoon"
+        :title="e.label"
+        @click="select(e)"
+      >
+        <Icon :name="e.icon" :size="20" />
+        <span v-if="!e.isSoon && counts[e.page]" class="badge">{{ counts[e.page] > 99 ? '99+' : counts[e.page] }}</span>
+        <i v-if="alerts?.[e.page]" class="alert" :title="`${alerts[e.page]} waiting for your answer`" />
+      </button>
+      <template v-if="groupIndex === 0">
+        <button class="nav" title="Start jobs…" @click="emit('startJobs')"><Icon name="play" :size="19" /></button>
+        <span class="grow" />
+      </template>
+    </template>
     <div v-if="meters.length" class="usage" :title="usageTitle">
       <div v-for="m in meters" :key="m.key" class="meter">
         <span class="mlabel">{{ m.short }}</span>

@@ -129,6 +129,8 @@ export interface MrItem {
   hasOpenThreads: boolean
   notes: number
   openThreads: number
+  waitingThreads: number | null
+  othersNotes: number | null
   approvals: number
   isApprovedByMe: boolean
   isDraft: boolean
@@ -522,6 +524,7 @@ export type MrReviewAction =
   | { kind: 'draft-add'; body: string; anchor?: MrLineAnchor; replyTo?: string; isResolving?: boolean }
   | { kind: 'draft-edit'; id: number; body: string }
   | { kind: 'draft-delete'; id: number }
+  | { kind: 'draft-resolve'; id: number; isResolving: boolean }
   | { kind: 'submit-review'; count: number }
   | { kind: 'line-comment'; body: string; anchor: MrLineAnchor }
   | { kind: 'resolve'; discussionId: string; isResolved: boolean }

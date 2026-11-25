@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import type { AgentGroup, DevServer, MrRow, MyMrs, MyTasks, Session, TaskMeta, UsageResult } from '../types'
+import type { AgentGroup, DevServer, LocalHost, MrRow, MyMrs, MyTasks, Session, TaskMeta, UsageResult } from '../types'
 import { buildCards, splitSections } from '../cards'
 import { buildTaskRows } from '../taskview'
 import type { DashboardPage } from './dashboard'
@@ -17,6 +17,7 @@ import AgentView from './AgentView.vue'
 import HostsView from './HostsView.vue'
 import CatalogView from './CatalogView.vue'
 import InsightsView from './InsightsView.vue'
+import TimesheetView from './TimesheetView.vue'
 import FlowView from './FlowView.vue'
 import OrchestratorView from './OrchestratorView.vue'
 import { mrOfSession } from './commandpanel'
@@ -32,6 +33,8 @@ import { clampSize, readSize, writeSize, readFlag } from './dashboard'
 import { useEscapeClose } from './escape'
 import { routeMr, type TabRequest } from './mrroute'
 import { findReviewSession } from './mrs'
+import { FOCUS_PING_MS, startFocusPing, type ActivitySurface } from './activity'
+import { countOpenHosts } from './hosts'
 
 const sessions = ref<Session[]>([])
 const tasks = ref<Record<string, TaskMeta>>({})
@@ -43,12 +46,43 @@ const selectedKey = ref<string | null>(null)
 const myMrs = ref<MyMrs>(window.api.getMyMrs())
 const selectedMrKey = ref<string | null>(null)
 const servers = ref<DevServer[]>(window.api.getServers())
+const localHosts = ref<LocalHost[] | null>(null)
+const HOSTS_POLL_MS = 15000
+let hostsTimer: ReturnType<typeof setTimeout> | null = null
+let isHostsLoading = false
+let isHostsReloadQueued = false
+let isUnmounted = false
+const armHostsPoll = (): void => {
+  if (hostsTimer) clearTimeout(hostsTimer)
+  hostsTimer = isUnmounted ? null : setTimeout(loadHosts, HOSTS_POLL_MS)
+}
+const loadHosts = async (): Promise<void> => {
+  if (isHostsLoading) {
+    isHostsReloadQueued = true
+    return
+  }
+  isHostsLoading = true
+  try {
+    do {
+      isHostsReloadQueued = false
+      localHosts.value = await window.api.getLocalHosts()
+    } while (isHostsReloadQueued && !isUnmounted)
+  } finally {
+    isHostsLoading = false
+    armHostsPoll()
+  }
+}
+const adoptHosts = (list: LocalHost[]): void => {
+  localHosts.value = list
+  if (!isHostsLoading) armHostsPoll()
+}
+watch(servers, () => void loadHosts())
 const agentGroups = ref<AgentGroup[]>([])
 const selectedSupervisor = ref<string | null>(null)
 const isMovingOnly = ref(false)
 const isFinishedHidden = ref(false)
 const isTreePage = computed(() => page.value === 'tree')
-const isHostsPage = computed(() => page.value === 'hosts' || page.value === 'insights' || page.value === 'flow' || page.value === 'today' || page.value === 'catalog')
+const isHostsPage = computed(() => page.value === 'hosts' || page.value === 'insights' || page.value === 'timesheet' || page.value === 'flow' || page.value === 'today' || page.value === 'catalog')
 const visibleGroups = computed(() =>
   filterGroups(agentGroups.value, { isMovingOnly: isMovingOnly.value, isFinishedHidden: isFinishedHidden.value })
 )
@@ -187,8 +221,9 @@ const counts = computed<Record<DashboardPage, number>>(() => ({
   tickets: rows.value.length,
   mrs: myMrs.value.items.length,
   tree: agentGroups.value.length,
-  hosts: servers.value.length,
+  hosts: localHosts.value ? countOpenHosts(localHosts.value) : servers.value.length,
   insights: 0,
+  timesheet: 0,
   flow: 0,
   catalog: 0
 }))
@@ -207,6 +242,10 @@ const refreshLists = async (): Promise<void> => {
     isRefreshing.value = false
   }
 }
+const isPanelFullScreen = ref(false)
+const setPanelFullScreen = (isOn: boolean): void => {
+  isPanelFullScreen.value = isOn
+}
 const isListHidden = ref(readFlag('dash.listHidden'))
 const isSettingsOpen = ref(false)
 const closeSettings = (): void => {
@@ -221,6 +260,7 @@ const PAGE_TITLES: Record<DashboardPage, string> = {
   tree: 'Agent tree',
   hosts: 'Local servers',
   insights: 'Insights',
+  timesheet: 'Timesheet',
   flow: 'Flow',
   catalog: 'Catalog'
 }
@@ -251,6 +291,21 @@ const selectTicket = (key: string): void => {
   selectedKey.value = key
 }
 const selectMr = (key: string): void => openMr(key)
+const focusedTerminalSurface = (): ActivitySurface => {
+  const term = document.activeElement?.closest<HTMLElement>('[data-activity-ticket]')
+  return term ? { kind: 'session', ticket: term.dataset.activityTicket || null } : null
+}
+const currentSurface = (): ActivitySurface => {
+  const terminal = focusedTerminalSurface()
+  if (terminal) return terminal
+  const mr = selectedMr.value
+  if (isMrPage.value) return mr ? { kind: 'mr', ticket: mr.ticket } : null
+  const row = selectedRow.value
+  if (!isTreePage.value && !isHostsPage.value && row) return { kind: 'ticket', key: row.key }
+  return null
+}
+const isAppFocused = (): boolean => document.hasFocus()
+let stopPing: (() => void) | null = null
 
 onMounted(() => {
   window.api.onSessions((s) => (sessions.value = s))
@@ -266,17 +321,23 @@ onMounted(() => {
   stopOrchestrator = window.api.onOrchestrator(applyOrchestrator)
   void window.api.getOrchestrator().then(applyOrchestrator)
   void loadTree()
+  void loadHosts()
+  stopPing = startFocusPing(currentSurface, isAppFocused, window.api.markActivity, FOCUS_PING_MS)
 })
 onBeforeUnmount(() => {
   stopOrchestrator?.()
+  stopPing?.()
   window.removeEventListener('keydown', onGlobalKey, true)
   if (treeTimer) clearTimeout(treeTimer)
+  isUnmounted = true
+  if (hostsTimer) clearTimeout(hostsTimer)
 })
 </script>
 
 <template>
-  <div class="dash">
+  <div class="dash" :class="{ full: isPanelFullScreen }">
     <Sidebar
+      v-show="!isPanelFullScreen"
       :page="page"
       :counts="counts"
       :alerts="alerts"
@@ -294,7 +355,11 @@ onBeforeUnmount(() => {
       :sessions="sessions"
       @close="isStartJobsOpen = false"
     />
-    <div v-if="!isListHidden && !isHostsPage" class="col" :style="{ width: `${listWidth}px` }">
+    <div
+      v-if="!isListHidden && !isHostsPage && !isPanelFullScreen"
+      class="col"
+      :style="{ width: `${listWidth}px` }"
+    >
       <header class="colhead">
         <h2>{{ PAGE_TITLES[page] }}</h2>
         <span class="ccount">{{ counts[page] }}</span>
@@ -342,11 +407,21 @@ onBeforeUnmount(() => {
         @settings="isSettingsOpen = true"
       />
     </div>
-    <Splitter v-if="!isListHidden && !isHostsPage" @resize="resizeList" @done="saveListWidth" />
+    <Splitter
+      v-if="!isListHidden && !isHostsPage && !isPanelFullScreen"
+      @resize="resizeList"
+      @done="saveListWidth"
+    />
     <FlowView v-if="page === 'flow'" :rows="rows" @open-ticket="openTicket" />
     <InsightsView v-else-if="page === 'insights'" />
+    <TimesheetView
+      v-else-if="page === 'timesheet'"
+      :sessions="sessions"
+      :tickets="myTasks.tickets"
+      @open-ticket="openTicket"
+    />
     <CatalogView v-else-if="page === 'catalog'" />
-    <HostsView v-else-if="page === 'hosts'" :sessions="sessions" @open-ticket="openTicket" />
+    <HostsView v-else-if="page === 'hosts'" :sessions="sessions" @open-ticket="openTicket" @hosts-changed="adoptHosts" />
     <AgentView
       v-else-if="isTreePage && selectedGroup"
       :group="selectedGroup"
@@ -368,6 +443,7 @@ onBeforeUnmount(() => {
         :sessions="sessions"
         @open="openJob"
         @open-task="openSessionTask"
+        @full-screen="setPanelFullScreen"
       />
       <MrView
         v-else-if="isMrPage && selectedMr"
@@ -409,7 +485,7 @@ onBeforeUnmount(() => {
 
     <InboxPopup v-if="isInboxOpen" :rows="liveRows" :order="inboxOrder" @open="openInboxRow" @close="isInboxOpen = false" @order="setInboxOrder" />
     <PromptSearch v-if="isPromptSearchOpen" :session-id="promptTargetId" :target-label="promptTargetLabel" @close="isPromptSearchOpen = false" />
-    <StatusBar :sessions="sessions" :servers="servers" :my-tasks="myTasks" :my-mrs="myMrs" @open="openPage" />
+    <StatusBar v-show="!isPanelFullScreen" :sessions="sessions" :servers="servers" :my-tasks="myTasks" :my-mrs="myMrs" @open="openPage" />
     <div v-if="isSettingsOpen" class="scrim" @click="isSettingsOpen = false" />
     <aside v-if="isSettingsOpen" class="drawer">
       <header class="dhead">
@@ -434,6 +510,9 @@ onBeforeUnmount(() => {
   color: var(--text-2);
   font: 13px/1.45 var(--font-ui);
   -webkit-font-smoothing: antialiased;
+}
+.dash.full {
+  height: 100vh;
 }
 .col {
   flex: none;

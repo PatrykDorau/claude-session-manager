@@ -11,7 +11,8 @@ import {
   Tray,
   Menu,
   globalShortcut,
-  screen
+  screen,
+  powerMonitor
 } from 'electron'
 import type { NativeImage } from 'electron'
 import { join } from 'path'
@@ -20,15 +21,16 @@ import chokidar from 'chokidar'
 import icon from '../../resources/icon.png?asset'
 import attentionPng from '../../resources/attention.png?asset'
 import { STAGES, type Session, type TaskMeta, type InboxItem } from '../renderer/src/types'
-import { rmSync, readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, openSync, readSync, closeSync, fstatSync, statSync, symlinkSync } from 'node:fs'
+import { appendFileSync, rmSync, readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, createReadStream, openSync, readSync, closeSync, fstatSync, statSync, symlinkSync } from 'node:fs'
 import { parseTail, countTurns, lastMessages, createDetailCache, pendingRawInput } from './transcript'
 import { createPtyHost } from './ptyhost'
+import { createStampedCache } from './basecache'
 import { pickPort, serverCommand, bashCandidates, isPortFree, DEFAULT_SERVER_COMMAND } from './devserver'
 import { stvOptions, webOptions, mergeEnvLocal, stvCommand, serverHost as serverHostName, chromeArgs, sideScreen, isChoiceMismatch, type StvChoice } from './serverprofile'
 import { createConnection } from 'node:net'
 import type { LocalHost, BranchChanges, ChangedFile, ExplainFile, ReviewDoc, ServerProfile, ServerSpec } from '../renderer/src/types'
 import { terminalMode, attachArgs, resumeBackgroundArgs, pasteInput, STOP_TURN, createOpenGuard, isHandedOff, type TerminalMode } from './terminal'
-import { readdir } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { join as joinPath, dirname, basename } from 'node:path'
 import { createHash } from 'node:crypto'
 import { spawn, execFile, execFileSync } from 'node:child_process'
@@ -77,6 +79,26 @@ import { collectDigests, ensureGuide, dayStamp, parseInsights, applyProposal, is
 import type { InsightsReport, FlowAgent, FlowState, FlowTicket } from '../renderer/src/types'
 import { inboxReason, isAnswerCurrent, isFinishedNotifiable, finishedTransitions } from './inbox'
 import { parseHistory, type PromptEntry } from './prompthistory'
+import {
+  createActivityLog,
+  staleActivityFiles,
+  activityFile,
+  parseActivity,
+  isIdleMark,
+  ACTIVITY_KEEP_DAYS
+} from './activitylog'
+import { createInterface } from 'node:readline'
+import {
+  dayOf,
+  dayBounds,
+  transcriptEvents,
+  slimEntry,
+  buildDay,
+  isDayCacheFresh,
+  type AttentionEvent,
+  type DayResult
+} from './timesheet'
+import { recentTranscripts } from './insights'
 import { ideDir, projectsDir, doneDir, activeDir, needsInputDir, sessionsDir } from './paths'
 import {
   focusOrOpen,
@@ -149,6 +171,8 @@ import {
   findTicketMr,
   fetchMrDiffFile,
   createDraftNote,
+  recreateDraft,
+  draftOpsFor,
   updateDraftNote,
   deleteDraftNote,
   publishDraftNotes,
@@ -208,6 +232,99 @@ let mainWindow: BrowserWindow
 let tray: Tray
 let appState: State = DEFAULT_STATE()
 let statePath = ''
+const appendActivityLine = (file: string, line: string): void => {
+  mkdirSync(dirname(file), { recursive: true })
+  appendFileSync(file, line)
+}
+const pruneActivity = (): void => {
+  try {
+    const dir = dirname(activityFile(app.getPath('userData'), dayOf(Date.now())))
+    if (!existsSync(dir)) return
+    for (const name of staleActivityFiles(readdirSync(dir), dayOf(Date.now()), ACTIVITY_KEEP_DAYS))
+      rmSync(join(dir, name), { force: true })
+  } catch {
+    return
+  }
+}
+const activityLog = createActivityLog(app.getPath('userData'), Date.now, appendActivityLine)
+const onActivityMark = (_e: unknown, ticket: string | null): void => {
+  if (isIdleMark(powerMonitor.getSystemIdleTime())) return
+  activityLog.mark(ticket)
+}
+ipcMain.on('activity-mark', onActivityMark)
+app.whenReady().then(pruneActivity)
+const readTranscriptEntries = async (
+  path: string,
+  bounds: { start: number; end: number }
+): Promise<Record<string, unknown>[]> => {
+  const entries: Record<string, unknown>[] = []
+  const lines = createInterface({ input: createReadStream(path, 'utf8'), crlfDelay: Infinity })
+  try {
+    for await (const line of lines) {
+      try {
+        const parsed = JSON.parse(line)
+        const slim = parsed && typeof parsed === 'object' ? slimEntry(parsed, bounds) : null
+        if (slim) entries.push(slim)
+      } catch {
+        continue
+      }
+    }
+  } catch {
+    return entries
+  }
+  return entries
+}
+const readActivityEvents = async (day: string): Promise<AttentionEvent[]> => {
+  try {
+    return parseActivity(await readFile(activityFile(app.getPath('userData'), day), 'utf8'))
+  } catch {
+    return []
+  }
+}
+const computeDay = async (day: string): Promise<DayResult> => {
+  const bounds = dayBounds(day)
+  const events: AttentionEvent[] = []
+  try {
+    for (const t of recentTranscripts(projectsDir(), bounds.start)) {
+      if ((statSync(t.path, { throwIfNoEntry: false })?.birthtimeMs ?? 0) >= bounds.end) continue
+      const entries = await readTranscriptEntries(t.path, bounds)
+      events.push(...transcriptEvents(entries, homedir(), bounds))
+    }
+  } catch {
+    events.length = 0
+  }
+  events.push(...(await readActivityEvents(day)))
+  return buildDay(day, events, appState.settings.timesheetHours)
+}
+const dayCache = new Map<string, { at: number; result: DayResult }>()
+const dayInFlight = new Map<string, Promise<DayResult>>()
+const loadDay = async (key: string, day: string, now: number): Promise<DayResult> => {
+  try {
+    const result = await computeDay(day)
+    dayCache.set(key, { at: now, result })
+    return result
+  } finally {
+    dayInFlight.delete(key)
+  }
+}
+const onTimesheetDay = (_e: unknown, day: string, isForced: boolean): Promise<DayResult> => {
+  const now = Date.now()
+  const key = `${day}|${appState.settings.timesheetHours}`
+  const cached = dayCache.get(key)
+  const isFresh = isDayCacheFresh(cached?.at ?? null, day, dayOf(now), now, isForced === true)
+  if (cached && isFresh) return Promise.resolve(cached.result)
+  const pending = dayInFlight.get(key) ?? loadDay(key, day, now)
+  dayInFlight.set(key, pending)
+  return pending
+}
+ipcMain.handle('timesheet-day', onTimesheetDay)
+const onSetTimesheetHours = (_e: unknown, hours: unknown): void => {
+  const isValid = typeof hours === 'number' && hours >= 1 && hours <= 24
+  if (!isValid) return
+  appState.settings.timesheetHours = Math.round(hours * 4) / 4
+  saveState(statePath, appState)
+}
+ipcMain.on('set-timesheet-hours', onSetTimesheetHours)
 let liveAgentIds = new Set<string>()
 let agentStatus = new Map<string, string>()
 let cachedRunningIds: string[] = []
@@ -1441,7 +1558,24 @@ const ideRead = (cwd: string, rel: string): { text: string | null; error: string
   }
 }
 
-const diffBase = async (cwd: string): Promise<{ base: string; target: string; branch: string }> => {
+type DiffBase = { base: string; target: string; branch: string }
+
+const diffBases = createStampedCache<DiffBase>(60000)
+
+const headStamp = async (cwd: string): Promise<string | null> => {
+  const res = await runGit(cwd, ['rev-parse', 'HEAD', 'origin/HEAD', '--abbrev-ref', 'HEAD'])
+  if (res.isOk) return res.out.trim() || null
+  const local = await runGit(cwd, ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD'])
+  return local.isOk ? local.out.trim() || null : null
+}
+
+const diffBase = (cwd: string): Promise<DiffBase> => {
+  const readStamp = (): Promise<string | null> => headStamp(cwd)
+  const compute = (): Promise<DiffBase> => computeDiffBase(cwd)
+  return diffBases.get(cwd, readStamp, compute)
+}
+
+const computeDiffBase = async (cwd: string): Promise<DiffBase> => {
   const branch = (await runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])).out.trim()
   const head = await runGit(cwd, ['rev-parse', '--abbrev-ref', 'origin/HEAD'])
   const target = head.isOk && head.out.trim() ? head.out.trim() : 'HEAD'
@@ -1511,9 +1645,26 @@ const fetchRefs = async (cwd: string, source: string, target: string): Promise<v
   if (Date.now() - (refFetchedAt.get(key) ?? 0) < REF_FETCH_MS) return
   refFetchedAt.set(key, Date.now())
   await runGit(cwd, ['fetch', '--quiet', 'origin', source, target])
+  refBases.drop(key)
 }
 
+const refBases = createStampedCache<string | null>(REF_FETCH_MS)
+
+const noStamp = async (): Promise<string> => ''
+
 const refBase = async (cwd: string, source: string, target: string): Promise<string | null> => {
+  const key = `${cwd}|${source}|${target}`
+  const compute = (): Promise<string | null> => computeRefBase(cwd, source, target)
+  const base = await refBases.get(key, noStamp, compute)
+  if (base === null) refBases.drop(key)
+  return base
+}
+
+const computeRefBase = async (
+  cwd: string,
+  source: string,
+  target: string
+): Promise<string | null> => {
   const merge = await runGit(cwd, ['merge-base', `origin/${target}`, `origin/${source}`])
   return merge.isOk ? merge.out.trim() : null
 }
@@ -3356,6 +3507,10 @@ function buildTray(win: BrowserWindow): void {
   )
 }
 
+const setFullScreen = (e: Electron.IpcMainEvent, isOn: boolean): void => {
+  BrowserWindow.fromWebContents(e.sender)?.setFullScreen(isOn)
+}
+
 clearInheritedSessionMarker(process.env)
 
 app.commandLine.appendSwitch('disable-gpu-shader-disk-cache')
@@ -3491,7 +3646,8 @@ if (!app.requestSingleInstanceLock()) {
       startView: appState.settings.startView,
       mrMention: appState.settings.mrMention,
       orchestratorMaxParallel: appState.settings.orchestratorMaxParallel,
-      orchestratorBots: appState.settings.orchestratorBots
+      orchestratorBots: appState.settings.orchestratorBots,
+      timesheetHours: appState.settings.timesheetHours
     }
   })
   ipcMain.on('set-settings', (_e, patch: Partial<State['settings']>) => {
@@ -3875,6 +4031,18 @@ if (!app.requestSingleInstanceLock()) {
         return updateDraftNote(base, token, projectId, iid, action.id, action.body)
       case 'draft-delete':
         return deleteDraftNote(base, token, projectId, iid, action.id)
+      case 'draft-resolve': {
+        const status = await fetchMrStatus(base, token, projectId, iid)
+        if (status.problem) return status.problem
+        const isTargetDraft = (d: { id: number }): boolean => d.id === action.id
+        const draft = status.drafts?.find(isTargetDraft)
+        if (!draft?.replyTo) return 'This draft is no longer a pending reply'
+        return recreateDraft(
+          draftOpsFor(base, token, projectId, iid),
+          { id: draft.id, body: draft.body, replyTo: draft.replyTo },
+          action.isResolving
+        )
+      }
       case 'submit-review':
         return publishDraftNotes(base, token, projectId, iid)
       case 'line-comment': {
@@ -3959,6 +4127,7 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
     saveState(statePath, appState)
     sendAll('starred', appState.starred)
   })
+  ipcMain.on('set-full-screen', setFullScreen)
   ipcMain.handle('terminal-mode', (_e, id: string) => modeOf(id))
   ipcMain.handle('terminal-open', (_e, id: string, cols: number, rows: number) => openTerminal(id, cols, rows))
   ipcMain.on('terminal-write', (_e, id: string, data: string) => ptyHost.write(id, data))

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mrKey, parseTodos, parseReviewMrs, mergeMrs, mentionPath, countOpenThreads, countApprovals, isApprovedBy, approvalState, carryEnrichment, pruneApproved, isInProjects, reviewState, sortMrs, parseDiffStats, parseMrSha } from '../src/main/gitlab'
+import { mrKey, parseTodos, parseReviewMrs, mergeMrs, mentionPath, countOpenThreads, threadCounts, countApprovals, isApprovedBy, approvalState, carryEnrichment, pruneApproved, isInProjects, reviewState, sortMrs, parseDiffStats, parseMrSha } from '../src/main/gitlab'
 import type { MrItem, MrRow } from '../src/renderer/src/types'
 
 const mrTodo = {
@@ -41,6 +41,8 @@ describe('parseTodos', () => {
         hasOpenThreads: false,
         notes: 0,
         openThreads: 0,
+        waitingThreads: null,
+        othersNotes: null,
         approvals: 0,
         isApprovedByMe: false,
         isDraft: false,
@@ -219,7 +221,54 @@ describe('countOpenThreads', () => {
   })
 })
 
+const note = (name: string, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  resolvable: true,
+  resolved: false,
+  system: false,
+  author: { name },
+  ...over
+})
+
+describe('threadCounts', () => {
+  it('counts an unresolved thread whose last note is by someone else as waiting', () => {
+    expect(threadCounts([{ notes: [note('Me'), note('Bob')] }], 'Me')).toEqual({
+      openThreads: 1,
+      waitingThreads: 1,
+      othersNotes: 1
+    })
+  })
+  it('does not count a thread as waiting when my note is last, ignoring system notes', () => {
+    const json = [{ notes: [note('Bob'), note('Me'), note('Bob', { system: true })] }]
+    expect(threadCounts(json, 'Me')).toEqual({ openThreads: 1, waitingThreads: 0, othersNotes: 1 })
+  })
+  it('ignores resolved and non-resolvable threads for open and waiting', () => {
+    const json = [
+      { notes: [note('Bob', { resolved: true })] },
+      { notes: [note('Bob', { resolvable: false })] }
+    ]
+    expect(threadCounts(json, 'Me')).toMatchObject({ openThreads: 0, waitingThreads: 0 })
+  })
+  it('counts every non-system note of others across all discussions', () => {
+    const json = [
+      { notes: [note('Bob', { resolved: true }), note('Me')] },
+      { notes: [note('Ann', { resolvable: false }), note('Ann', { system: true })] }
+    ]
+    expect(threadCounts(json, 'Me').othersNotes).toBe(2)
+  })
+  it('returns zeros for a bad answer', () => {
+    expect(threadCounts(null, 'Me')).toEqual({ openThreads: 0, waitingThreads: 0, othersNotes: 0 })
+  })
+})
+
 describe('carryEnrichment', () => {
+  it('carries waiting threads and others notes from the previous item', () => {
+    const fresh = [{ key: '7!1', waitingThreads: null, othersNotes: null } as MrItem]
+    const previous = [{ key: '7!1', waitingThreads: 2, othersNotes: 5 } as MrItem]
+    expect(carryEnrichment(fresh, previous).map((m) => [m.waitingThreads, m.othersNotes])).toEqual([
+      [2, 5]
+    ])
+  })
+
   it('keeps approvals, threads and my approval from the previous poll until enrichment ends', () => {
     const fresh = [{ key: '7!1', approvals: 0, openThreads: 0, isApprovedByMe: false } as MrItem, { key: '7!2', approvals: 0, openThreads: 0, isApprovedByMe: false } as MrItem]
     const previous = [{ key: '7!1', approvals: 2, openThreads: 1, isApprovedByMe: true } as MrItem]
