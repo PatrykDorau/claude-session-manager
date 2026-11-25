@@ -34,6 +34,8 @@ export interface Settings {
   orchestratorMaxParallel: number
   orchestratorBots: string
   timesheetHours: number
+  isSleepEnabled: boolean
+  sleepAfterHours: number
 }
 
 export type StartView = 'ask' | 'sidebar' | 'dashboard'
@@ -84,6 +86,8 @@ export interface State {
   mrSessions: Record<string, string>
   serverCommands: Record<string, string>
   chromePorts: Record<string, number>
+  sleptSessions: Record<string, number>
+  userStoppedServers: string[]
   insightsLastRun: number | null
   orchestrator: OrchestratorState
   settings: Settings
@@ -125,7 +129,9 @@ const DEFAULT_SETTINGS: Settings = {
   mrMention: '@telco-frontend',
   orchestratorMaxParallel: 2,
   orchestratorBots: 'dao-gitlab',
-  timesheetHours: 8
+  timesheetHours: 8,
+  isSleepEnabled: true,
+  sleepAfterHours: 8
 }
 
 const DEFAULT_DOCK: DockState = {
@@ -210,6 +216,8 @@ export const DEFAULT_STATE = (): State => ({
   mrSessions: {},
   serverCommands: {},
   chromePorts: {},
+  sleptSessions: {},
+  userStoppedServers: [],
   insightsLastRun: null,
   orchestrator: emptyOrchestrator(),
   settings: { ...DEFAULT_SETTINGS }
@@ -249,6 +257,10 @@ export function loadState(file: string): State {
       chromePorts: isObject(o.chromePorts)
         ? Object.fromEntries(Object.entries(o.chromePorts).filter((e): e is [string, number] => typeof e[1] === 'number'))
         : {},
+      sleptSessions: isObject(o.sleptSessions)
+        ? Object.fromEntries(Object.entries(o.sleptSessions).filter((e): e is [string, number] => typeof e[1] === 'number'))
+        : {},
+      userStoppedServers: stringList(o.userStoppedServers),
       insightsLastRun:
         typeof o.insightsLastRun === 'number' ? o.insightsLastRun : typeof o.factoryLastRun === 'number' ? o.factoryLastRun : null,
       orchestrator: loadOrchestrator(o.orchestrator),
@@ -290,7 +302,12 @@ export function loadState(file: string): State {
         timesheetHours:
           typeof s.timesheetHours === 'number' && s.timesheetHours >= 1 && s.timesheetHours <= 24
             ? Math.round(s.timesheetHours * 4) / 4
-            : DEFAULT_SETTINGS.timesheetHours
+            : DEFAULT_SETTINGS.timesheetHours,
+        isSleepEnabled: bool(s.isSleepEnabled, DEFAULT_SETTINGS.isSleepEnabled),
+        sleepAfterHours:
+          typeof s.sleepAfterHours === 'number' && s.sleepAfterHours > 0
+            ? s.sleepAfterHours
+            : DEFAULT_SETTINGS.sleepAfterHours
       }
     }
   } catch {

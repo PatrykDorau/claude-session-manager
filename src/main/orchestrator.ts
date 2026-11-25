@@ -110,6 +110,7 @@ export interface SessionView {
   status: Status
   ticket: string | null
   isLive: boolean
+  isAsleep?: boolean
 }
 
 const isTurnOver = (status: Status): boolean => status === 'idle' || status === 'checkout'
@@ -161,7 +162,7 @@ export const handAddressToLiveTicket = (
 
 export const nextJobState = (job: Job, session: SessionView | null): JobState => {
   if (!session) return job.state
-  if (session.status === 'closed') return 'finished'
+  if (session.status === 'closed') return session.isAsleep ? job.state : 'finished'
   if (job.handoffPhase !== 'none') return 'handoff'
   if (session.status === 'checkout' && job.kind !== 'ticket') return 'finished'
   return session.status === 'working' ? 'working' : 'waiting'

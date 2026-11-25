@@ -107,10 +107,13 @@ const pinReplies = (ids: string[]): void => {
 }
 
 const syncPins = (): void => {
-  const next = resolvePins(pins.value, props.sessions)
-  if (next.join() !== pins.value.join()) savePins(next)
+  const stored = readPins()
+  const next = resolvePins(stored, props.sessions)
+  if (next.join() !== stored.join()) savePins(next)
+  else if (stored.join() !== pins.value.join()) pins.value = stored
 }
 watch(() => props.sessions, syncPins, { immediate: true })
+onActivated(syncPins)
 
 const live = computed(() => panelSessions(props.sessions))
 const grid = computed(() => pinnedSessions(pins.value, props.sessions))
@@ -272,7 +275,12 @@ const pin = (s: Session): void => {
   markSessionSeen(s)
   savePins(togglePin(pins.value, s.id))
 }
-const unpin = (id: string): void => savePins(pins.value.filter((p) => p !== id))
+const unpin = (id: string): void => {
+  const isSameId = (s: Session): boolean => s.id === id
+  const s = props.sessions.find(isSameId)
+  if (!window.confirm(`Unpin ${s ? labelOf(s) : 'this session'} from the grid?`)) return
+  savePins(pins.value.filter((p) => p !== id))
+}
 const looks = ref<Record<string, CellLook>>(readCellLooks())
 const lookOf = (s: Session): CellLook => looks.value[cellKey(s)] ?? {}
 const NEUTRAL_IDENTITY: Identity = { icon: 'circle', color: '#e8e8e8', letter: '' }
@@ -312,6 +320,10 @@ const remove = (job: Job): void => {
 }
 const stop = (s: Session): void => {
   if (window.confirm(`Stop the session ${labelOf(s)}?`)) void window.api.closeSession(s.id)
+}
+const sleepNow = async (s: Session): Promise<void> => {
+  if (!window.confirm(`Put the session ${labelOf(s)} to sleep? The Claude process stops and the session stays on the list.`)) return
+  notice.value = (await window.api.sleepSession(s.id)).error
 }
 
 const { roots, repoFor } = repoChoices(window.api.getTaskRepos())
@@ -828,6 +840,9 @@ onBeforeUnmount(leavePanel)
                   @change="(a) => setAutonomy(s, a)"
                 />
                 <span class="grow" />
+                <button class="act" title="Put the session to sleep" @click="sleepNow(s)">
+                  <Icon name="moon" :size="12" />
+                </button>
                 <button class="act danger" title="Stop the session" @click="stop(s)">
                   <Icon name="stop" :size="12" />
                 </button>

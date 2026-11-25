@@ -1,5 +1,20 @@
 import { describe, it, expect } from 'vitest'
-import { terminalMode, attachArgs, resumeBackgroundArgs, pasteInput, STOP_TURN, createOpenGuard, isHandedOff } from '../src/main/terminal'
+import { terminalMode, attachArgs, resumeBackgroundArgs, pasteInput, STOP_TURN, createOpenGuard, isHandedOff, attachStep } from '../src/main/terminal'
+
+describe('attachStep', () => {
+  it('spawns an attach client only when no pty is open', () => {
+    expect(attachStep(false, false)).toBe('spawn')
+    expect(attachStep(false, true)).toBe('spawn')
+  })
+
+  it('resizes an open pty to the size a renderer asked for instead of respawning it', () => {
+    expect(attachStep(true, false)).toBe('resize')
+  })
+
+  it('keeps an open pty and its size for a main-process open', () => {
+    expect(attachStep(true, true)).toBe('keep')
+  })
+})
 
 describe('terminalMode', () => {
   it('attaches a background session that nobody else is attached to', () => {

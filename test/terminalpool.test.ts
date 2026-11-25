@@ -12,6 +12,7 @@ vi.mock('@xterm/xterm', () => {
     open = vi.fn()
     focus = vi.fn()
     write = vi.fn()
+    resize = vi.fn()
     dispose = disposed
   }
   return { Terminal }
@@ -28,6 +29,14 @@ vi.mock('@xterm/addon-fit', () => {
 vi.mock('../src/renderer/src/dashboard/termclipboard', () => ({ attachClipboard: vi.fn() }))
 
 const closeTerminal = vi.fn()
+const detachListeners: ((id: string) => void)[] = []
+const onPtyDetached = (cb: (id: string) => void): void => {
+  detachListeners.push(cb)
+}
+const attachListeners: ((id: string, cols: number, rows: number) => void)[] = []
+const onPtyAttached = (cb: (id: string, cols: number, rows: number) => void): void => {
+  attachListeners.push(cb)
+}
 
 const fakeElement = (): { className: string; remove: () => void } => ({
   className: '',
@@ -42,6 +51,8 @@ beforeEach(() => {
       onPtyData: vi.fn(),
       onPtyRekey: vi.fn(),
       onPtyExit: vi.fn(),
+      onPtyDetached,
+      onPtyAttached,
       writeTerminal: vi.fn(),
       resizeTerminal: vi.fn(),
       closeTerminal
@@ -82,6 +93,108 @@ describe('releaseTerminal', () => {
     vi.runAllTimers()
     expect(disposed).toHaveBeenCalledTimes(1)
     expect(closeTerminal).toHaveBeenCalledWith('gone')
+  })
+})
+
+describe('pty-detached', () => {
+  it('pty-detached marks the entry detached and keeps the terminal', async () => {
+    const { acquireTerminal, releaseTerminal } = await import('../src/renderer/src/dashboard/terminalpool')
+    const entry = acquireTerminal('slept')
+    entry.isAttached = true
+    const term = entry.term
+    const detachSlept = (cb: (id: string) => void): void => cb('slept')
+    detachListeners.forEach(detachSlept)
+    expect(entry.isAttached).toBe(false)
+    expect(entry.isWaitingToAttach).toBe(true)
+    expect(acquireTerminal('slept').term).toBe(term)
+    vi.runAllTimers()
+    expect(disposed).not.toHaveBeenCalled()
+    expect(closeTerminal).not.toHaveBeenCalled()
+    releaseTerminal('slept')
+    releaseTerminal('slept')
+    vi.runAllTimers()
+    expect(closeTerminal).not.toHaveBeenCalled()
+  })
+})
+
+describe('pool detach and attach notifications', () => {
+  it('runs the entry detach callbacks and records the detach time', async () => {
+    const { acquireTerminal, releaseTerminal } = await import('../src/renderer/src/dashboard/terminalpool')
+    const entry = acquireTerminal('notify')
+    entry.isAttached = true
+    const onDetach = vi.fn()
+    entry.onDetach.add(onDetach)
+    vi.setSystemTime(5000)
+    const detachNotify = (cb: (id: string) => void): void => cb('notify')
+    detachListeners.forEach(detachNotify)
+    expect(onDetach).toHaveBeenCalledTimes(1)
+    expect(entry.detachedAt).toBe(5000)
+    releaseTerminal('notify')
+    vi.runAllTimers()
+  })
+
+  it('pty-attached from the main process marks a waiting entry attached at the pty size', async () => {
+    const { acquireTerminal, releaseTerminal } = await import('../src/renderer/src/dashboard/terminalpool')
+    const entry = acquireTerminal('main-open')
+    entry.isWaitingToAttach = true
+    const onAttach = vi.fn()
+    entry.onAttach.add(onAttach)
+    const attachMainOpen = (cb: (id: string, cols: number, rows: number) => void): void => cb('main-open', 120, 32)
+    attachListeners.forEach(attachMainOpen)
+    expect(entry.isAttached).toBe(true)
+    expect(entry.isWaitingToAttach).toBe(false)
+    expect(entry.term.resize).toHaveBeenCalledWith(120, 32)
+    expect(onAttach).toHaveBeenCalledTimes(1)
+    entry.isAttached = false
+    releaseTerminal('main-open')
+    vi.runAllTimers()
+  })
+})
+
+describe('heartbeat', () => {
+  it('sends terminal-seen right away when the document becomes visible', async () => {
+    const markTerminalSeen = vi.fn()
+    const listeners: Record<string, () => void> = {}
+    const addEventListener = (name: string, cb: () => void): void => {
+      listeners[name] = cb
+    }
+    vi.stubGlobal('document', { createElement: fakeElement, visibilityState: 'hidden', addEventListener })
+    Object.assign(window.api, { markTerminalSeen })
+    const { acquireTerminal, releaseTerminal, startHeartbeat } =
+      await import('../src/renderer/src/dashboard/terminalpool')
+    const entry = acquireTerminal('beat')
+    Object.assign(entry.element, { isConnected: true, clientWidth: 400, clientHeight: 300 })
+    entry.isAttached = true
+    startHeartbeat()
+    Object.assign(document, { visibilityState: 'visible' })
+    listeners.visibilitychange()
+    expect(markTerminalSeen).toHaveBeenCalledWith('beat')
+    entry.isAttached = false
+    releaseTerminal('beat')
+    vi.runOnlyPendingTimers()
+    vi.clearAllTimers()
+  })
+})
+
+describe('visibleAttachedIds', () => {
+  it('lists only attached terminals whose element is connected and sized', async () => {
+    const { acquireTerminal, releaseTerminal, visibleAttachedIds } =
+      await import('../src/renderer/src/dashboard/terminalpool')
+    const shown = acquireTerminal('shown')
+    const hidden = acquireTerminal('hidden-tile')
+    const idle = acquireTerminal('idle-tile')
+    Object.assign(shown.element, { isConnected: true, clientWidth: 400, clientHeight: 300 })
+    Object.assign(hidden.element, { isConnected: true, clientWidth: 0, clientHeight: 0 })
+    Object.assign(idle.element, { isConnected: true, clientWidth: 400, clientHeight: 300 })
+    shown.isAttached = true
+    hidden.isAttached = true
+    expect(visibleAttachedIds()).toEqual(['shown'])
+    shown.isAttached = false
+    hidden.isAttached = false
+    releaseTerminal('shown')
+    releaseTerminal('hidden-tile')
+    releaseTerminal('idle-tile')
+    vi.runAllTimers()
   })
 })
 

@@ -35,6 +35,7 @@ import { routeMr, type TabRequest } from './mrroute'
 import { findReviewSession } from './mrs'
 import { FOCUS_PING_MS, startFocusPing, type ActivitySurface } from './activity'
 import { countOpenHosts } from './hosts'
+import { onVisible, whenVisible } from './visibility'
 
 const sessions = ref<Session[]>([])
 const tasks = ref<Record<string, TaskMeta>>({})
@@ -54,7 +55,7 @@ let isHostsReloadQueued = false
 let isUnmounted = false
 const armHostsPoll = (): void => {
   if (hostsTimer) clearTimeout(hostsTimer)
-  hostsTimer = isUnmounted ? null : setTimeout(loadHosts, HOSTS_POLL_MS)
+  hostsTimer = isUnmounted ? null : setTimeout(pollHosts, HOSTS_POLL_MS)
 }
 const loadHosts = async (): Promise<void> => {
   if (isHostsLoading) {
@@ -72,6 +73,8 @@ const loadHosts = async (): Promise<void> => {
     armHostsPoll()
   }
 }
+const reloadHosts = (): void => void loadHosts()
+const pollHosts = whenVisible(reloadHosts)
 const adoptHosts = (list: LocalHost[]): void => {
   localHosts.value = list
   if (!isHostsLoading) armHostsPoll()
@@ -94,8 +97,10 @@ let treeTimer: ReturnType<typeof setTimeout> | null = null
 const loadTree = async (): Promise<void> => {
   if (treeTimer) clearTimeout(treeTimer)
   agentGroups.value = (await window.api.getAgentTree()) ?? []
-  treeTimer = setTimeout(loadTree, isTreePage.value ? TREE_FAST_MS : TREE_SLOW_MS)
+  treeTimer = setTimeout(pollTree, isTreePage.value ? TREE_FAST_MS : TREE_SLOW_MS)
 }
+const reloadTree = (): void => void loadTree()
+const pollTree = whenVisible(reloadTree)
 const mrForTicket = (key: string): MrRow | null => {
   const list = myMrs.value.items.filter((m) => m.ticket === key)
   return list.find((m) => m.author === myMrs.value.myName) ?? list[0] ?? null
@@ -306,6 +311,11 @@ const currentSurface = (): ActivitySurface => {
 }
 const isAppFocused = (): boolean => document.hasFocus()
 let stopPing: (() => void) | null = null
+let stopVisible: (() => void) | null = null
+const catchUpPolls = (): void => {
+  void loadTree()
+  void loadHosts()
+}
 
 onMounted(() => {
   window.api.onSessions((s) => (sessions.value = s))
@@ -323,10 +333,12 @@ onMounted(() => {
   void loadTree()
   void loadHosts()
   stopPing = startFocusPing(currentSurface, isAppFocused, window.api.markActivity, FOCUS_PING_MS)
+  stopVisible = onVisible(catchUpPolls)
 })
 onBeforeUnmount(() => {
   stopOrchestrator?.()
   stopPing?.()
+  stopVisible?.()
   window.removeEventListener('keydown', onGlobalKey, true)
   if (treeTimer) clearTimeout(treeTimer)
   isUnmounted = true

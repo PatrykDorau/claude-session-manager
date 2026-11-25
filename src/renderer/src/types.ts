@@ -43,6 +43,7 @@ export interface Session {
   changes?: number
   stages: Stage[]
   bg?: boolean
+  sleptAt?: number | null
   worktree?: boolean
   repo?: string | null
   finished?: boolean

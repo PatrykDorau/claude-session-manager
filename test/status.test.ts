@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { deriveStatus } from '../src/main/status'
+import { buildSessions, type RawSession } from '../src/main/aggregate'
+import { isSameSessions } from '../src/main/filecache'
 
 const now = 1_000_000
 const base = {
@@ -38,5 +40,31 @@ describe('deriveStatus', () => {
   })
   it('idle when open, quiet, nothing pending, no markers', () => {
     expect(deriveStatus({ ...base, mtimeMs: now - 60_000 })).toBe('idle')
+  })
+})
+
+describe('rebuild after the working window', () => {
+  it('rebuild sends when only the working window expired', () => {
+    const raw: RawSession[] = [
+      {
+        id: 's1',
+        cwd: 'C:/r',
+        gitBranch: null,
+        firstPrompt: null,
+        mtimeMs: now,
+        needsInput: false,
+        active: false,
+        done: false,
+        pendingToolUse: false,
+        model: null,
+        contextTokens: null
+      }
+    ]
+    const early = buildSessions(raw, ['s1'], now + 1000)
+    const late = buildSessions(raw, ['s1'], now + 20_000)
+    expect(early[0].status).toBe('working')
+    expect(late[0].status).toBe('idle')
+    expect(isSameSessions(early, late)).toBe(false)
+    expect(isSameSessions(early, buildSessions(raw, ['s1'], now + 1000))).toBe(true)
   })
 })

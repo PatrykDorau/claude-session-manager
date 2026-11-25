@@ -24,26 +24,31 @@ import { STAGES, type Session, type TaskMeta, type InboxItem } from '../renderer
 import { appendFileSync, rmSync, readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, createReadStream, openSync, readSync, closeSync, fstatSync, statSync, symlinkSync } from 'node:fs'
 import { parseTail, countTurns, lastMessages, createDetailCache, pendingRawInput } from './transcript'
 import { createPtyHost } from './ptyhost'
+import { staleTerminals } from './terminalsweep'
+import { createOnDemandWriter } from './ondemandwrite'
 import { createStampedCache } from './basecache'
 import { pickPort, serverCommand, bashCandidates, isPortFree, DEFAULT_SERVER_COMMAND } from './devserver'
 import { stvOptions, webOptions, mergeEnvLocal, stvCommand, serverHost as serverHostName, chromeArgs, sideScreen, isChoiceMismatch, type StvChoice } from './serverprofile'
 import { createConnection } from 'node:net'
 import type { LocalHost, BranchChanges, ChangedFile, ExplainFile, ReviewDoc, ServerProfile, ServerSpec } from '../renderer/src/types'
-import { terminalMode, attachArgs, resumeBackgroundArgs, pasteInput, STOP_TURN, createOpenGuard, isHandedOff, type TerminalMode } from './terminal'
+import { terminalMode, attachArgs, attachStep, resumeBackgroundArgs, pasteInput, STOP_TURN, createOpenGuard, isHandedOff, type TerminalMode } from './terminal'
 import { readdir, readFile } from 'node:fs/promises'
 import { join as joinPath, dirname, basename } from 'node:path'
 import { createHash } from 'node:crypto'
 import { spawn, execFile, execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { release } from 'node:os'
-import { scanRaw } from './scanner'
-import { buildSessions } from './aggregate'
+import { scanRaw, type ScanResult } from './scanner'
+import { isSameSessions } from './filecache'
+import { buildSessions, type RawSession } from './aggregate'
+import { pruneSlept, sessionsToSleep, sleepSession, sleptAtOf, type SleepCandidate } from './sleep'
 import { normalizePath } from './lock'
 import {
   claudeProcesses,
   extractResumeIds,
   runningAttachIds,
   runningAttaches,
+  extractAttachPids,
   runningResumePids,
   listAgents,
   gitDirty,
@@ -130,6 +135,7 @@ import {
   type SessionFile
 } from './closing'
 import { worktreeRows, parseCount, isLinkedWorktreeGitFile, branchToDelete, nodeModulesAction } from './worktrees'
+import { serverAction, userStoppedMessage } from './serverguard'
 import { taskContext, startPrompt, parseBgId, ticketPrefix, repoRoots, startArgs, claudeExeCandidates, attachCommand, repoForProject, reviewArgs, addressArgs, scoreArgs, insightsTestArgs, warmUpTask, mediaFiles } from './tasks'
 import { searchIssues, fetchDescription, postComment, fetchTransitions, doTransition, fetchTicketDetail, fetchPriority, releaseTransition } from './jira'
 import { isSafeRef, worktreeForBranch, parseStatusPaths, safeRelPath, parseStatus, isNoisePath, parseNameStatus, countChanges, parseGrep, searchArgs, parseNumstat, parseRawBlobs, type CodeMatch, type LineCounts } from './ide'
@@ -159,7 +165,8 @@ import { migrateUserData } from './migrate'
 import { listAgentGroups, readAgentRun } from './agents'
 import { startBridge, ticketFromPath } from './bridge'
 import { idleHosts } from './hostidle'
-import { pickChromePort, taskChromeProfile, writeTaskMcp, seedProfile, writeTaskMcpFile, taskMcpArgs } from './taskbrowser'
+import { dirtyTargets, mergeDirty, isAttachedByCache } from './dirty'
+import { playwrightCliPath, pickChromePort, taskChromeProfile, writeTaskMcp, seedProfile, writeTaskMcpFile, taskMcpArgs } from './taskbrowser'
 import { writeSessionSettings, sessionSettingsArgs } from './sessionsettings'
 import {
   fetchMrStatus,
@@ -328,6 +335,8 @@ ipcMain.on('set-timesheet-hours', onSetTimesheetHours)
 let liveAgentIds = new Set<string>()
 let agentStatus = new Map<string, string>()
 let cachedRunningIds: string[] = []
+let cachedAttaches = new Map<string, number>()
+const sleepingSessions = new Map<string, number>()
 let attentionIcon: NativeImage | null = null
 let dirtyMap: Record<string, boolean> = {}
 let changeMap: Record<string, number> = {}
@@ -353,6 +362,7 @@ let claudeVersion: string | null = null
 let lastCounts = { total: 0, live: 0, waiting: 0 }
 let menuClosedAt = 0
 let lastSessions: Session[] = []
+let lastNeedsInputMtimes = new Map<string, number | null>()
 let dashboardWindow: BrowserWindow | null = null
 
 const sendAll = (channel: string, ...args: unknown[]): void => {
@@ -479,6 +489,7 @@ function decorate(sessions: Session[]): Session[] {
       dirty: dirtyMap[key] ?? false,
       changes: changeMap[key] ?? 0,
       bg: bgAgents.has(s.id),
+      sleptAt: sleptAtOf(appState.sleptSessions, sleepingSessions, s.id),
       finished: fin.finished,
       jiraStatus: fin.jiraStatus,
       status
@@ -499,6 +510,7 @@ async function refreshRunning(): Promise<void> {
     saveState(statePath, appState)
   }
   cachedRunningIds = [...new Set(extractResumeIds(procs.map((p) => p.commandLine)).map((id) => activeLinks.get(id) ?? id))]
+  cachedAttaches = extractAttachPids(procs)
   warnPromptSkips(procs)
 }
 
@@ -514,7 +526,11 @@ async function refreshAgents(): Promise<void> {
 }
 
 async function refreshDirty(): Promise<void> {
-  const entries = [...knownFolders.entries()]
+  const isWanted = (s: Session): boolean =>
+    !!s.projectPath && (s.isLive || (!!s.ticket && appState.watchedTickets.includes(s.ticket)))
+  const folderKeyOf = (s: Session): string => normalizePath(s.projectPath)
+  const wanted = new Set(lastSessions.filter(isWanted).map(folderKeyOf))
+  const entries = dirtyTargets([...knownFolders.entries()], wanted, existsSync)
   const next: Record<string, boolean> = {}
   const counts: Record<string, number> = {}
   await Promise.all(
@@ -524,13 +540,36 @@ async function refreshDirty(): Promise<void> {
       counts[key] = status.isOk ? countChanges(status.out) : 0
     })
   )
-  dirtyMap = next
-  changeMap = counts
+  const isExistingKey = (key: string): boolean => existsSync(knownFolders.get(key) ?? key)
+  dirtyMap = mergeDirty(dirtyMap, next, isExistingKey)
+  changeMap = mergeDirty(changeMap, counts, isExistingKey)
+}
+
+let lastScan: ScanResult | null = null
+let sentSessions: unknown = null
+let sentTasks: unknown = null
+let sentCloseCandidates: unknown = null
+let sentWorktrees: unknown = null
+
+const resetSentSessions = (): void => {
+  sentSessions = null
+  sentTasks = null
+  sentCloseCandidates = null
+  sentWorktrees = null
+}
+
+const rescan = async (): Promise<void> => {
+  lastScan = await scanRaw()
+}
+
+const rescanAndPush = async (): Promise<void> => {
+  await rescan()
+  await pushSessions()
 }
 
 async function pushSessions(): Promise<void> {
-  if (!mainWindow) return
-  const { raw, lockedFolders, cleared } = await scanRaw()
+  if (!mainWindow || !lastScan) return
+  const { raw, lockedFolders, cleared } = lastScan
   clearedIds = cleared
   for (const r of raw)
     if (r.cwd) {
@@ -543,6 +582,15 @@ async function pushSessions(): Promise<void> {
     }
   const openIds = [...new Set([...liveAgentIds, ...cachedRunningIds])]
   const sessions = buildSessions(raw, openIds, Date.now(), 8000, parsePrefixes(appState.settings.ticketPrefixes))
+  const isLiveSession = (s: Session): boolean => s.isLive
+  const idOfSession = (s: Session): string => s.id
+  const prunedSlept = pruneSlept(appState.sleptSessions, new Set(sessions.filter(isLiveSession).map(idOfSession)))
+  if (Object.keys(prunedSlept).length !== Object.keys(appState.sleptSessions).length) {
+    appState.sleptSessions = prunedSlept
+    saveState(statePath, appState)
+  }
+  const needsInputEntry = (r: RawSession): [string, number | null] => [r.id, r.needsInputMtimeMs ?? null]
+  lastNeedsInputMtimes = new Map(raw.map(needsInputEntry))
   const decorated = decorate(sessions)
   lastSessions = decorated
   runAutoHandoff(decorated, cleared)
@@ -554,15 +602,28 @@ async function pushSessions(): Promise<void> {
   }
   lastTasks = buildTaskMeta(decorated)
   trackRestore(decorated, lockedFolders.length > 0)
-  sendAll('tasks', lastTasks)
-  sendAll('sessions', decorated)
-  mainWindow.webContents.send('close-candidates', openCloseCandidates())
+  if (!isSameSessions(sentTasks, lastTasks)) {
+    sentTasks = lastTasks
+    sendAll('tasks', lastTasks)
+  }
+  if (!isSameSessions(sentSessions, decorated)) {
+    sentSessions = decorated
+    sendAll('sessions', decorated)
+  }
+  const closeCandidatesNow = openCloseCandidates()
+  if (!isSameSessions(sentCloseCandidates, closeCandidatesNow)) {
+    sentCloseCandidates = closeCandidatesNow
+    mainWindow.webContents.send('close-candidates', closeCandidatesNow)
+  }
   const rows = worktreeRows(decorated, (path) => existsSync(joinPath(path, '.git')))
   for (const row of rows) {
     const root = parseWorktreeRoot(readText(joinPath(row.path, '.git')) ?? '')
     if (root) linkNodeModules(row.path, root)
   }
-  mainWindow.webContents.send('worktrees', rows)
+  if (!isSameSessions(sentWorktrees, rows)) {
+    sentWorktrees = rows
+    mainWindow.webContents.send('worktrees', rows)
+  }
   updateAttention(sessions, decorated)
   const contextCheck = contextAlerts(sessions.filter((s) => s.isLive), alertedContext)
   alertedContext = contextCheck.alerted
@@ -617,7 +678,7 @@ const killSessions = async (ids: string[]): Promise<string[]> => {
   for (const id of closed) closedIds.add(id)
   appState = { ...appState, restore: forgetSessions(appState.restore, closed) }
   saveState(statePath, appState)
-  void pushSessions()
+  void rescanAndPush()
   return failed
 }
 
@@ -689,7 +750,7 @@ const deleteWorktree = async (
   }
   saveState(statePath, appState)
   const deleted = ctx.target ? await runGit(ctx.root, ['branch', '-D', ctx.target]) : null
-  void pushSessions()
+  void rescanAndPush()
   const notices = [
     ...(removed.isOk ? [] : [`folder ${path} could not be fully removed (a file is in use), delete it by hand`]),
     ...(deleted && !deleted.isOk ? [`branch ${ctx.target} kept: ${deleted.err}`] : [])
@@ -950,7 +1011,7 @@ const startReview = async (key: string, isOrchestrated = false): Promise<{ error
     saveState(statePath, appState)
     pushMyMrs()
     void waitForFolder(worktree, 30000).then((isReady) => isReady && linkNodeModules(worktree, repo))
-    void refreshAgents().then(() => pushSessions())
+    void refreshAgents().then(rescanAndPush)
     return { error: null, sessionId: id }
   } finally {
     if (isStarted) setTimeout(() => startingReviews.delete(key), 30000)
@@ -1079,7 +1140,7 @@ const attachInVsCode = async (id: string, folder: string): Promise<boolean> => {
   const isLayoutConfigured = !!resuming.get(id)
   const isOpened = await reopenAndRun(folder, attachCommand(id), paneKey, isLayoutConfigured)
   setTimeout(() => resuming.delete(id), 60000)
-  void pushSessions()
+  void rescanAndPush()
   return isOpened
 }
 
@@ -1132,7 +1193,7 @@ const startTask = async (
       appState = applyTicketOverride(appState, id, key)
       saveState(statePath, appState)
       await refreshAgents()
-      void pushSessions()
+      void rescanAndPush()
       return { error: null, sessionId: id }
     }
     if (!(await waitForFolder(worktree, 30000))) return { error: 'worktree folder did not appear' }
@@ -1224,7 +1285,7 @@ function openSession(s: Session): void {
   } catch {
     /* ignore */
   }
-  void pushSessions()
+  void rescanAndPush()
   if (resuming.has(s.id)) return
   if (!editorOk) {
     resumeStandalone(s.projectPath, s.id, s.ticket)
@@ -1343,7 +1404,7 @@ const answerInbox = async (id: string, toolUseId: string, key: string): Promise<
   if (!isStillPending(id, toolUseId)) return NOT_PENDING
   if ((await modeOf(id)) !== 'attach') return { error: 'This session runs outside Cockpit' }
   if (!ptyHost.isOpen(id)) {
-    const opened = await openTerminal(id, 120, 32)
+    const opened = await openFromMain(id)
     if (opened.error) return opened
   }
   if (!(await waitForQuietOutput(id, true))) return { error: 'Claude is busy in the terminal, so nothing was sent' }
@@ -1358,7 +1419,7 @@ const dismissInbox = (id: string): void => {
   } catch {
     return
   }
-  void pushSessions()
+  void rescanAndPush()
 }
 
 const sendToDashboard = (channel: string, ...args: unknown[]): void => {
@@ -1514,6 +1575,7 @@ const startServer = async (
   serverLogs.set(key, `$ ${command}\r\n`)
   serverHost.open(key, bash, ['-c', command], cwd, cols, rows)
   servers.set(key, { key, port: chosen, command, cwd, startedAt: Date.now(), url, label })
+  void refreshRunning()
   appState = {
     ...appState,
     serverCommands: {
@@ -1740,7 +1802,7 @@ const startNamedBackground = async (
     appState = applyTicketOverride(appState, id, key)
     appState = applyName(appState, id, name)
     saveState(statePath, appState)
-    void refreshAgents().then(() => pushSessions())
+    void refreshAgents().then(rescanAndPush)
     return { error: null, sessionId: id }
   } finally {
     setTimeout(() => starting.delete(key), 30000)
@@ -1977,7 +2039,7 @@ const testInsightsProposal = async (id: string): Promise<{ error: string | null;
   const shortId = parseBgId(out)
   if (!shortId) return { error: out.trim().split(/\r?\n/).pop() || 'claude did not start' }
   const sessionId = (await waitForSessionId(shortId, 10000)) ?? shortId
-  void refreshAgents().then(() => pushSessions())
+  void refreshAgents().then(rescanAndPush)
   return { error: null, sessionId }
 }
 
@@ -2157,7 +2219,7 @@ const startAddress = async (key: string, isOrchestrated = false): Promise<{ erro
     appState = { ...appState, mrSessions: { ...appState.mrSessions, [key]: id } }
     saveState(statePath, appState)
     pushMyMrs()
-    void refreshAgents().then(() => pushSessions())
+    void refreshAgents().then(rescanAndPush)
     return { error: null, sessionId: id }
   } finally {
     if (isStarted) setTimeout(() => startingAddress.delete(key), 30000)
@@ -2203,7 +2265,7 @@ const boundSessionId = (id: string, links: Map<string, string>): string => {
 }
 
 const sessionViewOf = (s: Session | undefined): SessionView | null =>
-  s ? { id: s.id, status: s.status, ticket: s.ticket, isLive: s.isLive } : null
+  s ? { id: s.id, status: s.status, ticket: s.ticket, isLive: s.isLive, isAsleep: !!s.sleptAt } : null
 
 const orchestratorLiveKeys = (): Set<string> => {
   const links = throughCleared(continuations.links)
@@ -2700,6 +2762,7 @@ const ideWrite = (cwd: string, rel: string, text: string): { error: string | nul
 }
 
 const PLAYWRIGHT_CONFIG = 'C:/Users/ASSET-17300/.claude/playwright-mcp.json'
+const PLAYWRIGHT_CLI = process.env.APPDATA ? playwrightCliPath(process.env.APPDATA, existsSync) : null
 
 const chromePortFor = (key: string): number => {
   const known = appState.chromePorts[key]
@@ -2712,8 +2775,8 @@ const chromePortFor = (key: string): number => {
 
 const prepareTaskBrowser = (key: string, folder: string): string | null => {
   const port = chromePortFor(key)
-  if (ticketFromPath(folder) === key) writeTaskMcp(join(homedir(), '.claude.json'), folder, port, PLAYWRIGHT_CONFIG)
-  return writeTaskMcpFile(join(app.getPath('userData'), 'mcp'), key, port, PLAYWRIGHT_CONFIG)
+  if (ticketFromPath(folder) === key) writeTaskMcp(join(homedir(), '.claude.json'), folder, port, PLAYWRIGHT_CONFIG, PLAYWRIGHT_CLI)
+  return writeTaskMcpFile(join(app.getPath('userData'), 'mcp'), key, port, PLAYWRIGHT_CONFIG, PLAYWRIGHT_CLI)
 }
 
 const openInChrome = async (url: string, key?: string | null): Promise<void> => {
@@ -2769,24 +2832,42 @@ const startServerFor = async (key: string, cwd: string, body: Record<string, unk
   return { key, url: started?.url, port: started?.port, cwd: folder, label: started?.label, isNew: true }
 }
 
+const clearUserStopped = (key: string): void => {
+  if (!appState.userStoppedServers.includes(key)) return
+  const isOtherKey = (k: string): boolean => k !== key
+  appState = { ...appState, userStoppedServers: appState.userStoppedServers.filter(isOtherKey) }
+  saveState(statePath, appState)
+}
+
+const serverRoute = async (body: Record<string, unknown>, isUserAction: boolean): Promise<unknown> => {
+  const cwd = asString(body.cwd)
+  const key = asString(body.ticket).toUpperCase() || ticketFromPath(cwd)
+  if (!key) return { error: 'Pass --ticket <KEY> or run it from the ticket worktree' }
+  const pending = serverStarts.get(key)
+  const ignoreStartError = (): undefined => undefined
+  if (pending) await pending.catch(ignoreStartError)
+  const running = servers.get(key)
+  const action = serverAction({
+    isRunning: !!running,
+    isMismatch: !!running && isChoiceMismatch(running.label, asString(body.tenant), asString(body.environment)),
+    isUserStopped: appState.userStoppedServers.includes(key),
+    isUserAction
+  })
+  if (action === 'blocked') return { error: userStoppedMessage(key) }
+  if (isUserAction) clearUserStopped(key)
+  if (action === 'restart') stopServer(key)
+  else if (running) return { key, url: running.url, port: running.port, cwd: running.cwd, label: running.label, isNew: false }
+  const started = startServerFor(key, cwd, body)
+  serverStarts.set(key, started)
+  try {
+    return await started
+  } finally {
+    if (serverStarts.get(key) === started) serverStarts.delete(key)
+  }
+}
+
 const bridgeRoutes = {
-  '/server': async (body: Record<string, unknown>): Promise<unknown> => {
-    const cwd = asString(body.cwd)
-    const key = asString(body.ticket).toUpperCase() || ticketFromPath(cwd)
-    if (!key) return { error: 'Pass --ticket <KEY> or run it from the ticket worktree' }
-    const pending = serverStarts.get(key)
-    if (pending) await pending.catch(() => undefined)
-    const running = servers.get(key)
-    if (running && isChoiceMismatch(running.label, asString(body.tenant), asString(body.environment))) stopServer(key)
-    else if (running) return { key, url: running.url, port: running.port, cwd: running.cwd, label: running.label, isNew: false }
-    const started = startServerFor(key, cwd, body)
-    serverStarts.set(key, started)
-    try {
-      return await started
-    } finally {
-      if (serverStarts.get(key) === started) serverStarts.delete(key)
-    }
-  },
+  '/server': async (body: Record<string, unknown>): Promise<unknown> => serverRoute(body, false),
   '/chrome': async (body: Record<string, unknown>): Promise<unknown> => {
     const key = asString(body.ticket).toUpperCase() || ticketFromPath(asString(body.cwd)) || null
     const port = key ? chromePortFor(key) : CHROME_DEBUG_PORT
@@ -2879,6 +2960,7 @@ const stopServer = (key: string): void => {
   serverHost.close(key)
   servers.delete(key)
   pushServers()
+  void refreshRunning()
 }
 
 let hostIdleSince: Record<string, number> = {}
@@ -2907,6 +2989,16 @@ const checkIdleHosts = (): void => {
   void closeIdleHosts()
 }
 const openGuard = createOpenGuard()
+const closeOwnTerminal = (id: string): void => {
+  ptyHost.close(id)
+  cachedAttaches.delete(id.slice(0, 8))
+}
+const closeOwnTerminals = (): void => ptyHost.ids().forEach(closeOwnTerminal)
+const detachTerminal = (id: string): void => {
+  closeOwnTerminal(id)
+  sendToDashboard('pty-detached', id)
+}
+const sweepTerminals = (): void => staleTerminals(ptyHost.ids(), ptyHost.lastUseAt, Date.now()).forEach(detachTerminal)
 const rekeyTerminal = (from: string, to: string): void => {
   openGuard.cancel(from)
   ptyHost.rekey(from, to)
@@ -2918,8 +3010,13 @@ const PROMPT_WAIT_MS = 20000
 
 const sessionById = (id: string): Session | undefined => lastSessions.find((s) => s.id === id)
 
-const isAttachedElsewhere = async (id: string): Promise<boolean> =>
-  !ptyHost.isOpen(id) && (isHandedOff(handedToVscode.get(id), Date.now()) || (await runningAttaches()).has(id.slice(0, 8)))
+const isAttachedElsewhere = async (id: string): Promise<boolean> => {
+  if (ptyHost.isOpen(id)) return false
+  if (isHandedOff(handedToVscode.get(id), Date.now())) return true
+  const checked = await isAttachedByCache(cachedAttaches, id.slice(0, 8), runningAttaches)
+  cachedAttaches = checked.attaches
+  return checked.isAttached
+}
 
 const modeOf = async (id: string): Promise<TerminalMode> =>
   terminalMode({
@@ -2930,14 +3027,22 @@ const modeOf = async (id: string): Promise<TerminalMode> =>
 
 const CANCELLED = { error: 'cancelled' }
 
-const openTerminal = (id: string, cols: number, rows: number): Promise<{ error: string | null }> =>
-  openGuard.run(id, (isCurrent) => openTerminalNow(id, cols, rows, isCurrent))
+interface OpenOptions {
+  isKeepSize?: boolean
+  isAttachOnly?: boolean
+}
+
+const openTerminal = (id: string, cols: number, rows: number, options: OpenOptions = {}): Promise<{ error: string | null }> => {
+  const openNow = (isCurrent: () => boolean): Promise<{ error: string | null }> => openTerminalNow(id, cols, rows, isCurrent, options)
+  return openGuard.run(id, openNow)
+}
 
 const openTerminalNow = async (
   id: string,
   cols: number,
   rows: number,
-  isCurrent: () => boolean
+  isCurrent: () => boolean,
+  { isKeepSize = false, isAttachOnly = false }: OpenOptions
 ): Promise<{ error: string | null }> => {
   const s = sessionById(id)
   const exe = resolveClaudeExe()
@@ -2946,17 +3051,26 @@ const openTerminalNow = async (
   const mode = await modeOf(id)
   if (!isCurrent()) return CANCELLED
   if (mode === 'attach') {
-    ptyHost.open(id, exe, attachArgs(id), s.projectPath, cols, rows)
+    const step = attachStep(ptyHost.isOpen(id), isKeepSize)
+    if (step === 'resize') ptyHost.resize(id, cols, rows)
+    if (step === 'spawn') {
+      ptyHost.open(id, exe, attachArgs(id), s.projectPath, cols, rows)
+      void refreshRunning()
+      if (isKeepSize) sendToDashboard('pty-attached', id, cols, rows)
+    }
     return { error: null }
   }
+  if (isAttachOnly) return { error: 'this session is not attachable' }
   if (mode !== 'resume') return { error: mode === 'vscode' ? 'this session runs in a VS Code terminal' : 'this session is attached in VS Code' }
   const mcpConfig = s.ticket ? prepareTaskBrowser(s.ticket.toUpperCase(), s.projectPath) : null
   const out = await spawnBackground(exe, s.projectPath, taskMcpArgs(resumeBackgroundArgs(id, s.name ?? s.ticket), mcpConfig))
   const shortId = parseBgId(out)
   if (!shortId) return { error: out.trim().split(/\r?\n/).pop() || 'claude did not resume' }
-  void refreshAgents().then(() => pushSessions())
+  void refreshAgents().then(rescanAndPush)
   if (!isCurrent()) return CANCELLED
   ptyHost.open(id, exe, ['attach', shortId], s.projectPath, cols, rows)
+  void refreshRunning()
+  if (isKeepSize) sendToDashboard('pty-attached', id, cols, rows)
   return { error: null }
 }
 
@@ -2970,9 +3084,20 @@ const waitForQuietOutput = async (id: string, isStrict = false): Promise<boolean
   return !isStrict && ptyHost.isOpen(id)
 }
 
+const openFromMain = (id: string): Promise<{ error: string | null }> => openTerminal(id, 120, 32, { isKeepSize: true })
+
+const openOnDemand = async (id: string): Promise<boolean> => {
+  const opened = await openTerminal(id, 120, 32, { isKeepSize: true, isAttachOnly: true })
+  if (opened.error) return false
+  return waitForQuietOutput(id)
+}
+
+const terminalWriter = createOnDemandWriter({ isOpen: ptyHost.isOpen, open: openOnDemand, write: ptyHost.write })
+
 const sendKeys = async (id: string, data: string): Promise<{ error: string | null }> => {
+  await terminalWriter.whenFlushed(id)
   if (!ptyHost.isOpen(id)) {
-    const opened = await openTerminal(id, 120, 32)
+    const opened = await openFromMain(id)
     if (opened.error) return opened
   }
   if (!(await waitForQuietOutput(id))) return { error: 'the session did not answer' }
@@ -3009,7 +3134,7 @@ const takeOverInteractive = async (id: string, cols: number, rows: number): Prom
   for (const launchId of launchIdsOf(id, activeLinks)) for (const pid of await runningResumePids(launchId)) await killProcess(pid, true)
   await new Promise((r) => setTimeout(r, 800))
   await Promise.all([refreshRunning(), refreshAgents()])
-  await pushSessions()
+  await rescanAndPush()
   return openTerminal(id, cols, rows)
 }
 
@@ -3017,6 +3142,26 @@ const stopBackground = (exe: string, id: string): Promise<boolean> =>
   new Promise((resolve) => {
     execFile(exe, ['stop', id.slice(0, 8)], { windowsHide: true, timeout: 20000 }, (error) => resolve(!error))
   })
+
+const closingIds = new Set<string>()
+let isSleepTickRunning = false
+
+const stopSession = async (id: string): Promise<{ error: string | null }> => {
+  openGuard.cancel(id)
+  const isOwnOpen = ptyHost.isOpen(id)
+  closeOwnTerminal(id)
+  handedToVscode.delete(id)
+  const exe = resolveClaudeExe()
+  if (exe && bgAgents.has(id)) await stopBackground(exe, id)
+  await killSessions([id])
+  for (const launchId of launchIdsOf(id, activeLinks)) for (const pid of await runningResumePids(launchId)) await killProcess(pid, true)
+  await new Promise((r) => setTimeout(r, 800))
+  await Promise.all([refreshRunning(), refreshAgents()])
+  await rescanAndPush()
+  const isStillRunning = (await Promise.all(launchIdsOf(id, activeLinks).map(runningResumePids))).some((pids) => pids.length)
+  if (isOwnOpen) sendToDashboard('pty-detached', id)
+  return isStillRunning ? { error: 'The Claude process is still running' } : { error: null }
+}
 
 const closeSessionTab = async (id: string): Promise<{ error: string | null }> => {
   const s = sessionById(id)
@@ -3033,24 +3178,71 @@ const closeSessionTab = async (id: string): Promise<{ error: string | null }> =>
   const parent = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow : null
   const answer = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options)
   if (answer.response !== 1) return { error: 'cancelled' }
-  openGuard.cancel(id)
-  ptyHost.close(id)
-  handedToVscode.delete(id)
-  const exe = resolveClaudeExe()
-  if (exe && bgAgents.has(id)) await stopBackground(exe, id)
-  await killSessions([id])
-  for (const launchId of launchIdsOf(id, activeLinks)) for (const pid of await runningResumePids(launchId)) await killProcess(pid, true)
-  await new Promise((r) => setTimeout(r, 800))
-  await Promise.all([refreshRunning(), refreshAgents()])
-  await pushSessions()
-  const isStillRunning = (await Promise.all(launchIdsOf(id, activeLinks).map(runningResumePids))).some((pids) => pids.length)
-  return isStillRunning ? { error: 'The Claude process is still running' } : { error: null }
+  closingIds.add(id)
+  try {
+    return await stopSession(id)
+  } finally {
+    closingIds.delete(id)
+  }
+}
+
+const isMtime = (t: number | null | undefined): t is number => typeof t === 'number'
+
+const toSleepCandidate = (s: Session): SleepCandidate => ({
+  id: s.id,
+  status: s.status,
+  isBackground: bgAgents.has(s.id),
+  transcriptMtimeMs: s.lastActive,
+  markerMtimesMs: [lastNeedsInputMtimes.get(s.id)].filter(isMtime),
+  lastInputAt: ptyHost.lastInputAt(s.id)
+})
+
+const markSlept = (id: string, at: number): void => {
+  appState.sleptSessions[id] = at
+  saveState(statePath, appState)
+}
+
+const sleepSessionNow = async (id: string): Promise<{ error: string | null }> => {
+  if (!sessionById(id)) return { error: 'session not found' }
+  if (closingIds.has(id)) return { error: null }
+  closingIds.add(id)
+  try {
+    const isSlept = await sleepSession(id, Date.now(), sleepingSessions, stopSession, markSlept)
+    return isSlept ? { error: null } : { error: 'The Claude process is still running' }
+  } finally {
+    closingIds.delete(id)
+  }
+}
+
+const sleepTick = async (): Promise<void> => {
+  if (!appState.settings.isSleepEnabled || isSleepTickRunning) return
+  isSleepTickRunning = true
+  try {
+    const afterHours = appState.settings.sleepAfterHours
+    const due = sessionsToSleep(lastSessions.map(toSleepCandidate), Date.now(), afterHours)
+    for (const id of due) {
+      if (closingIds.has(id)) continue
+      try {
+        await rescan()
+        await pushSessions()
+        if (closingIds.has(id)) continue
+        const isDueId = (s: Session): boolean => s.id === id
+        const fresh = lastSessions.filter(isDueId).map(toSleepCandidate)
+        if (!sessionsToSleep(fresh, Date.now(), afterHours).length) continue
+        await sleepSession(id, Date.now(), sleepingSessions, stopSession, markSlept)
+      } catch (e) {
+        console.error('[sleep] stop failed:', id, e)
+      }
+    }
+  } finally {
+    isSleepTickRunning = false
+  }
 }
 
 const openTerminalInVscode = async (id: string): Promise<void> => {
   const s = sessionById(id)
   openGuard.cancel(id)
-  ptyHost.close(id)
+  closeOwnTerminal(id)
   handedToVscode.set(id, Date.now())
   if (!s) return
   await new Promise((r) => setTimeout(r, 500))
@@ -3321,7 +3513,8 @@ const openDashboard = (): void => {
     win.webContents.send('my-mrs', myMrs())
     win.webContents.send('my-tasks', { ...myTasks, syncedAt: tasksSyncedAt })
     win.webContents.send('usage-update', lastUsage)
-    void pushSessions()
+    resetSentSessions()
+    void rescanAndPush()
     if (pendingFocus) win.webContents.send('focus-session', pendingFocus)
     pendingFocus = null
     if (pendingInboxNext) win.webContents.send('inbox-next')
@@ -3331,13 +3524,13 @@ const openDashboard = (): void => {
     appState = { ...appState, dashboardBounds: win.getBounds() }
     saveState(statePath, appState)
   })
-  const closeTerminals = (): void => ptyHost.closeAll()
+  const closeTerminals = (): void => closeOwnTerminals()
   win.webContents.on('did-start-navigation', (details) => {
     if (details.isMainFrame && !details.isSameDocument) closeTerminals()
   })
   win.webContents.on('render-process-gone', closeTerminals)
   win.on('closed', () => {
-    ptyHost.closeAll()
+    closeOwnTerminals()
     dashboardWindow = null
   })
   dashboardWindow = win
@@ -3437,24 +3630,27 @@ function wireSessions(win: BrowserWindow): void {
   let timer: NodeJS.Timeout | null = null
   const schedule = (): void => {
     if (timer) clearTimeout(timer)
-    timer = setTimeout(pushSessions, 1000)
+    timer = setTimeout(rescanAndPush, 1000)
   }
   let aTimer: NodeJS.Timeout | null = null
   const scheduleAgents = (): void => {
     if (aTimer) clearTimeout(aTimer)
     aTimer = setTimeout(async () => {
       await refreshAgents()
-      await pushSessions()
+      await rescanAndPush()
     }, 600)
   }
-  chokidar.watch([projectsDir(), ideDir()], { ignoreInitial: true, depth: 2 }).on('all', schedule)
+  chokidar
+    .watch([projectsDir(), ideDir(), needsInputDir(), activeDir(), doneDir()], { ignoreInitial: true, depth: 2 })
+    .on('all', schedule)
   chokidar.watch(sessionsDir(), { ignoreInitial: true, depth: 0 }).on('all', scheduleAgents)
   win.webContents.on('did-finish-load', async () => {
     await refreshRunning()
     await refreshAgents()
     isProcessScanReady = true
     void probeEnv()
-    await pushSessions()
+    resetSentSessions()
+    await rescanAndPush()
     pumpQueue()
     void pushUsage()
     void refreshFinishSignals()
@@ -3462,12 +3658,14 @@ function wireSessions(win: BrowserWindow): void {
     void refreshMyTasks()
   })
   setInterval(pushSessions, 2000)
-  setInterval(refreshRunning, 6000)
-  setInterval(refreshAgents, 8000)
-  setInterval(refreshDirty, 8000)
+  setInterval(rescan, 10_000)
+  setInterval(refreshRunning, 30_000)
+  setInterval(refreshAgents, 30_000)
+  setInterval(refreshDirty, 30_000)
   setInterval(refreshTaskSources, 8000)
   setInterval(pushUsage, 60000)
-  setInterval(probeEnv, 30000)
+  setInterval(sleepTick, 60_000)
+  setInterval(probeEnv, 600_000)
   setInterval(refreshFinishSignals, 1800000)
   setInterval(refreshOpenTickets, 120000)
   setInterval(refreshMyTasks, 120000)
@@ -3647,7 +3845,9 @@ if (!app.requestSingleInstanceLock()) {
       mrMention: appState.settings.mrMention,
       orchestratorMaxParallel: appState.settings.orchestratorMaxParallel,
       orchestratorBots: appState.settings.orchestratorBots,
-      timesheetHours: appState.settings.timesheetHours
+      timesheetHours: appState.settings.timesheetHours,
+      isSleepEnabled: appState.settings.isSleepEnabled,
+      sleepAfterHours: appState.settings.sleepAfterHours
     }
   })
   ipcMain.on('set-settings', (_e, patch: Partial<State['settings']>) => {
@@ -3688,6 +3888,9 @@ if (!app.requestSingleInstanceLock()) {
       appState.settings.launchOnStartup = patch.launchOnStartup
       applyLaunchOnStartup(patch.launchOnStartup)
     }
+    if (typeof patch.isSleepEnabled === 'boolean') appState.settings.isSleepEnabled = patch.isSleepEnabled
+    if (typeof patch.sleepAfterHours === 'number' && patch.sleepAfterHours > 0)
+      appState.settings.sleepAfterHours = patch.sleepAfterHours
     saveState(statePath, appState)
     void refreshFinishSignals()
   })
@@ -3820,11 +4023,11 @@ if (!app.requestSingleInstanceLock()) {
     launcherWindow?.close()
     openView(view)
   })
-  ipcMain.handle(
-    'server-start',
-    (_e, key: string, cwd: string, spec: ServerSpec, port: number | null, cols: number, rows: number) =>
-      startServer(key, cwd, spec, port, cols, rows)
-  )
+  const onServerStart = (_e: unknown, key: string, cwd: string, spec: ServerSpec, port: number | null, cols: number, rows: number): ReturnType<typeof startServer> => {
+    clearUserStopped(key)
+    return startServer(key, cwd, spec, port, cols, rows)
+  }
+  ipcMain.handle('server-start', onServerStart)
   ipcMain.handle('ide-files', (_e, cwd: string) => ideFiles(cwd))
   ipcMain.handle('ide-search', (_e, cwd: string, query: string, scope: string, isWord: boolean) => ideSearch(cwd, query, scope, isWord))
   ipcMain.handle('ide-status', (_e, cwd: string) => ideStatus(cwd))
@@ -3892,7 +4095,14 @@ if (!app.requestSingleInstanceLock()) {
     void refreshMyTasks()
     return { error: null }
   })
-  ipcMain.on('server-stop', (_e, key: string) => stopServer(key))
+  const onServerStop = (_e: unknown, key: string): void => {
+    if (!appState.userStoppedServers.includes(key)) {
+      appState = { ...appState, userStoppedServers: [...appState.userStoppedServers, key] }
+      saveState(statePath, appState)
+    }
+    stopServer(key)
+  }
+  ipcMain.on('server-stop', onServerStop)
   ipcMain.on('server-write', (_e, key: string, data: string) => serverHost.write(key, data))
   ipcMain.on('server-resize', (_e, key: string, cols: number, rows: number) => serverHost.resize(key, cols, rows))
   ipcMain.on('get-servers', (e) => {
@@ -3944,7 +4154,7 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle('orchestrator-get', () => appState.orchestrator)
   ipcMain.handle('local-hosts', () => listLocalHosts())
   ipcMain.handle('close-chrome', async (_e, key: string | null) => ({ error: await closeChrome(typeof key === 'string' ? key : null) }))
-  ipcMain.handle('ticket-server', async (_e, key: string, cwd: string | null) => bridgeRoutes['/server']({ ticket: key, cwd: cwd ?? '' }))
+  ipcMain.handle('ticket-server', async (_e, key: string, cwd: string | null) => serverRoute({ ticket: key, cwd: cwd ?? '' }, true))
   ipcMain.handle('refresh-lists', async () => {
     forgetApprovals()
     await Promise.all([refreshMyTasks(), refreshMyMrs()])
@@ -4130,18 +4340,24 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
   ipcMain.on('set-full-screen', setFullScreen)
   ipcMain.handle('terminal-mode', (_e, id: string) => modeOf(id))
   ipcMain.handle('terminal-open', (_e, id: string, cols: number, rows: number) => openTerminal(id, cols, rows))
-  ipcMain.on('terminal-write', (_e, id: string, data: string) => ptyHost.write(id, data))
+  const onTerminalWrite = (_e: unknown, id: string, data: string): void => terminalWriter.write(id, data)
+  ipcMain.on('terminal-write', onTerminalWrite)
   ipcMain.on('terminal-resize', (_e, id: string, cols: number, rows: number) => ptyHost.resize(id, cols, rows))
   ipcMain.on('terminal-close', (_e, id: string) => {
     openGuard.cancel(id)
-    ptyHost.close(id)
+    closeOwnTerminal(id)
   })
+  const onTerminalSeen = (_e: unknown, id: string): void => ptyHost.touch(id)
+  ipcMain.on('terminal-seen', onTerminalSeen)
   ipcMain.handle('terminal-send-prompt', (_e, id: string, text: string) => sendPrompt(id, text))
-  ipcMain.on('terminal-stop-turn', (_e, id: string) => ptyHost.write(id, STOP_TURN))
+  const onTerminalStopTurn = (_e: unknown, id: string): void => terminalWriter.write(id, STOP_TURN)
+  ipcMain.on('terminal-stop-turn', onTerminalStopTurn)
   ipcMain.handle('terminal-take-over', (_e, id: string, cols: number, rows: number) => takeOver(id, cols, rows))
   ipcMain.handle('terminal-take-over-interactive', (_e, id: string, cols: number, rows: number) => takeOverInteractive(id, cols, rows))
   ipcMain.handle('terminal-open-vscode', (_e, id: string) => openTerminalInVscode(id))
   ipcMain.handle('session-close', (_e, id: string) => closeSessionTab(id))
+  const onSessionSleep = (_e: Electron.IpcMainInvokeEvent, id: string): Promise<{ error: string | null }> => sleepSessionNow(id)
+  ipcMain.handle('session-sleep', onSessionSleep)
   ipcMain.handle('session-detail', (_e, id: string) => sessionDetail(id))
   ipcMain.handle('inbox-item', (_e, id: string) => inboxItem(id))
   ipcMain.handle('inbox-answer', (_e, id: string, toolUseId: string, key: string) => answerInbox(id, toolUseId, key))
@@ -4300,7 +4516,7 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
     })
     if (second.response !== 1) return
     removeSessionFiles(id)
-    void pushSessions()
+    void rescanAndPush()
   })
 
   mainWindow = createWindow()
@@ -4315,6 +4531,7 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
   checkInsights()
   setInterval(checkInsights, INSIGHTS_CHECK)
   setInterval(checkIdleHosts, 60_000)
+  setInterval(sweepTerminals, 60_000)
 
   mainWindow.on('close', (e) => {
     console.log('[diag] window close event, isQuiting=', (app as never as { isQuiting?: boolean }).isQuiting)

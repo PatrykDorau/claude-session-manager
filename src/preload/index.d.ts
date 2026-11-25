@@ -90,6 +90,8 @@ declare global {
     orchestratorMaxParallel: number
     orchestratorBots: string
     timesheetHours: number
+        isSleepEnabled: boolean
+        sleepAfterHours: number
       }
       setSettings: (patch: {
         jiraBase?: string
@@ -111,6 +113,8 @@ declare global {
     mrMention?: string
     orchestratorMaxParallel?: number
     orchestratorBots?: string
+        isSleepEnabled?: boolean
+        sleepAfterHours?: number
       }) => void
       setFinished: (id: string, on: boolean) => void
       syncJira: () => Promise<void>
@@ -136,9 +140,11 @@ declare global {
       writeTerminal: (id: string, data: string) => void
       resizeTerminal: (id: string, cols: number, rows: number) => void
       closeTerminal: (id: string) => void
+      markTerminalSeen: (id: string) => void
       sendPrompt: (id: string, text: string) => Promise<{ error: string | null }>
       stopTurn: (id: string) => void
       closeSession: (id: string) => Promise<{ error: string | null }>
+      sleepSession: (id: string) => Promise<{ error: string | null }>
       takeOverInteractive: (id: string, cols: number, rows: number) => Promise<{ error: string | null }>
       takeOver: (id: string, cols: number, rows: number) => Promise<{ error: string | null }>
       openInVscode: (id: string) => Promise<void>
@@ -159,6 +165,8 @@ declare global {
       onPtyData: (cb: (id: string, chunk: string) => void) => () => void
       onPtyRekey: (cb: (from: string, to: string) => void) => () => void
       onPtyExit: (cb: (id: string, code: number) => void) => () => void
+      onPtyDetached: (cb: (id: string) => void) => () => void
+      onPtyAttached: (cb: (id: string, cols: number, rows: number) => void) => () => void
       openDashboard: () => void
       showSidebar: () => void
       launchView: (view: 'sidebar' | 'dashboard', isRemembered: boolean) => void

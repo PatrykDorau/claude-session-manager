@@ -126,8 +126,14 @@ onActivated(markTicket)
 const markTerminal = (s: Session): void => window.api.markActivity(s.ticket)
 const togglePanelPin = (): void => {
   if (!session.value) return
+  if (isPinned.value && !window.confirm('Unpin this session from the command panel grid?')) return
   panelPins.value = togglePin(readPins(), session.value.id)
   writePins(panelPins.value)
+}
+const sleepCurrent = async (): Promise<void> => {
+  if (!session.value || !window.confirm('Put this session to sleep? The Claude process stops and the session stays on the list.')) return
+  const result = await window.api.sleepSession(session.value.id)
+  if (result.error) window.alert(result.error)
 }
 const orchJobs = ref<Job[]>([])
 const sessionJob = computed(() => orchJobs.value.find((j) => !!session.value && j.sessionId === session.value.id) ?? null)
@@ -518,6 +524,7 @@ onBeforeUnmount(() => {
           :title="autonomyError ?? 'Orchestrator autonomy for this session'"
           @change="setSessionAutonomy"
         />
+        <button v-if="session?.isLive" class="btn" title="Put this session to sleep: the Claude process stops and the session stays on the list" @click="sleepCurrent"><Icon name="moon" :size="14" />Sleep</button>
         <div v-if="tab === 'work'" class="seg" title="Show or hide the panes">
           <button :class="{ on: isCodeOpen }" @click="toggleCode"><Icon name="code" :size="14" />Code</button>
           <button :class="{ on: isClaudeOpen }" @click="toggleClaude"><Icon name="terminal" :size="14" />Claude</button>
@@ -605,6 +612,7 @@ onBeforeUnmount(() => {
           :ref="bindTerminal(s.id)"
           :session-id="s.id"
           :project-name="s.projectName"
+          :slept-at="s.sleptAt"
           @pointerdown.capture="markTerminal(s)"
           @keydown.capture="markTerminal(s)"
           @mode="setMode(s.id, $event)"

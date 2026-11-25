@@ -10,6 +10,7 @@ export interface RawSession {
   firstPrompt: string | null
   mtimeMs: number
   needsInput: boolean
+  needsInputMtimeMs?: number | null
   active: boolean
   done: boolean
   pendingToolUse: boolean

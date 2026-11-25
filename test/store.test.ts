@@ -39,6 +39,8 @@ const base: State = {
   mrSessions: {},
   serverCommands: {},
   chromePorts: {},
+  sleptSessions: {},
+  userStoppedServers: [],
   insightsLastRun: null,
   orchestrator: { jobs: [] },
   settings: {
@@ -61,7 +63,9 @@ const base: State = {
     mrMention: '@telco-frontend',
     orchestratorMaxParallel: 2,
     orchestratorBots: 'dao-gitlab',
-    timesheetHours: 8
+    timesheetHours: 8,
+    isSleepEnabled: true,
+    sleepAfterHours: 8
   }
 }
 
@@ -231,6 +235,8 @@ describe('store io', () => {
       mrSessions: { '7!1': 'sid' },
       serverCommands: { repo: 'npm run serve -- --port {port}' },
       chromePorts: { 'A-1': 9301 },
+      sleptSessions: { a: 123 },
+      userStoppedServers: ['SOFRMPT-1'],
       insightsLastRun: 1700000000000,
       orchestrator: { jobs: [] },
       settings: {
@@ -253,7 +259,9 @@ describe('store io', () => {
         mrMention: '@team',
         orchestratorMaxParallel: 3,
         orchestratorBots: 'bot-a, bot-b',
-        timesheetHours: 6
+        timesheetHours: 6,
+        isSleepEnabled: false,
+        sleepAfterHours: 2
       }
     }
     saveState(file, next)
@@ -368,6 +376,42 @@ describe('dev server commands', () => {
     expect(loadState(file).serverCommands).toEqual({ 'tigo-fo-smarttv': 'TENANT=salt npm run serve -- --port {port}' })
     writeFileSync(file, '{}')
     expect(loadState(file).serverCommands).toEqual({})
+    rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('sleep settings', () => {
+  it('defaults sleep settings', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'css-'))
+    const file = join(dir, 'state.json')
+    writeFileSync(file, '{}')
+    const s = loadState(file)
+    expect(s.settings.isSleepEnabled).toBe(true)
+    expect(s.settings.sleepAfterHours).toBe(8)
+    rmSync(dir, { recursive: true, force: true })
+  })
+  it.each([0, -1, 'x'])('rejects a bad sleepAfterHours %s', (value) => {
+    const dir = mkdtempSync(join(tmpdir(), 'css-'))
+    const file = join(dir, 'state.json')
+    writeFileSync(file, JSON.stringify({ settings: { sleepAfterHours: value } }))
+    expect(loadState(file).settings.sleepAfterHours).toBe(8)
+    rmSync(dir, { recursive: true, force: true })
+  })
+  it('round-trips sleptSessions and userStoppedServers', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'css-'))
+    const file = join(dir, 'state.json')
+    const s = { ...base, sleptSessions: { a: 123 }, userStoppedServers: ['SOFRMPT-1'] }
+    saveState(file, s)
+    expect(loadState(file)).toEqual(s)
+    rmSync(dir, { recursive: true, force: true })
+  })
+  it('drops non-number sleptSessions values', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'css-'))
+    const file = join(dir, 'state.json')
+    writeFileSync(file, JSON.stringify({ sleptSessions: { a: 123, b: '456', c: null }, userStoppedServers: ['A-1', 2] }))
+    const s = loadState(file)
+    expect(s.sleptSessions).toEqual({ a: 123 })
+    expect(s.userStoppedServers).toEqual(['A-1'])
     rmSync(dir, { recursive: true, force: true })
   })
 })

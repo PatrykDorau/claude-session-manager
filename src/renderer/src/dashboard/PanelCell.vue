@@ -168,7 +168,7 @@ const setAutonomy = async (autonomy: AutonomyChoice): Promise<void> => {
       </div>
     </header>
     <div class="term" @pointerdown.capture="focusTerminal" @keydown.capture="focusTerminal">
-      <ClaudeTerminal ref="terminal" :data-activity-ticket="session.ticket ?? ''" :session-id="session.id" :project-name="session.projectName" :is-auto-resume="isAutoResume" @mode="setMode" />
+      <ClaudeTerminal ref="terminal" :data-activity-ticket="session.ticket ?? ''" :session-id="session.id" :project-name="session.projectName" :is-auto-resume="isAutoResume" :slept-at="session.sleptAt" @mode="setMode" />
     </div>
   </section>
 </template>

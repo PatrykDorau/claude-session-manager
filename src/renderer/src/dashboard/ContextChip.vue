@@ -4,6 +4,7 @@ import type { AgentNode, Session, TerminalMode } from '../types'
 import { contextLevel, formatContext, handoffPrompt, clearStartPrompt, isIdleLarge, nextClearStep, type ClearPhase } from './context'
 import { useEscapeClose } from './escape'
 import { isSideSessionName } from './tabs'
+import { onVisible, whenVisible } from './visibility'
 
 const props = defineProps<{ session: Session; mode: TerminalMode | null }>()
 
@@ -11,9 +12,13 @@ const now = ref(Date.now())
 const tick = (): void => {
   now.value = Date.now()
 }
-const clock = setInterval(tick, 60_000)
+const clock = setInterval(whenVisible(tick), 60_000)
+const stopVisible = onVisible(tick)
 const phase = ref<ClearPhase>('none')
-const stopClock = (): void => clearInterval(clock)
+const stopClock = (): void => {
+  clearInterval(clock)
+  stopVisible()
+}
 onUnmounted(stopClock)
 
 const isIdle = computed(() => isIdleLarge(props.session, now.value))

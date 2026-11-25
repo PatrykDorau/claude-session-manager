@@ -5,6 +5,7 @@ import type { DashboardPage } from './dashboard'
 import { formatReset, severityColor } from '../usage'
 import Icon from './Icon.vue'
 import type { IconName } from './icons'
+import { onVisible, whenVisible } from './visibility'
 
 const props = defineProps<{
   page: DashboardPage
@@ -36,11 +37,17 @@ const select = (entry: Entry): void => {
 const SHORT_LABELS: Record<string, string> = { session: '5h', weekly_all: '7d' }
 const now = ref(Date.now())
 let clock: ReturnType<typeof setInterval> | null = null
+let stopVisible: (() => void) | null = null
+const tickNow = (): void => {
+  now.value = Date.now()
+}
 onMounted(() => {
-  clock = setInterval(() => (now.value = Date.now()), 30000)
+  clock = setInterval(whenVisible(tickNow), 30000)
+  stopVisible = onVisible(tickNow)
 })
 onBeforeUnmount(() => {
   if (clock) clearInterval(clock)
+  stopVisible?.()
 })
 const meters = computed(() =>
   props.usage?.ok

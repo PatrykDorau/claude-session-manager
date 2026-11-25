@@ -359,6 +359,7 @@ onBeforeUnmount(() => {
         :key="`${session.id}-${terminalTick}`"
         :session-id="session.id"
         :project-name="session.projectName"
+        :slept-at="session.sleptAt"
         @pointerdown.capture="markTerminal"
         @keydown.capture="markTerminal"
         @mode="mode = $event"

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { pickChromePort, claudeProjectKey, withTaskMcp, taskChromeProfile, seedProfile, writeTaskMcpFile, taskMcpArgs } from '../src/main/taskbrowser'
+import { PLAYWRIGHT_MCP_VERSION, playwrightCliPath, pickChromePort, claudeProjectKey, withTaskMcp, taskChromeProfile, seedProfile, writeTaskMcpFile, taskMcpArgs } from '../src/main/taskbrowser'
 
 describe('pickChromePort', () => {
   it('takes the lowest free port from 9301', () => {
@@ -23,20 +23,43 @@ describe('taskChromeProfile', () => {
   })
 })
 
+describe('playwrightCliPath', () => {
+  it('returns the installed cli path when it exists', () => {
+    const isExisting = (p: string): boolean => p === join('C:/ad', 'npm', 'node_modules', '@playwright', 'mcp', 'cli.js')
+    expect(playwrightCliPath('C:/ad', isExisting)).toBe(join('C:/ad', 'npm', 'node_modules', '@playwright', 'mcp', 'cli.js'))
+  })
+  it('returns null when the cli is missing', () => {
+    expect(playwrightCliPath('C:/ad', () => false)).toBeNull()
+  })
+})
+
 describe('withTaskMcp', () => {
   const server = (port: number): unknown => ({
     type: 'stdio',
     command: 'npx',
-    args: ['-y', '@playwright/mcp@latest', '--config', 'C:/cfg.json', '--cdp-endpoint', `http://localhost:${port}`],
+    args: ['-y', `@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`, '--config', 'C:/cfg.json', '--cdp-endpoint', `http://localhost:${port}`],
     env: {}
   })
+  it('uses node and the installed cli when present', () => {
+    const next = withTaskMcp({ projects: {} }, 'C:/repo/wt', 9304, 'C:/cfg.json', 'C:/cli.js')
+    expect(next.projects['C:/repo/wt'].mcpServers.playwright).toEqual({
+      type: 'stdio',
+      command: 'node',
+      args: ['C:/cli.js', '--config', 'C:/cfg.json', '--cdp-endpoint', 'http://localhost:9304'],
+      env: {}
+    })
+  })
+  it('falls back to npx with the pinned version', () => {
+    const next = withTaskMcp({ projects: {} }, 'C:/repo/wt', 9305, 'C:/cfg.json', null)
+    expect(next.projects['C:/repo/wt'].mcpServers.playwright.args[1]).toBe('@playwright/mcp@0.0.86')
+  })
   it('adds a folder-only Playwright server that points at the task Chrome', () => {
-    const next = withTaskMcp({ projects: {} }, String.raw`C:\repo\wt`, 9302, 'C:/cfg.json')
+    const next = withTaskMcp({ projects: {} }, String.raw`C:\repo\wt`, 9302, 'C:/cfg.json', null)
     expect(next.projects['C:/repo/wt'].mcpServers.playwright).toEqual(server(9302))
   })
   it('keeps everything else in the file and in the project', () => {
     const before = { numStartups: 4, projects: { 'C:/repo/wt': { allowedTools: ['x'], mcpServers: { other: { command: 'a' } } } } }
-    const next = withTaskMcp(before, 'C:/repo/wt', 9303, 'C:/cfg.json')
+    const next = withTaskMcp(before, 'C:/repo/wt', 9303, 'C:/cfg.json', null)
     expect(next.numStartups).toBe(4)
     expect(next.projects['C:/repo/wt'].allowedTools).toEqual(['x'])
     expect(next.projects['C:/repo/wt'].mcpServers.other).toEqual({ command: 'a' })
@@ -71,11 +94,11 @@ describe('seedProfile', () => {
 describe('writeTaskMcpFile', () => {
   it('writes a Playwright server for the task Chrome and returns its path', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mcp-'))
-    const file = writeTaskMcpFile(join(dir, 'mcp'), 'SOFRMPT-1', 9310, 'C:/cfg.json')
+    const file = writeTaskMcpFile(join(dir, 'mcp'), 'SOFRMPT-1', 9310, 'C:/cfg.json', null)
     expect(file).toBe(join(dir, 'mcp', 'SOFRMPT-1.json'))
     expect(JSON.parse(readFileSync(file!, 'utf8')).mcpServers.playwright.args).toEqual([
       '-y',
-      '@playwright/mcp@latest',
+      '@playwright/mcp@0.0.86',
       '--config',
       'C:/cfg.json',
       '--cdp-endpoint',

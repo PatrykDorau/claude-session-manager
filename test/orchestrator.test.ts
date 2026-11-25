@@ -194,6 +194,14 @@ describe('nextJobState', () => {
     expect(nextJobState(jobWith({ state: 'working' }), sessionWith('closed'))).toBe('finished')
   })
 
+  it('a closed session that is not asleep still finishes the job', () => {
+    expect(nextJobState(jobWith({ state: 'waiting' }), { ...sessionWith('closed'), isAsleep: false })).toBe('finished')
+  })
+
+  it('a slept session keeps its job state', () => {
+    expect(nextJobState(jobWith({ state: 'waiting' }), { ...sessionWith('closed'), isAsleep: true })).toBe('waiting')
+  })
+
   it('treats checkout as a turn end for tickets and as the end for MR jobs', () => {
     expect(nextJobState(jobWith({ state: 'working' }), sessionWith('checkout'))).toBe('waiting')
     expect(nextJobState(jobWith({ state: 'working', kind: 'review' }), sessionWith('checkout'))).toBe('finished')

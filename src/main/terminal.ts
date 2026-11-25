@@ -11,6 +11,11 @@ export const terminalMode = (s: {
 
 export const attachArgs = (sessionId: string): string[] => ['attach', sessionId.slice(0, 8)]
 
+export const attachStep = (isOpen: boolean, isKeepSize: boolean): 'spawn' | 'resize' | 'keep' => {
+  if (!isOpen) return 'spawn'
+  return isKeepSize ? 'keep' : 'resize'
+}
+
 export const resumeBackgroundArgs = (sessionId: string, ticket: string | null): string[] =>
   ticket ? ['--bg', '--resume', sessionId, '--name', ticket] : ['--bg', '--resume', sessionId]
 

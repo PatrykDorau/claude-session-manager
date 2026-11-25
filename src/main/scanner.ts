@@ -5,6 +5,8 @@ import { parseLockFile } from './lock'
 import { parseTranscriptHead, parseTail } from './transcript'
 import { mergeClearedSessions, parseClearLink, type RawSession } from './aggregate'
 import { createStageScanner } from './stages'
+import { createFileCache } from './filecache'
+import type { Stage } from '../renderer/src/types'
 
 const stageScanner = createStageScanner()
 
@@ -100,6 +102,18 @@ async function markerMtimes(dir: string): Promise<Map<string, number>> {
   return out
 }
 
+const transcriptCache = createFileCache<{ tail: ReturnType<typeof parseTail>; stages: Stage[] }>()
+
+const loadTranscript = (file: string, size: number) => {
+  const load = async () => ({
+    tail: parseTail(await readChunk(file, 65536, true, size)),
+    stages: await stageScanner.scan(file, size)
+  })
+  return load
+}
+
+const emptyTranscript = () => ({ tail: parseTail([]), stages: [] as Stage[] })
+
 export async function scanRaw(): Promise<ScanResult> {
   const [folders, needsInput, active, done] = await Promise.all([
     liveFolders(),
@@ -115,6 +129,7 @@ export async function scanRaw(): Promise<ScanResult> {
   }
 
   const raw: RawSession[] = []
+  const seen = new Set<string>()
   for (const p of projects) {
     const dir = join(projectsDir(), p)
     let files: string[] = []
@@ -130,7 +145,10 @@ export async function scanRaw(): Promise<ScanResult> {
       const id = f.replace(/\.jsonl$/, '')
       const head = await readHead(full, st.size)
       if (!head.cwd) continue
-      const tail = parseTail(await readChunk(full, 65536, true, st.size).catch(() => []))
+      seen.add(full)
+      const { tail, stages } = await transcriptCache
+        .get(full, st.size, st.mtimeMs, loadTranscript(full, st.size))
+        .catch(emptyTranscript)
       raw.push({
         id,
         cwd: head.cwd,
@@ -139,15 +157,17 @@ export async function scanRaw(): Promise<ScanResult> {
         title: head.title ?? null,
         mtimeMs: st.mtimeMs,
         needsInput: (needsInput.get(id) ?? -1) >= st.mtimeMs || tail.isQuestion,
+        needsInputMtimeMs: needsInput.get(id) ?? null,
         active: active.has(id),
         done: done.has(id),
         pendingToolUse: tail.pendingToolUse,
         model: tail.model,
         contextTokens: tail.contextTokens,
-        stages: await stageScanner.scan(full, st.size).catch(() => [])
+        stages
       })
     }
   }
+  transcriptCache.prune(seen)
   const cleared = await readClearLinks()
   return { raw: mergeClearedSessions(raw, cleared), lockedFolders: folders, cleared }
 }

@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { FlowAgent, FlowRole, FlowStage, FlowState, FlowTicket } from '../types'
 import type { TaskRow } from '../taskview'
 import { ago } from '../display'
+import { onVisible, whenVisible } from './visibility'
 import Icon from './Icon.vue'
 import type { IconName } from './icons'
 
@@ -23,12 +24,15 @@ const load = async (): Promise<void> => {
 }
 const reload = (): void => void load()
 let timer: ReturnType<typeof setInterval> | null = null
+let stopVisible: (() => void) | null = null
 const startTimer = (): void => {
   reload()
-  timer = setInterval(reload, 30_000)
+  timer = setInterval(whenVisible(reload), 30_000)
+  stopVisible = onVisible(reload)
 }
 const stopTimer = (): void => {
   if (timer) clearInterval(timer)
+  stopVisible?.()
 }
 onMounted(startTimer)
 onUnmounted(stopTimer)

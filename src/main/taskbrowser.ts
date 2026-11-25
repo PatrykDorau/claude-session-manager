@@ -14,14 +14,21 @@ export const claudeProjectKey = (path: string): string => path.replace(/\\/g, '/
 
 export const taskChromeProfile = (key: string): string => join('C:\\Chrome dev session', 'tasks', key)
 
-const playwrightServer = (port: number, configPath: string): object => ({
-  type: 'stdio',
-  command: 'npx',
-  args: ['-y', '@playwright/mcp@latest', '--config', configPath, '--cdp-endpoint', `http://localhost:${port}`],
-  env: {}
-})
+export const PLAYWRIGHT_MCP_VERSION = '0.0.86'
 
-export const withTaskMcp = (config: any, folder: string, port: number, configPath: string): any => {
+export const playwrightCliPath = (appData: string, isExisting: (p: string) => boolean): string | null => {
+  const cli = join(appData, 'npm', 'node_modules', '@playwright', 'mcp', 'cli.js')
+  return isExisting(cli) ? cli : null
+}
+
+const playwrightServer = (port: number, configPath: string, cliPath: string | null): object => {
+  const tail = ['--config', configPath, '--cdp-endpoint', `http://localhost:${port}`]
+  return cliPath
+    ? { type: 'stdio', command: 'node', args: [cliPath, ...tail], env: {} }
+    : { type: 'stdio', command: 'npx', args: ['-y', `@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`, ...tail], env: {} }
+}
+
+export const withTaskMcp = (config: any, folder: string, port: number, configPath: string, cliPath: string | null): any => {
   const key = claudeProjectKey(folder)
   const projects = config?.projects && typeof config.projects === 'object' ? config.projects : {}
   const project = projects[key] && typeof projects[key] === 'object' ? projects[key] : {}
@@ -34,17 +41,17 @@ export const withTaskMcp = (config: any, folder: string, port: number, configPat
         ...project,
         mcpServers: {
           ...servers,
-          playwright: playwrightServer(port, configPath)
+          playwright: playwrightServer(port, configPath, cliPath)
         }
       }
     }
   }
 }
 
-export const writeTaskMcp = (claudeJson: string, folder: string, port: number, configPath: string): boolean => {
+export const writeTaskMcp = (claudeJson: string, folder: string, port: number, configPath: string, cliPath: string | null): boolean => {
   try {
     const current = JSON.parse(readFileSync(claudeJson, 'utf8'))
-    const next = withTaskMcp(current, folder, port, configPath)
+    const next = withTaskMcp(current, folder, port, configPath, cliPath)
     const temp = `${claudeJson}.cockpit-tmp`
     writeFileSync(temp, JSON.stringify(next, null, 2), 'utf8')
     renameSync(temp, claudeJson)
@@ -54,11 +61,11 @@ export const writeTaskMcp = (claudeJson: string, folder: string, port: number, c
   }
 }
 
-export const writeTaskMcpFile = (dir: string, key: string, port: number, configPath: string): string | null => {
+export const writeTaskMcpFile = (dir: string, key: string, port: number, configPath: string, cliPath: string | null): string | null => {
   try {
     mkdirSync(dir, { recursive: true })
     const file = join(dir, `${key}.json`)
-    writeFileSync(file, JSON.stringify({ mcpServers: { playwright: playwrightServer(port, configPath) } }, null, 2), 'utf8')
+    writeFileSync(file, JSON.stringify({ mcpServers: { playwright: playwrightServer(port, configPath, cliPath) } }, null, 2), 'utf8')
     return file
   } catch {
     return null

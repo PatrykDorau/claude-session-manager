@@ -7,10 +7,16 @@ export interface PooledTerminal {
   fit: FitAddon
   element: HTMLDivElement
   isAttached: boolean
+  isWaitingToAttach: boolean
   openedAt: number
+  detachedAt: number
   users: number
   onExit: Set<(code: number) => void>
+  onDetach: Set<() => void>
+  onAttach: Set<() => void>
 }
+
+const runCallback = (cb: () => void): void => cb()
 
 const pool = new Map<string, PooledTerminal>()
 const keys = new Map<PooledTerminal, string>()
@@ -36,6 +42,49 @@ const listen = (): void => {
     entry.isAttached = false
     entry.onExit.forEach((cb) => cb(code))
   })
+  const onDetached = (id: string): void => {
+    const entry = pool.get(id)
+    if (!entry) return
+    entry.isAttached = false
+    entry.isWaitingToAttach = true
+    entry.detachedAt = Date.now()
+    entry.onDetach.forEach(runCallback)
+  }
+  window.api.onPtyDetached(onDetached)
+  const onAttached = (id: string, cols: number, rows: number): void => {
+    const entry = pool.get(id)
+    if (!entry || entry.isAttached) return
+    entry.isAttached = true
+    entry.isWaitingToAttach = false
+    entry.openedAt = Date.now()
+    entry.term.resize(cols, rows)
+    entry.onAttach.forEach(runCallback)
+  }
+  window.api.onPtyAttached(onAttached)
+}
+
+const HEARTBEAT_MS = 60_000
+let heartbeat: ReturnType<typeof setInterval> | null = null
+
+const isShown = (entry: PooledTerminal): boolean =>
+  entry.element.isConnected && entry.element.clientWidth > 0 && entry.element.clientHeight > 0
+
+export const visibleAttachedIds = (): string[] => {
+  const isVisibleAttached = ([, entry]: [string, PooledTerminal]): boolean => entry.isAttached && isShown(entry)
+  const idOf = ([id]: [string, PooledTerminal]): string => id
+  return [...pool].filter(isVisibleAttached).map(idOf)
+}
+
+const sendHeartbeat = (): void => {
+  if (document.visibilityState !== 'visible') return
+  const markSeen = (id: string): void => window.api.markTerminalSeen(id)
+  visibleAttachedIds().forEach(markSeen)
+}
+
+export const startHeartbeat = (): void => {
+  if (heartbeat) return
+  heartbeat = setInterval(sendHeartbeat, HEARTBEAT_MS)
+  document.addEventListener('visibilitychange', sendHeartbeat)
 }
 
 export const acquireTerminal = (sessionId: string): PooledTerminal => {
@@ -56,7 +105,7 @@ export const acquireTerminal = (sessionId: string): PooledTerminal => {
   })
   const fit = new FitAddon()
   term.loadAddon(fit)
-  const entry: PooledTerminal = { term, fit, element, isAttached: false, openedAt: 0, users: 1, onExit: new Set() }
+  const entry: PooledTerminal = { term, fit, element, isAttached: false, isWaitingToAttach: false, openedAt: 0, detachedAt: 0, users: 1, onExit: new Set(), onDetach: new Set(), onAttach: new Set() }
   term.onData((data) => window.api.writeTerminal(keys.get(entry) ?? sessionId, data))
   pool.set(sessionId, entry)
   keys.set(entry, sessionId)

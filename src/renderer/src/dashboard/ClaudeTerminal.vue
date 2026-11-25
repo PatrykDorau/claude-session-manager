@@ -3,9 +3,9 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, onActivated, nextTick
 import '@xterm/xterm/css/xterm.css'
 import type { SessionDetail, TerminalMode } from '../types'
 import { isQuickExit } from './dashboard'
-import { acquireTerminal, releaseTerminal, showTerminalIn, syncPtySize } from './terminalpool'
+import { acquireTerminal, releaseTerminal, showTerminalIn, startHeartbeat, syncPtySize } from './terminalpool'
 
-const props = defineProps<{ sessionId: string; projectName: string; isAutoResume?: boolean }>()
+const props = defineProps<{ sessionId: string; projectName: string; isAutoResume?: boolean; sleptAt?: number | null }>()
 const emit = defineEmits<{ mode: [mode: TerminalMode | null]; exited: []; focusVscode: [] }>()
 
 const mode = ref<TerminalMode | null>(null)
@@ -24,7 +24,10 @@ const setMode = (next: TerminalMode | null): void => {
 }
 
 const FIT_DELAY_MS = 120
+const RETRY_AFTER_DETACH_MS = 5000
+const RETRY_DELAY_MS = 2000
 let fitTimer: ReturnType<typeof setTimeout> | null = null
+let retryTimer: ReturnType<typeof setTimeout> | null = null
 
 const isVisible = (): boolean => !!host.value?.clientWidth && !!host.value.clientHeight
 const adopt = (): void => {
@@ -41,9 +44,54 @@ const scheduleFit = (): void => {
   if (fitTimer) clearTimeout(fitTimer)
   fitTimer = setTimeout(fitTerminal, FIT_DELAY_MS)
 }
+const attachWhenVisible = async (): Promise<void> => {
+  if (mode.value !== 'attach' || !shared.isWaitingToAttach || isBusy.value) return
+  if (document.visibilityState !== 'visible' || !isVisible()) return
+  shared.isWaitingToAttach = false
+  const current = await window.api.terminalMode(props.sessionId)
+  if (shared.isAttached) return
+  if (current === 'attach') {
+    await resumeHere()
+    return
+  }
+  if (current === 'elsewhere' && Date.now() - shared.detachedAt < RETRY_AFTER_DETACH_MS) {
+    shared.detachedAt = 0
+    shared.isWaitingToAttach = true
+    retryTimer = setTimeout(retryAttach, RETRY_DELAY_MS)
+    return
+  }
+  setMode(current)
+  await loadDetail()
+}
+const retryAttach = (): void => {
+  retryTimer = null
+  void attachWhenVisible()
+}
 const onHostResize = (): void => {
   adopt()
   scheduleFit()
+  void attachWhenVisible()
+}
+const onDetach = (): void => {
+  void attachWhenVisible()
+}
+shared.onDetach.add(onDetach)
+const onAttach = async (): Promise<void> => {
+  if (mode.value !== 'attach') {
+    error.value = null
+    endedCode.value = null
+    setMode('attach')
+    await nextTick()
+    adopt()
+    watchHost()
+  }
+  fitTerminal()
+}
+shared.onAttach.add(onAttach)
+const watchHost = (): void => {
+  if (observer || !host.value) return
+  observer = new ResizeObserver(onHostResize)
+  observer.observe(host.value)
 }
 const onExit = (code: number): void => {
   if (isQuickExit(shared.openedAt, Date.now())) endedCode.value = code
@@ -55,18 +103,18 @@ onActivated(() => {
   adopt()
   fitTerminal()
   if (isVisible()) shared.term.focus()
+  void attachWhenVisible()
 })
 
 const createTerminal = async (): Promise<{ cols: number; rows: number }> => {
   await nextTick()
   if (host.value && (isVisible() || !shared.element.parentElement))
     showTerminalIn(shared, host.value)
-  shared.fit.fit()
-  syncPtySize(shared, props.sessionId)
-  if (!observer && host.value) {
-    observer = new ResizeObserver(onHostResize)
-    observer.observe(host.value)
+  if (isVisible()) {
+    shared.fit.fit()
+    syncPtySize(shared, props.sessionId)
   }
+  watchHost()
   if (isVisible()) shared.term.focus()
   return { cols: shared.term.cols, rows: shared.term.rows }
 }
@@ -75,10 +123,15 @@ const runAttached = async (start: (cols: number, rows: number) => Promise<{ erro
   isBusy.value = true
   error.value = null
   endedCode.value = null
+  shared.isWaitingToAttach = false
   mode.value = 'attach'
   emit('mode', null)
   try {
     const size = await createTerminal()
+    if (shared.isAttached) {
+      emit('mode', 'attach')
+      return true
+    }
     const result = await start(size.cols, size.rows)
     error.value = result.error
     shared.openedAt = Date.now()
@@ -129,17 +182,33 @@ const lastReply = computed(() => {
   return text.length > 320 ? `${text.slice(0, 319)}…` : text
 })
 
+const sleepLabel = computed(() =>
+  props.sleptAt ? `Asleep after ${window.api.getSettings().sleepAfterHours} h without activity` : null
+)
+
 const loadDetail = async (): Promise<void> => {
   detail.value = await window.api.getSessionDetail(props.sessionId)
 }
 
 onMounted(async () => {
+  startHeartbeat()
+  document.addEventListener('visibilitychange', attachWhenVisible)
   if (shared.isAttached) {
     setMode('attach')
     await createTerminal()
     return
   }
   const initial = await window.api.terminalMode(props.sessionId)
+  if (initial === 'attach') {
+    mode.value = 'attach'
+    await nextTick()
+  }
+  if (initial === 'attach' && !isVisible()) {
+    shared.isWaitingToAttach = true
+    setMode('attach')
+    watchHost()
+    return
+  }
   if (initial === 'attach' || (initial === 'resume' && props.isAutoResume)) {
     await resumeHere()
     return
@@ -149,9 +218,13 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', attachWhenVisible)
   observer?.disconnect()
   if (fitTimer) clearTimeout(fitTimer)
+  if (retryTimer) clearTimeout(retryTimer)
   shared.onExit.delete(onExit)
+  shared.onDetach.delete(onDetach)
+  shared.onAttach.delete(onAttach)
   releaseTerminal(props.sessionId)
 })
 </script>
@@ -174,6 +247,7 @@ onBeforeUnmount(() => {
           <span class="dollar">$</span>
           {{ mode === 'resume' ? 'claude --resume' : 'claude attach' }} <span class="dim">{{ sessionId.slice(0, 8) }}</span>
         </div>
+        <p v-if="mode === 'resume' && sleepLabel" class="dim">{{ sleepLabel }}</p>
         <p v-if="mode === 'resume'">This session is closed. Open it here to continue the conversation in this terminal.</p>
         <p v-else-if="mode === 'elsewhere'">
           This session is open in VS Code. Opening it here moves it to the dashboard; Claude keeps working and

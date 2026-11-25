@@ -4,6 +4,7 @@ import type { DevServer, MyMrs, MyTasks, Session } from '../types'
 import type { DashboardPage } from './dashboard'
 import { statusCounts } from './statuscounts'
 import { ago } from '../display'
+import { onVisible, whenVisible } from './visibility'
 
 const props = defineProps<{ sessions: Session[]; servers: DevServer[]; myTasks: MyTasks; myMrs: MyMrs }>()
 const emit = defineEmits<{ open: [page: DashboardPage] }>()
@@ -11,11 +12,17 @@ const emit = defineEmits<{ open: [page: DashboardPage] }>()
 const isJumpKeyReady = window.api.isJumpKeyReady()
 const now = ref(Date.now())
 let timer: ReturnType<typeof setInterval> | null = null
+let stopVisible: (() => void) | null = null
+const tickNow = (): void => {
+  now.value = Date.now()
+}
 onMounted(() => {
-  timer = setInterval(() => (now.value = Date.now()), 30_000)
+  timer = setInterval(whenVisible(tickNow), 30_000)
+  stopVisible = onVisible(tickNow)
 })
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer)
+  stopVisible?.()
 })
 
 const counts = computed(() => statusCounts(props.sessions, props.servers))

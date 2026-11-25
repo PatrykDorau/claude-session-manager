@@ -18,6 +18,8 @@ const alwaysOnTop = ref(initial.alwaysOnTop)
 const launchOnStartup = ref(initial.launchOnStartup)
 const isDockReserving = ref(initial.isDockReserving)
 const isDockOnTop = ref(initial.isDockOnTop)
+const isSleepEnabled = ref(initial.isSleepEnabled)
+const sleepAfterHours = ref(initial.sleepAfterHours)
 const clickAction = ref(initial.clickAction)
 const alertSound = ref(localStorage.getItem('alertSound') !== '0')
 const soundName = ref<SoundName>((localStorage.getItem('alertSoundName') as SoundName) || 'chime')
@@ -128,6 +130,18 @@ function toggleDockOnTop(): void {
 function toggleStartup(): void {
   launchOnStartup.value = !launchOnStartup.value
   window.api.setSettings({ launchOnStartup: launchOnStartup.value })
+}
+const toggleSleep = (): void => {
+  isSleepEnabled.value = !isSleepEnabled.value
+  window.api.setSettings({ isSleepEnabled: isSleepEnabled.value })
+}
+const saveSleepAfterHours = (): void => {
+  const value = Number(sleepAfterHours.value)
+  if (!Number.isFinite(value) || value <= 0) {
+    sleepAfterHours.value = window.api.getSettings().sleepAfterHours
+    return
+  }
+  window.api.setSettings({ sleepAfterHours: value })
 }
 function toggleColorblind(): void {
   colorblind.value = !colorblind.value
@@ -383,6 +397,21 @@ function copyDiag(): void {
       <span>Launch on startup</span>
       <span class="sw" :class="{ on: launchOnStartup }" />
     </div>
+    <div class="toggle" @click="toggleSleep">
+      <span>Sleep idle background sessions</span>
+      <span class="sw" :class="{ on: isSleepEnabled }" />
+    </div>
+    <label v-if="isSleepEnabled" class="field">
+      <span class="flbl">after (hours)</span>
+      <input
+        v-model.number="sleepAfterHours"
+        class="inp"
+        type="number"
+        min="0.01"
+        step="0.5"
+        @change="saveSleepAfterHours"
+      />
+    </label>
 
     <div class="field acct">
       <span class="flbl">Anthropic account</span>

@@ -146,6 +146,8 @@ const api = {
     orchestratorMaxParallel: number
     orchestratorBots: string
     timesheetHours: number
+    isSleepEnabled: boolean
+    sleepAfterHours: number
   } => ipcRenderer.sendSync('get-settings'),
   setSettings: (patch: {
     jiraBase?: string
@@ -167,6 +169,8 @@ const api = {
     mrMention?: string
     orchestratorMaxParallel?: number
     orchestratorBots?: string
+    isSleepEnabled?: boolean
+    sleepAfterHours?: number
   }): void => {
     ipcRenderer.send('set-settings', patch)
   },
@@ -224,10 +228,12 @@ const api = {
   writeTerminal: (id: string, data: string): void => ipcRenderer.send('terminal-write', id, data),
   resizeTerminal: (id: string, cols: number, rows: number): void => ipcRenderer.send('terminal-resize', id, cols, rows),
   closeTerminal: (id: string): void => ipcRenderer.send('terminal-close', id),
+  markTerminalSeen: (id: string): void => ipcRenderer.send('terminal-seen', id),
   sendPrompt: (id: string, text: string): Promise<{ error: string | null }> =>
     ipcRenderer.invoke('terminal-send-prompt', id, text),
   stopTurn: (id: string): void => ipcRenderer.send('terminal-stop-turn', id),
   closeSession: (id: string): Promise<{ error: string | null }> => ipcRenderer.invoke('session-close', id),
+  sleepSession: (id: string): Promise<{ error: string | null }> => ipcRenderer.invoke('session-sleep', id),
   takeOverInteractive: (id: string, cols: number, rows: number): Promise<{ error: string | null }> =>
     ipcRenderer.invoke('terminal-take-over-interactive', id, cols, rows),
   takeOver: (id: string, cols: number, rows: number): Promise<{ error: string | null }> =>
@@ -267,6 +273,22 @@ const api = {
     const onExit = (_e: unknown, id: string, code: number): void => cb(id, code)
     ipcRenderer.on('pty-exit', onExit)
     return () => ipcRenderer.removeListener('pty-exit', onExit)
+  },
+  onPtyDetached: (cb: (id: string) => void): (() => void) => {
+    const onDetached = (_e: unknown, id: string): void => cb(id)
+    ipcRenderer.on('pty-detached', onDetached)
+    const removeDetached = (): void => {
+      ipcRenderer.removeListener('pty-detached', onDetached)
+    }
+    return removeDetached
+  },
+  onPtyAttached: (cb: (id: string, cols: number, rows: number) => void): (() => void) => {
+    const onAttached = (_e: unknown, id: string, cols: number, rows: number): void => cb(id, cols, rows)
+    ipcRenderer.on('pty-attached', onAttached)
+    const removeAttached = (): void => {
+      ipcRenderer.removeListener('pty-attached', onAttached)
+    }
+    return removeAttached
   },
   openDashboard: (): void => ipcRenderer.send('open-dashboard'),
   startServer: (
