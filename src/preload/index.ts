@@ -387,6 +387,8 @@ const api = {
   signInGitlab: (): Promise<boolean> => ipcRenderer.invoke('gitlab-sign-in'),
   getMrExplanations: (key: string): Promise<Record<string, string>> => ipcRenderer.invoke('mr-explanations', key),
   getTicketMr: (ticket: string): Promise<import('../renderer/src/types').TicketMr | null> => ipcRenderer.invoke('ticket-mr', ticket),
+  checkRelease: (tickets: { key: string; summary: string; status: string }[]): Promise<import('../renderer/src/types').ReleaseRow[]> => ipcRenderer.invoke('release-check', tickets),
+  runRelease: (keys: string[]): Promise<import('../renderer/src/types').ReleaseResult[]> => ipcRenderer.invoke('release-run', keys),
   mrReview: (key: string, action: import('../renderer/src/types').MrReviewAction): Promise<{ error: string | null; isCancelled: boolean }> =>
     ipcRenderer.invoke('mr-review', key, action),
   mrCommentable: (key: string, folder: string | null, isReadOnly: boolean, path: string | null): Promise<import('../renderer/src/types').MrCommentable> =>

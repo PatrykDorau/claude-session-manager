@@ -137,7 +137,8 @@ import {
 import { worktreeRows, parseCount, isLinkedWorktreeGitFile, branchToDelete, nodeModulesAction } from './worktrees'
 import { serverAction, userStoppedMessage } from './serverguard'
 import { taskContext, startPrompt, parseBgId, ticketPrefix, repoRoots, startArgs, claudeExeCandidates, attachCommand, repoForProject, reviewArgs, addressArgs, scoreArgs, insightsTestArgs, warmUpTask, mediaFiles } from './tasks'
-import { searchIssues, fetchDescription, postComment, fetchTransitions, doTransition, fetchTicketDetail, fetchPriority, releaseTransition } from './jira'
+import { searchIssues, fetchDescription, postComment, fetchTransitions, doTransition, fetchTicketDetail, fetchPriority, releaseTransition, unassignIssue } from './jira'
+import { checkRelease, isReleasable, releaseTicket, findTestCases, type ReleaseDeps } from './release'
 import { isSafeRef, worktreeForBranch, parseStatusPaths, safeRelPath, parseStatus, isNoisePath, parseNameStatus, countChanges, parseGrep, searchArgs, parseNumstat, parseRawBlobs, type CodeMatch, type LineCounts } from './ide'
 import { parseExplainDoc, explainArgs, explainName } from './explaindoc'
 import { buildCatalog, readCatalogItem, isInsideDir } from './catalog'
@@ -192,7 +193,7 @@ import {
   type MergeOptions
 } from './mractions'
 import { anchorPosition, withDraftTitle, commentableState, reviewConfirm, explanationFiles } from './mrreview'
-import type { MrCommentable, MrLineAnchor, MrLinePosition, MrReviewAction } from '../renderer/src/types'
+import type { MrCommentable, MrLineAnchor, MrLinePosition, MrReviewAction, ReleaseResult, ReleaseRow } from '../renderer/src/types'
 import { clearInheritedSessionMarker } from './env'
 import { nearestEdge, dockBounds, pickDisplay } from './dock'
 import { registerAppBar, unregisterAppBar } from './appbar'
@@ -4296,6 +4297,61 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
     const token = appState.settings.gitlabToken.trim()
     if (!token || !/^[A-Z][A-Z0-9]*-\d+$/i.test(ticket ?? '')) return null
     return findTicketMr(appState.settings.gitlabBase, token, ticket.toUpperCase())
+  })
+  ipcMain.handle('release-check', async (_e, tickets: { key: string; summary: string; status: string }[]): Promise<ReleaseRow[]> => {
+    const token = appState.settings.gitlabToken.trim()
+    if (!token) return []
+    const rows: ReleaseRow[] = []
+    for (const ticket of tickets ?? []) rows.push(await checkRelease(appState.settings.gitlabBase, token, ticket, opisDir()))
+    return rows
+  })
+  ipcMain.handle('release-run', async (_e, requestedKeys: string[]): Promise<ReleaseResult[]> => {
+    const keys = Array.isArray(requestedKeys) ? requestedKeys : []
+    const jiraToken = appState.settings.jiraToken.trim()
+    const gitlabToken = appState.settings.gitlabToken.trim()
+    const toError = (key: string, error: string): ReleaseResult => ({ key, error, done: [] })
+    const toMissingTokenError = (key: string): ReleaseResult => toError(key, 'Add a Jira and GitLab token in Settings first')
+    if (!jiraToken || !gitlabToken) return keys.map(toMissingTokenError)
+    const skipped: ReleaseResult[] = []
+    const ready: string[] = []
+    for (const key of keys) {
+      const issue = await fetchIssue(appState.settings.jiraBase, jiraToken, key)
+      if (!issue) {
+        skipped.push(toError(key, `Not ready: could not read ${key} from Jira`))
+        continue
+      }
+      const row = await checkRelease(appState.settings.gitlabBase, gitlabToken, { key, summary: issue.summary ?? '', status: issue.status }, opisDir())
+      if (isReleasable(row)) ready.push(key)
+      else skipped.push(toError(key, `Not ready: ${row.blockers[0] ?? 'status is not Waiting for internal release'}`))
+    }
+    if (!ready.length) return skipped
+    const detail = `${ready.join('\n')}\n\nMoves each to Internal testing, posts test-case.md as a comment and removes you as assignee.`
+    if (!(await confirmMr(`Hand ${ready.length} ticket(s) to QA?`, 'Hand to QA', detail))) return []
+    const base = appState.settings.jiraBase
+    const toBody = (c: { body: string }): string => c.body
+    const readStatus = async (key: string): Promise<string | null> => (await fetchIssue(base, jiraToken, key))?.status ?? null
+    const readTransitions = (key: string): ReturnType<typeof fetchTransitions> => fetchTransitions(base, jiraToken, key)
+    const runTransition = (key: string, id: string): Promise<boolean> => doTransition(base, jiraToken, key, id)
+    const readComments = async (key: string): Promise<string[] | null> => {
+      const detailed = await fetchTicketDetail(base, jiraToken, key)
+      return detailed ? detailed.comments.map(toBody) : null
+    }
+    const addComment = (key: string, body: string): Promise<boolean> => postComment(base, jiraToken, key, body)
+    const removeAssignee = (key: string): Promise<boolean> => unassignIssue(base, jiraToken, key)
+    const readTestCases = (key: string): string | null => findTestCases(opisDir(), key)
+    const deps: ReleaseDeps = {
+      status: readStatus,
+      transitions: readTransitions,
+      transition: runTransition,
+      comments: readComments,
+      comment: addComment,
+      unassign: removeAssignee,
+      testCases: readTestCases
+    }
+    const done: ReleaseResult[] = []
+    for (const key of ready) done.push(await releaseTicket(key, deps))
+    void refreshMyTasks()
+    return [...skipped, ...done]
   })
   ipcMain.handle('mr-review', async (_e, key: string, action: MrReviewAction) => {
     const found = mrForAction(key)

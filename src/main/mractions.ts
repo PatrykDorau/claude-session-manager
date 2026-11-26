@@ -139,7 +139,7 @@ export const parseDraftNotes = (json: unknown): MrDraftNote[] =>
         }))
     : []
 
-const request = async (
+export const request = async (
   base: string,
   token: string,
   method: 'GET' | 'POST' | 'PUT' | 'DELETE',
@@ -452,7 +452,7 @@ export const fetchMrDiffFile = async (
   return { oldPath: asText(hit.old_path), newPath: asText(hit.new_path), diff: asText(hit.diff), isTruncated: hit.too_large === true || hit.collapsed === true }
 }
 
-const mentionsTicket = (text: string, ticket: string): boolean => new RegExp(`(^|[^A-Z0-9-])${ticket}(?![0-9])`, 'i').test(text)
+export const mentionsTicket = (text: string, ticket: string): boolean => new RegExp(`(^|[^A-Z0-9-])${ticket}(?![0-9])`, 'i').test(text)
 
 const STATE_RANK: Record<string, number> = { opened: 0, merged: 1 }
 

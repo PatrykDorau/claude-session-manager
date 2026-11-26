@@ -219,6 +219,8 @@ declare global {
       signInGitlab: () => Promise<boolean>
       getMrExplanations: (key: string) => Promise<Record<string, string>>
       getTicketMr: (ticket: string) => Promise<import('../renderer/src/types').TicketMr | null>
+      checkRelease: (tickets: { key: string; summary: string; status: string }[]) => Promise<import('../renderer/src/types').ReleaseRow[]>
+      runRelease: (keys: string[]) => Promise<import('../renderer/src/types').ReleaseResult[]>
       mrReview: (key: string, action: import('../renderer/src/types').MrReviewAction) => Promise<{ error: string | null; isCancelled: boolean }>
       mrCommentable: (key: string, folder: string | null, isReadOnly: boolean, path: string | null) => Promise<import('../renderer/src/types').MrCommentable>
       refreshLists: () => Promise<boolean>

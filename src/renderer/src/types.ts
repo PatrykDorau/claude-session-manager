@@ -662,3 +662,10 @@ export interface CatalogRead {
   body: string
   siblings: string[]
 }
+
+export interface ReleaseMr { iid: number; projectId: number; state: 'opened' | 'merged'; title: string; url: string; targetBranch: string; mergeSha: string | null; mergedAt: string | null }
+export interface ReleaseDeploy { environment: string; status: string }
+export interface ReleaseCheck { mr: ReleaseMr; pipeline: { id: number; status: string } | null; deploys: ReleaseDeploy[] | null }
+export type ReleaseStage = 'ready' | 'waiting' | 'unfinished'
+export interface ReleaseRow { key: string; summary: string; status: string; stage: ReleaseStage; blockers: string[]; checks: ReleaseCheck[]; hasTestCases: boolean }
+export interface ReleaseResult { key: string; error: string | null; done: string[] }
