@@ -13,6 +13,8 @@ import ClaudeTerminal from './ClaudeTerminal.vue'
 import CodeView from './CodeView.vue'
 import Splitter from './Splitter.vue'
 import ContextChip from './ContextChip.vue'
+import ClaudeStrip from './ClaudeStrip.vue'
+import SessionMenu from './SessionMenu.vue'
 import { clampSize, readSize, writeSize, readFlag } from './dashboard'
 import QuickActions from './QuickActions.vue'
 import ServerPanel from './ServerPanel.vue'
@@ -29,22 +31,10 @@ const REVIEW_ACTIONS: QuickAction[] = [
 ]
 
 const tab = ref<'overview' | 'changes' | 'server'>('overview')
-const isCodeOpen = ref(!readFlag('dash.mrCodeHidden'))
-const isClaudeOpen = ref(!readFlag('dash.mrClaudeHidden'))
-const isBothOpen = computed(() => isCodeOpen.value && isClaudeOpen.value)
-const savePanes = (): void => {
-  writeSize('dash.mrCodeHidden', !isCodeOpen.value)
-  writeSize('dash.mrClaudeHidden', !isClaudeOpen.value)
-}
-const toggleCode = (): void => {
-  isCodeOpen.value = !isCodeOpen.value
-  if (!isCodeOpen.value) isClaudeOpen.value = true
-  savePanes()
-}
-const toggleClaude = (): void => {
-  isClaudeOpen.value = !isClaudeOpen.value
-  if (!isClaudeOpen.value) isCodeOpen.value = true
-  savePanes()
+const isClaudeCollapsed = ref(readFlag('dash.mrClaudeCollapsed'))
+const toggleCollapsed = (): void => {
+  isClaudeCollapsed.value = !isClaudeCollapsed.value
+  writeSize('dash.mrClaudeCollapsed', isClaudeCollapsed.value)
 }
 const panes = ref<HTMLDivElement | null>(null)
 const codeWidth = ref(readSize('dash.mrCodeWidth', 760))
@@ -53,14 +43,11 @@ const resizeCode = (delta: number): void => {
   codeWidth.value = clampSize(codeWidth.value + delta, 320, total - 360)
 }
 const saveCodeWidth = (): void => writeSize('dash.mrCodeWidth', codeWidth.value)
-const isOverviewClaudeOpen = ref(readFlag('dash.mrOverviewClaude'))
-const toggleOverviewClaude = (): void => {
-  isOverviewClaudeOpen.value = !isOverviewClaudeOpen.value
-  writeSize('dash.mrOverviewClaude', isOverviewClaudeOpen.value)
-}
 const docWidth = ref(readSize('dash.mrDocWidth', 820))
-const isClaudeShown = computed(() => (tab.value === 'changes' && isClaudeOpen.value) || (tab.value === 'overview' && isOverviewClaudeOpen.value))
-const isSplit = computed(() => (tab.value === 'changes' && isBothOpen.value) || (tab.value === 'overview' && isOverviewClaudeOpen.value))
+const isClaudeShown = computed(() => tab.value !== 'server' && !isClaudeCollapsed.value)
+const isSplit = computed(() => isClaudeShown.value)
+const stripLabel = computed(() => session.value?.name ?? session.value?.projectName ?? null)
+const stripColor = computed(() => (session.value ? (session.value.isLive ? 'var(--ok)' : '#666d78') : null))
 const resizeLeft = (delta: number): void => {
   if (tab.value === 'changes') {
     resizeCode(delta)
@@ -160,17 +147,13 @@ const openJira = (key: string): void => window.api.openTicket(key)
 const addressComments = async (): Promise<void> => {
   startError.value = null
   tab.value = 'changes'
-  if (!isClaudeOpen.value) toggleClaude()
+  isClaudeCollapsed.value = false
+  writeSize('dash.mrClaudeCollapsed', false)
   const result = await startAddressing()
   startError.value = result.error
   if (result.sessionId) pickedSessionId.value = result.sessionId
 }
 const chip = computed(() => reviewLabel(props.row.review))
-const facts = computed(() => {
-  const list: string[] = []
-  if (session.value?.model) list.push(session.value.model.replace(/^claude-/, ''))
-  return list
-})
 
 const loadFiles = async (): Promise<void> => {
   files.value = undefined
@@ -192,7 +175,8 @@ const review = async (): Promise<void> => {
 const terminal = ref<{ takeOver: () => Promise<boolean>; paste: (text: string) => void } | null>(null)
 const askClaude = (text: string): void => {
   tab.value = 'changes'
-  if (!isClaudeOpen.value) toggleClaude()
+  isClaudeCollapsed.value = false
+  writeSize('dash.mrClaudeCollapsed', false)
   terminal.value?.paste(text)
 }
 const takeOverHere = async (): Promise<boolean> => (terminal.value ? terminal.value.takeOver() : false)
@@ -222,7 +206,6 @@ const loadServerCwd = async (): Promise<void> => {
 const codeView = ref<{ goToFileLine: (path: string, line: number) => Promise<void> } | null>(null)
 const openLine = async (path: string, line: number): Promise<void> => {
   tab.value = 'changes'
-  if (!isCodeOpen.value) toggleCode()
   await nextTick()
   await codeView.value?.goToFileLine(path, line)
 }
@@ -297,14 +280,7 @@ onBeforeUnmount(() => {
         </span>
         <span class="grow" />
         <ContextChip v-if="session" :session="session" :mode="mode" />
-        <div v-if="tab === 'changes'" class="seg" :title="['Show or hide the panes', ...facts].join(' · ')">
-          <button :class="{ on: isCodeOpen }" @click="toggleCode"><Icon name="code" :size="14" />Code</button>
-          <button :class="{ on: isClaudeOpen }" @click="toggleClaude"><Icon name="terminal" :size="14" />Claude</button>
-        </div>
-        <div v-if="tab === 'overview'" class="seg" :title="['Show Claude next to the overview', ...facts].join(' · ')">
-          <button :class="{ on: isOverviewClaudeOpen }" @click="toggleOverviewClaude"><Icon name="terminal" :size="14" />Claude</button>
-        </div>
-        <button v-if="isClaudeShown" class="stop" :disabled="mode !== 'attach'" title="Interrupt Claude's current turn (Esc)" @click="stopTurn"><Icon name="stop" :size="12" />Stop</button>
+        <SessionMenu v-if="session" :color="stripColor" :is-stop-disabled="mode !== 'attach'" @stop="stopTurn" />
         <MrHeaderControls part="actions" :row="row" :state="state" :is-gone="isGone" :is-address-pending="isAddressPending" :open-items="openItems" @address-comments="addressComments" />
         <button v-if="!isMine" class="btn primary" :disabled="isStarting || isGone" @click="review">
           <Icon name="play" :size="13" />{{ isStarting ? 'Starting review…' : row.review === 'not-reviewed' ? 'Review' : 'Review again' }}
@@ -317,7 +293,7 @@ onBeforeUnmount(() => {
     </header>
 
     <div v-show="tab !== 'server'" ref="panes" class="panes">
-      <section v-show="tab === 'changes' && isCodeOpen" class="pane code" :style="isBothOpen ? { flex: 'none', width: `${codeWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
+      <section v-show="tab === 'changes'" class="pane code" :style="isSplit ? { flex: 'none', width: `${codeWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
         <CodeView
           ref="codeView"
           :cwd="codeCwd"
@@ -336,11 +312,15 @@ onBeforeUnmount(() => {
           @file-shown="showFile"
         />
       </section>
-      <section v-show="tab === 'overview'" class="pane doc" :style="isOverviewClaudeOpen ? { flex: 'none', width: `${docWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
+      <section v-show="tab === 'overview'" class="pane doc" :style="isSplit ? { flex: 'none', width: `${docWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
         <MrOverview :row="row" :state="state" :is-gone="isGone" @open-line="openLine" @address-comments="addressComments" />
       </section>
       <Splitter v-if="isSplit" @resize="resizeLeft" @done="saveLeftWidth" />
     <section v-show="isClaudeShown" class="pane claude">
+      <div class="chead">
+        <span class="grow" />
+        <button class="collapse" title="Hide Claude" @click="toggleCollapsed">▸</button>
+      </div>
       <div v-if="paneSessions.length > 1" class="stabs">
         <button
           v-for="t in paneSessions"
@@ -378,6 +358,7 @@ onBeforeUnmount(() => {
       </div>
       <QuickActions :session-id="session?.id ?? null" :mode="mode" :take-over="takeOverHere" :extra="isMine ? [] : REVIEW_ACTIONS" :values="actionValues" :stage="isMine ? (taskStage ?? 'mr') : null" />
     </section>
+      <ClaudeStrip v-if="tab !== 'server' && isClaudeCollapsed" :label="stripLabel" :color="stripColor" @expand="toggleCollapsed" />
     </div>
 
     <section v-show="tab === 'server'" class="pane">
@@ -541,29 +522,6 @@ onBeforeUnmount(() => {
   opacity: 0.4;
   cursor: default;
 }
-.stop {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 10px;
-  font: 500 12.5px var(--font-ui);
-  color: var(--danger);
-  background: none;
-  border: 1px solid var(--danger-line);
-  border-radius: 7px;
-  cursor: pointer;
-}
-.stop:hover:not(:disabled) {
-  background: var(--danger-soft);
-  border-color: var(--danger);
-}
-.stop:disabled {
-  color: var(--text-5);
-  border-color: var(--line);
-  cursor: default;
-}
 .warn {
   margin: 0 0 10px;
   font-size: 12px;
@@ -702,34 +660,25 @@ onBeforeUnmount(() => {
 .stabs i.live {
   background: var(--ok, #3fb950);
 }
-.seg {
+.chead {
   flex: none;
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  background: var(--bg-0);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  display: flex;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
 }
-.seg button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 24px;
-  padding: 0 10px;
-  font: 500 12.5px var(--font-ui);
+.collapse {
+  width: 26px;
+  height: 26px;
+  font-size: 13px;
   color: var(--text-4);
   background: none;
   border: none;
   border-radius: 6px;
   cursor: pointer;
 }
-.seg button:hover {
-  color: var(--text-2);
-}
-.seg button.on {
+.collapse:hover {
   color: var(--text);
-  background: var(--bg-4);
+  background: var(--bg-2);
 }
 .pane {
   flex: 1;

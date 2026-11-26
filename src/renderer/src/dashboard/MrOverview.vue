@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import type { MenuItem, MrRow } from '../types'
+import type { MenuItem, MrReviewAction, MrRow } from '../types'
+import { readFlag, writeSize } from './dashboard'
 import { PIPELINE_COLOR, type MrState } from './mrstate'
 import { draftsForThread, generalDrafts } from './mrreview'
+import { filterThreads, threadCounts, noteLink, type ThreadFilter } from './mrfilter'
+import MenuButton from './MenuButton.vue'
 import { mergeHint } from './mrs'
 import { renderGitlabHtml, renderMarkdown, toUploadWebUrl, isVideoUrl, parseVersionLink } from './mrhtml'
 import Icon from './Icon.vue'
@@ -32,6 +35,7 @@ const {
   branchUrl,
   overview,
   noteHtml,
+  threadFilter: filter,
   expandedResolved,
   toggleResolved,
   versionPopup,
@@ -54,6 +58,53 @@ const headerOpenItems = computed<MenuItem[]>(
 const addressComments = (): void => emit('address-comments')
 const openLine = (path: string, line: number): void => emit('open-line', path, line)
 const comment = ref('')
+const isSystemShown = ref(readFlag('dash.mrSystemShown'))
+const setFilter = (next: ThreadFilter): void => {
+  filter.value = next
+}
+const persistSystemShown = (value: boolean): void => writeSize('dash.mrSystemShown', value)
+watch(isSystemShown, persistSystemShown)
+const shownThreads = computed(() => filterThreads(threads.value, drafts.value, filter.value, isSystemShown.value, keptIds.value))
+const counts = computed(() => threadCounts(threads.value, drafts.value))
+const emptyText = computed(() => (filter.value === 'open' ? 'No open threads' : filter.value === 'resolved' ? 'No resolved threads' : 'No threads'))
+const commitsText = computed(() => {
+  const n = status.value?.commits ?? null
+  return n === null ? '' : ` · ${n} ${n === 1 ? 'commit' : 'commits'}`
+})
+const copyNoteLink = (noteId: number): void => {
+  void navigator.clipboard.writeText(noteLink(props.row.url, noteId))
+}
+const makeStartEdit = (key: string, body: string): (() => void) => {
+  const runStartEdit = (): void => startEdit(key, body)
+  return runStartEdit
+}
+const makeCopyNoteLink = (noteId: number): (() => void) => {
+  const runCopyNoteLink = (): void => copyNoteLink(noteId)
+  return runCopyNoteLink
+}
+const makeReview = (action: MrReviewAction): (() => void) => {
+  const runReviewAction = (): void => void runReview(action)
+  return runReviewAction
+}
+const makePostReply = (discussionId: string): (() => void) => {
+  const runPostReply = (): void => void postReply(discussionId)
+  return runPostReply
+}
+const noteMenu = (d: { id: string }, n: { id: number; body: string; isMine: boolean }): MenuItem[] => {
+  const isBusy = !!busyAction.value
+  const items: MenuItem[] = []
+  if (n.isMine) items.push({ label: 'Edit', isDisabled: isBusy, run: makeStartEdit(`n:${n.id}`, n.body) })
+  items.push({ label: 'Copy link', run: makeCopyNoteLink(n.id) })
+  if (n.isMine) items.push({ label: 'Delete', isDisabled: isBusy, run: makeReview({ kind: 'note-delete', discussionId: d.id, noteId: n.id }) })
+  return items
+}
+const draftMenu = (p: { id: number; body: string }): MenuItem[] => [
+  { label: 'Edit', isDisabled: !!busyAction.value, run: makeStartEdit(`d:${p.id}`, p.body) },
+  { label: 'Delete', isDisabled: !!busyAction.value, run: makeReview({ kind: 'draft-delete', id: p.id }) }
+]
+const postNowItems = (discussionId: string): MenuItem[] => [
+  { label: 'Post now', isDisabled: !reply.value.trim() || !!busyAction.value, run: makePostReply(discussionId) }
+]
 const descriptionHtml = computed(() => {
   const ov = overview.value
   if (!ov) return ''
@@ -123,6 +174,14 @@ const initials = (name: string): string =>
     .slice(0, 2)
     .toUpperCase()
 const replyTo = ref<string | null>(null)
+const resolveEditedThreadId = (): string | null => {
+  const key = editKey.value
+  if (!key) return null
+  const id = Number(key.slice(2))
+  if (key.startsWith('n:')) return threads.value.find((t) => t.notes.some((n) => n.id === id))?.id ?? null
+  return drafts.value.find((p) => p.id === id)?.replyTo ?? null
+}
+const keptIds = computed(() => [replyTo.value, resolveEditedThreadId()].filter((id): id is string => !!id))
 const reply = ref('')
 const isReplyResolving = ref(true)
 const postReply = async (discussionId: string): Promise<void> => {
@@ -210,8 +269,15 @@ const saveDesc = async (): Promise<void> => {
         <div class="byline">
           <span v-if="overview.isDraft" class="draft">Draft</span>
           <b>{{ overview.author }}</b> requested to merge <a class="bpill" :href="branchUrl(row.sourceBranch)" target="_blank">{{ row.sourceBranch }}</a> into <a class="bpill" :href="branchUrl(row.targetBranch)" target="_blank">{{ row.targetBranch }}</a>
-          <span class="muted inline">{{ ago(Date.parse(overview.createdAt)) }}</span>
+          <span class="muted inline">{{ ago(Date.parse(overview.createdAt)) }}{{ commitsText }}</span>
         </div>
+        <div class="meta">
+          <span class="metaitem"><span class="metalabel">Assignees</span><span v-for="a in overview.assignees" :key="a" class="person"><span class="av sm">{{ initials(a) }}</span>{{ a }}</span><span v-if="!overview.assignees.length" class="muted">—</span></span>
+          <span class="metaitem"><span class="metalabel">Reviewers</span><span v-for="r in overview.reviewers" :key="r" class="person"><span class="av sm">{{ initials(r) }}</span>{{ r }}</span><span v-if="!overview.reviewers.length" class="muted">—</span></span>
+          <span v-if="overview.labels.length" class="metaitem"><span v-for="l in overview.labels" :key="l" class="label">{{ l }}</span></span>
+          <span class="metaitem"><span class="metalabel">Milestone</span><span :class="{ muted: !overview.milestone }">{{ overview.milestone ?? '—' }}</span></span>
+        </div>
+        <h2 class="acth">Description</h2>
         <div v-if="isDescEditing" class="descedit">
           <div class="seg">
             <button :class="{ on: !isDescPreview }" @click="isDescPreview = false">Write</button>
@@ -230,6 +296,7 @@ const saveDesc = async (): Promise<void> => {
           <button class="linkbtn" :disabled="isGone" @click="startDescEdit">Edit description</button>
         </template>
 
+        <h2 class="acth">Merge</h2>
         <div class="widgets">
           <div class="w">
             <span class="wicon" :style="{ color: PIPELINE_COLOR[overview.pipeline?.status ?? ''] ?? '#6f6f6f' }"><Icon name="check" :size="16" /></span>
@@ -286,9 +353,22 @@ const saveDesc = async (): Promise<void> => {
           </div>
         </div>
 
-        <h2 class="acth">Activity</h2>
+        <div class="actbar">
+          <h2 class="acth">Activity</h2>
+          <div class="seg">
+            <button :class="{ on: filter === 'open' }" @click="setFilter('open')">Open {{ counts.open }}</button>
+            <button :class="{ on: filter === 'resolved' }" @click="setFilter('resolved')">Resolved {{ counts.resolved }}</button>
+            <button :class="{ on: filter === 'all' }" @click="setFilter('all')">All</button>
+          </div>
+          <span class="grow" />
+          <label class="opts sysopt"><input v-model="isSystemShown" type="checkbox" />zdarzenia systemowe</label>
+        </div>
         <p v-if="status.discussions === null" class="muted">Could not load the activity.</p>
-        <template v-for="d in threads" :key="d.id">
+        <p v-else-if="!shownThreads.length" class="muted emptythreads">
+          {{ emptyText }}
+          <button v-if="filter !== 'all'" class="linkbtn" @click="setFilter('all')">Show all</button>
+        </p>
+        <template v-for="d in shownThreads" :key="d.id">
           <div v-if="d.isSystem" class="sys">
             <i />
             <b>{{ d.notes[0].author }}</b>
@@ -303,19 +383,12 @@ const saveDesc = async (): Promise<void> => {
             <Icon name="chevronRight" :size="13" />
           </button>
           <article v-else :id="`thread-${d.id}`" class="thread" :class="{ resolved: d.isResolved }" @click="onThreadClick($event, d.anchor?.path ?? null, d.anchor?.line ?? null)">
-            <div v-if="d.where || d.isResolvable" class="thead">
+            <div class="thead">
               <code v-if="d.where && d.anchor?.side === 'new'" class="golink" title="Show in code" @click.stop="openLine(d.anchor.path, d.anchor.line)">{{ d.where }}</code>
               <code v-else-if="d.where">{{ d.where }}</code>
+              <span v-else class="general">General</span>
               <span v-if="d.isResolvable" class="rs" :class="{ done: d.isResolved }">{{ d.isResolved ? 'resolved' : 'open' }}</span>
-              <button v-if="d.isResolved" class="collapse" @click="toggleResolved(d.id)">Hide</button>
-              <button
-                v-if="d.isResolvable"
-                class="btn sm resolvebtn"
-                :disabled="!!busyAction || isGone"
-                @click="runReview({ kind: 'resolve', discussionId: d.id, isResolved: !d.isResolved })"
-              >
-                <Icon name="check" :size="12" />{{ d.isResolved ? 'Unresolve' : 'Resolve' }}
-              </button>
+              <span class="tcount">{{ d.notes.length }} {{ d.notes.length === 1 ? 'comment' : 'comments' }}</span>
             </div>
             <div v-if="d.snippet" class="snip">
               <div v-for="(r, i) in d.snippet.rows" :key="i" class="sl" :class="{ hit: r.isHit, add: r.mark === '+', del: r.mark === '-' }"><span class="ln">{{ r.no ?? '' }}</span><span class="mk">{{ r.mark }}</span>{{ r.text }}</div>
@@ -325,10 +398,8 @@ const saveDesc = async (): Promise<void> => {
               <div class="nbody">
                 <div class="nhead">
                   <b>{{ n.author }}</b><span>{{ ago(Date.parse(n.createdAt)) }}</span>
-                  <template v-if="n.isMine && editKey !== `n:${n.id}`">
-                    <button class="linkbtn" @click="startEdit(`n:${n.id}`, n.body)">Edit</button>
-                    <button class="linkbtn danger" :disabled="!!busyAction" @click="runReview({ kind: 'note-delete', discussionId: d.id, noteId: n.id })">Delete</button>
-                  </template>
+                  <span class="grow" />
+                  <MenuButton v-if="editKey !== `n:${n.id}`" label="Note actions" icon="more" is-icon title="Note actions" :items="noteMenu(d, n)" />
                 </div>
                 <template v-if="editKey === `n:${n.id}`">
                   <textarea v-model="editText" rows="3" />
@@ -345,10 +416,8 @@ const saveDesc = async (): Promise<void> => {
               <div class="nbody">
                 <div class="nhead">
                   <b>You</b><span class="pendtag">Pending</span>
-                  <template v-if="editKey !== `d:${p.id}`">
-                    <button class="linkbtn" @click="startEdit(`d:${p.id}`, p.body)">Edit</button>
-                    <button class="linkbtn danger" :disabled="!!busyAction" @click="runReview({ kind: 'draft-delete', id: p.id })">Delete</button>
-                  </template>
+                  <span class="grow" />
+                  <MenuButton v-if="editKey !== `d:${p.id}`" label="Note actions" icon="more" is-icon title="Note actions" :items="draftMenu(p)" />
                 </div>
                 <template v-if="editKey === `d:${p.id}`">
                   <textarea v-model="editText" rows="3" />
@@ -370,13 +439,26 @@ const saveDesc = async (): Promise<void> => {
                 <div class="crow">
                   <button class="btn sm" @click="replyTo = null">Cancel</button>
                   <label title="Resolve this thread when the review is submitted"><input v-model="isReplyResolving" type="checkbox" />Resolve thread</label>
-                  <button class="btn sm" :disabled="!reply.trim() || !!busyAction" title="Save as a pending draft note; publish it with Submit review" @click="addReplyDraft(d.id)">Add to review</button>
-                  <button class="btn sm primary" :disabled="!reply.trim() || !!busyAction" @click="postReply(d.id)">
-                    {{ busyAction === 'reply' ? 'Posting…' : 'Post reply' }}
-                  </button>
+                  <span class="split">
+                    <button class="btn sm primary" :disabled="!reply.trim() || !!busyAction" title="Save as a pending draft note; publish it with Submit review" @click="addReplyDraft(d.id)">
+                      Add to review
+                    </button>
+                    <MenuButton label="Post options" icon="chevronDown" is-icon title="Post options" :items="postNowItems(d.id)" />
+                  </span>
                 </div>
               </template>
-              <button v-else class="replybtn" @click="(replyTo = d.id), (reply = ''), (isReplyResolving = true)">Reply…</button>
+              <div v-else class="footrow">
+                <button class="replybtn" @click="(replyTo = d.id), (reply = ''), (isReplyResolving = true)">Reply…</button>
+                <button v-if="d.isResolved" class="linkbtn" @click="toggleResolved(d.id)">Collapse</button>
+                <button
+                  v-if="d.isResolvable"
+                  class="btn sm"
+                  :disabled="!!busyAction || isGone"
+                  @click="runReview({ kind: 'resolve', discussionId: d.id, isResolved: !d.isResolved })"
+                >
+                  <Icon name="check" :size="12" />{{ d.isResolved ? 'Unresolve' : 'Resolve' }}
+                </button>
+              </div>
             </div>
           </article>
         </template>
@@ -385,10 +467,8 @@ const saveDesc = async (): Promise<void> => {
             <div class="nbody">
               <div class="nhead">
                 <b>You</b><span class="pendtag">Pending</span>
-                <template v-if="editKey !== `d:${p.id}`">
-                  <button class="linkbtn" @click="startEdit(`d:${p.id}`, p.body)">Edit</button>
-                  <button class="linkbtn danger" :disabled="!!busyAction" @click="runReview({ kind: 'draft-delete', id: p.id })">Delete</button>
-                </template>
+                <span class="grow" />
+                <MenuButton v-if="editKey !== `d:${p.id}`" label="Note actions" icon="more" is-icon title="Note actions" :items="draftMenu(p)" />
               </div>
               <template v-if="editKey === `d:${p.id}`">
                 <textarea v-model="editText" rows="3" />
@@ -413,29 +493,6 @@ const saveDesc = async (): Promise<void> => {
       </template>
       <p v-else class="muted">Could not load the merge request{{ status.problem ? `: ${status.problem}` : '' }}.</p>
     </div>
-    <aside v-if="overview" class="ovside">
-      <div class="sb">
-        <h4>Assignees</h4>
-        <p v-for="a in overview.assignees" :key="a"><span class="av sm">{{ initials(a) }}</span>{{ a }}</p>
-        <p v-if="!overview.assignees.length" class="muted small">None</p>
-      </div>
-      <div class="sb">
-        <h4>Reviewers</h4>
-        <p v-for="r in overview.reviewers" :key="r"><span class="av sm">{{ initials(r) }}</span>{{ r }}</p>
-        <p v-if="!overview.reviewers.length" class="muted small">None</p>
-      </div>
-      <div class="sb">
-        <h4>Labels</h4>
-        <div class="labels">
-          <span v-for="l in overview.labels" :key="l" class="label">{{ l }}</span>
-        </div>
-        <p v-if="!overview.labels.length" class="muted small">None</p>
-      </div>
-      <div class="sb">
-        <h4>Milestone</h4>
-        <p :class="{ 'muted small': !overview.milestone }">{{ overview.milestone ?? 'None' }}</p>
-      </div>
-    </aside>
   </div>
 
   <Teleport to="body">
@@ -531,16 +588,26 @@ const saveDesc = async (): Promise<void> => {
   flex: 1;
   min-width: 0;
 }
-.ovside {
-  order: -1;
+.meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 0 32px;
+  align-items: center;
+  gap: 8px 24px;
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  font-size: 13px;
+  color: var(--text-2);
   border-bottom: 1px solid var(--line);
 }
-.ovside .sb {
-  border-bottom: none;
-  padding: 0 0 10px;
+.metaitem {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.metalabel {
+  font-size: 12px;
+  color: var(--text-4);
 }
 .byline {
   margin-bottom: 14px;
@@ -674,7 +741,7 @@ const saveDesc = async (): Promise<void> => {
   margin: 0;
 }
 .widgets {
-  margin: 20px 0 28px;
+  margin: 0 0 28px;
   border: 1px solid var(--line-2);
   border-radius: 10px;
   overflow: hidden;
@@ -758,7 +825,7 @@ const saveDesc = async (): Promise<void> => {
   border-color: var(--accent);
 }
 .acth {
-  margin: 0 0 12px;
+  margin: 20px 0 12px;
   font: 600 15px var(--font-ui);
   color: var(--text);
 }
@@ -821,14 +888,6 @@ const saveDesc = async (): Promise<void> => {
 }
 .ccount {
   flex: none;
-}
-.collapse {
-  padding: 0 4px;
-  font: 12px var(--font-ui);
-  color: var(--text-4);
-  background: none;
-  border: none;
-  cursor: pointer;
 }
 .iconbtn {
   display: grid;
@@ -1058,26 +1117,53 @@ const saveDesc = async (): Promise<void> => {
   border-radius: 7px;
   cursor: text;
 }
-.sb {
-  padding: 12px 0;
-  border-bottom: 1px solid var(--line);
-}
-.sb h4 {
-  margin: 0 0 8px;
-  font: 600 12.5px var(--font-ui);
-  color: var(--text);
-}
-.sb p {
-  display: flex;
-  align-items: center;
-  margin: 4px 0;
-  font-size: 13px;
-  color: var(--text-2);
-}
-.labels {
+.actbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 12px;
+}
+.actbar .acth {
+  margin: 0;
+}
+.sysopt {
+  margin-top: 0;
+}
+.emptythreads {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+.general {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.tcount {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-4);
+}
+.footrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.footrow .replybtn {
+  flex: 1;
+  width: auto;
+}
+.split {
+  display: inline-flex;
+}
+.split :deep(.trigger) {
+  width: 28px;
+  height: 28px;
+  border-radius: 0 7px 7px 0;
+}
+.split .btn {
+  border-radius: 7px 0 0 7px;
 }
 .label {
   padding: 1px 8px;
@@ -1101,9 +1187,6 @@ const saveDesc = async (): Promise<void> => {
   align-items: center;
   gap: 8px;
 }
-.thead:empty {
-  display: none;
-}
 .thead code {
   font: 12px var(--font-mono);
   color: var(--info);
@@ -1115,7 +1198,6 @@ const saveDesc = async (): Promise<void> => {
   text-decoration: underline;
 }
 .rs {
-  margin-left: auto;
   padding: 0 7px;
   font-size: 11px;
   line-height: 17px;
@@ -1253,12 +1335,6 @@ const saveDesc = async (): Promise<void> => {
 .linkbtn:hover:not(:disabled) {
   color: var(--text);
 }
-.linkbtn.danger:hover:not(:disabled) {
-  color: #f2706a;
-}
-.nhead .linkbtn {
-  margin-left: 4px;
-}
 .note.pending {
   border-left: 2px dashed var(--accent);
 }
@@ -1288,9 +1364,6 @@ const saveDesc = async (): Promise<void> => {
   color: var(--accent);
   border: 1px dashed var(--accent);
   border-radius: 4px;
-}
-.resolvebtn {
-  margin-left: auto;
 }
 .descedit {
   display: flex;

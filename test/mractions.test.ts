@@ -1,5 +1,19 @@
 import { describe, it, expect, vi } from 'vitest'
-import { pickTicketMr, parseMrState, parseApprovals, parseDiscussions, parseMrOverview, snippetAround, snippetFromDiff, diffRows, parseDraftNotes, draftNoteBody, recreateDraft } from '../src/main/mractions'
+import { pickTicketMr, parseMrState, parseApprovals, parseDiscussions, parseMrOverview, snippetAround, snippetFromDiff, diffRows, parseDraftNotes, draftNoteBody, recreateDraft, countCommits } from '../src/main/mractions'
+
+describe('countCommits', () => {
+  it('counts the commits', () => {
+    expect(countCommits([{}, {}, {}])).toBe(3)
+  })
+
+  it('returns 0 for an empty list', () => {
+    expect(countCommits([])).toBe(0)
+  })
+
+  it('returns null when the read failed', () => {
+    expect(countCommits(null)).toBeNull()
+  })
+})
 
 describe('draft note resolve', () => {
   it('reads resolve_discussion into isResolving', () => {

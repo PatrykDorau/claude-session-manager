@@ -1,7 +1,9 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, type Ref } from 'vue'
-import type { CodeComment, DiffRow, MrCommentable, MrDraftNote, MrReviewAction, MrRow, MrStatus, MrVersionDiff, Session } from '../types'
+import type { CodeComment, DiffRow, MrCommentable, MrDiscussion, MrDraftNote, MrReviewAction, MrRow, MrStatus, MrVersionDiff, Session } from '../types'
 import { sortDrafts, rowsAround } from './mrreview'
 import { renderMarkdown, parseVersionLink } from './mrhtml'
+import { filterThreads, type ThreadFilter } from './mrfilter'
+import { writeSize } from './dashboard'
 
 export const PIPELINE_COLOR: Record<string, string> = { success: '#3dd68c', failed: '#f2706a', running: '#6aa9ff', pending: '#e8b84a', canceled: '#9d9d9d' }
 
@@ -55,6 +57,17 @@ export const useMrState = (row: Ref<MrRow>, myName: Ref<string | null | undefine
   const noteHtml = computed<Record<number, string>>(() =>
     Object.fromEntries(threads.value.flatMap((d) => d.notes).map((n) => [n.id, renderMarkdown(n.body, origin, row.value.projectId)]))
   )
+  const readThreadFilter = (): ThreadFilter => {
+    try {
+      const stored = localStorage.getItem('dash.mrThreadFilter')
+      return stored === 'resolved' || stored === 'all' ? stored : 'open'
+    } catch {
+      return 'open'
+    }
+  }
+  const threadFilter = ref<ThreadFilter>(readThreadFilter())
+  const persistThreadFilter = (value: ThreadFilter): void => writeSize('dash.mrThreadFilter', value)
+  watch(threadFilter, persistThreadFilter)
   const expandedResolved = ref<Set<string>>(new Set())
   const toggleResolved = (id: string): void => {
     const next = new Set(expandedResolved.value)
@@ -78,6 +91,8 @@ export const useMrState = (row: Ref<MrRow>, myName: Ref<string | null | undefine
     isAddressing.value || (!!addressSessionId.value && !sessions.some((s) => s.id.startsWith(addressSessionId.value as string)))
   const revealDraft = (d: MrDraftNote): string => {
     const replyTo = d.replyTo
+    const isReplyTarget = (t: MrDiscussion): boolean => t.id === replyTo
+    if (replyTo && !filterThreads(threads.value, drafts.value, threadFilter.value, true).some(isReplyTarget)) threadFilter.value = 'all'
     if (replyTo && threads.value.find((t) => t.id === replyTo)?.isResolved && !expandedResolved.value.has(replyTo)) toggleResolved(replyTo)
     return replyTo ? `thread-${replyTo}` : 'mr-composer'
   }
@@ -241,6 +256,7 @@ export const useMrState = (row: Ref<MrRow>, myName: Ref<string | null | undefine
     branchUrl,
     overview,
     noteHtml,
+    threadFilter,
     expandedResolved,
     toggleResolved,
     revealDraft,

@@ -208,6 +208,8 @@ const diffsByPath = (json: unknown): Map<string, string> =>
     })
   )
 
+export const countCommits = (json: unknown[] | null): number | null => (json ? json.length : null)
+
 let myIdCache: number | null = null
 
 export const fetchMrStatus = async (base: string, token: string, projectId: number, iid: number): Promise<MrStatus> => {
@@ -215,12 +217,13 @@ export const fetchMrStatus = async (base: string, token: string, projectId: numb
     const me = await request(base, token, 'GET', '/user')
     myIdCache = typeof me.json?.id === 'number' ? me.json.id : null
   }
-  const [mr, approvals, discussions, drafts, diffs] = await Promise.all([
+  const [mr, approvals, discussions, drafts, diffs, commits] = await Promise.all([
     request(base, token, 'GET', `${mrPath(projectId, iid)}?include_diverged_commits_count=true&render_html=true`),
     request(base, token, 'GET', `${mrPath(projectId, iid)}/approvals`),
     fetchAllPages(base, token, `${mrPath(projectId, iid)}/discussions`),
     fetchAllPages(base, token, `${mrPath(projectId, iid)}/draft_notes`),
-    request(base, token, 'GET', `${mrPath(projectId, iid)}/diffs?per_page=100`)
+    request(base, token, 'GET', `${mrPath(projectId, iid)}/diffs?per_page=100`),
+    fetchAllPages(base, token, `${mrPath(projectId, iid)}/commits`)
   ])
   return {
     state: mr.json ? parseMrState(mr.json) : null,
@@ -228,6 +231,7 @@ export const fetchMrStatus = async (base: string, token: string, projectId: numb
     approvals: approvals.json ? parseApprovals(approvals.json, myIdCache) : null,
     discussions: discussions.json ? await withSnippets(base, token, projectId, parseDiscussions(discussions.json, myIdCache), diffsByPath(diffs.json)) : null,
     drafts: drafts.json ? parseDraftNotes(drafts.json) : null,
+    commits: countCommits(commits.json),
     diffRefs: parseDiffRefs(mr.json),
     problem: mr.problem ?? approvals.problem ?? discussions.problem ?? drafts.problem
   }

@@ -448,6 +448,7 @@ export interface MrStatus {
   approvals: MrApprovals | null
   discussions: MrDiscussion[] | null
   drafts: MrDraftNote[] | null
+  commits: number | null
   diffRefs: MrDiffRefs | null
   problem: string | null
 }

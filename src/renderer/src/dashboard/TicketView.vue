@@ -4,7 +4,7 @@ import { followId, followIds, isSuperseded, visibleTabs } from './follow'
 import { sessionRole, roleLabel, type SessionRole } from './tabs'
 import { findAddressSession } from './mrs'
 import { flashElement, type MrState } from './mrstate'
-import type { DevServer, MrDraftNote, MrRow, Session, SessionDetail, TerminalMode, TicketMr, Stage } from '../types'
+import type { DevServer, MrDraftNote, MrFile, MrRow, Session, SessionDetail, TerminalMode, TicketMr, Stage } from '../types'
 import type { TaskRow } from '../taskview'
 import { splitTag, statusLane } from '../taskview'
 import { plainSession } from '../cards'
@@ -19,12 +19,14 @@ import CodeView from './CodeView.vue'
 import MrOverview from './MrOverview.vue'
 import MrDraftsBar from './MrDraftsBar.vue'
 import MrStateHost from './MrStateHost.vue'
+import ClaudeStrip from './ClaudeStrip.vue'
+import { threadCounts } from './mrfilter'
 import TestCasesDialog from './TestCasesDialog.vue'
 import ServerPanel from './ServerPanel.vue'
 import StatusMenu from './StatusMenu.vue'
 import Splitter from './Splitter.vue'
 import ContextChip from './ContextChip.vue'
-import AutonomyMenu from './AutonomyMenu.vue'
+import SessionMenu from './SessionMenu.vue'
 import { choiceOf } from './orchestrator'
 import type { AutonomyChoice, Job, OrchestratorState } from '../../../main/orchestrator'
 import { readPins, togglePin, writePins } from './commandpanel'
@@ -62,6 +64,11 @@ const toggleClaude = (): void => {
   writeSize('dash.claudeHidden', !isClaudeOpen.value)
 }
 const showClaude = (): void => {
+  if (tab.value === 'mr') {
+    isMrClaudeCollapsed.value = false
+    writeSize('dash.mrClaudeCollapsed', false)
+    return
+  }
   tab.value = 'work'
   if (!isClaudeOpen.value) toggleClaude()
 }
@@ -352,11 +359,84 @@ const onFileShown = (path: string, folder: string | null, isReadOnly: boolean): 
   if (isReadOnly) void mrState.value?.checkCommentable(path, folder, isReadOnly)
 }
 const onVersion = (href: string, path: string | null, line: number | null): void => void mrState.value?.openVersion(href, path, line)
-const codeView = ref<{ goToFileLine: (path: string, line: number) => Promise<void>; showPushed: () => Promise<boolean> } | null>(null)
+const mrSub = ref<'overview' | 'changes'>('overview')
+const isMrChangesMounted = ref(false)
+const markMrChangesMounted = (sub: 'overview' | 'changes'): void => {
+  if (sub === 'changes') isMrChangesMounted.value = true
+}
+watch(mrSub, markMrChangesMounted)
+const getOwnMrKey = (): string | undefined => ownMr.value?.key
+const getOwnMrSha = (): string | undefined => ownMr.value?.sha
+const getSessionProjectPath = (): string | undefined => session.value?.projectPath
+const mrOpenCount = computed(() => (mrState.value ? threadCounts(mrState.value.threads.value, mrState.value.drafts.value).open : 0))
+const mrFiles = ref<MrFile[] | null | undefined>(undefined)
+let mrFilesFor: string | null = null
+const loadMrFiles = async (): Promise<void> => {
+  const mr = ownMr.value
+  const id = mr ? `${mr.key}:${mr.sha}` : null
+  if (tab.value !== 'mr' || !mr || id === mrFilesFor) return
+  mrFilesFor = id
+  mrFiles.value = undefined
+  const next = await window.api.getMrFiles(mr.key)
+  if (mrFilesFor === id) mrFiles.value = next
+}
+const runLoadMrFiles = (): void => void loadMrFiles()
+watch([tab, getOwnMrKey, getOwnMrSha], runLoadMrFiles, { immediate: true })
+const mrRepoPath = ref<string | null>(null)
+let isMrRepoRequested = false
+const loadMrRepo = async (): Promise<void> => {
+  const mr = ownMr.value
+  if (isMrRepoRequested || !mr || session.value?.projectPath) return
+  isMrRepoRequested = true
+  const path = await window.api.getMrRepo(mr.key)
+  if (ownMr.value?.key !== mr.key) return
+  mrRepoPath.value = path
+  if (!path) isMrRepoRequested = false
+}
+const resetMrRepo = (): void => {
+  isMrRepoRequested = false
+  mrRepoPath.value = null
+}
+const runLoadMrRepo = (): void => void loadMrRepo()
+watch(getOwnMrKey, resetMrRepo)
+watch([getOwnMrKey, getSessionProjectPath, mrSub], runLoadMrRepo, { immediate: true })
+const mrCwd = computed(() => session.value?.projectPath ?? mrRepoPath.value)
+const isMrClaudeCollapsed = ref(readFlag('dash.mrClaudeCollapsed'))
+const toggleMrClaude = (): void => {
+  isMrClaudeCollapsed.value = !isMrClaudeCollapsed.value
+  writeSize('dash.mrClaudeCollapsed', isMrClaudeCollapsed.value)
+}
+const isMrSplit = computed(() => tab.value === 'mr' && !isMrClaudeCollapsed.value && !!ownMr.value && !!mrState.value)
+const mrDocWidth = ref(readSize('dash.mrDocWidth', 820))
+const mrCodeWidth = ref(readSize('dash.mrCodeWidth', 760))
+const mrLeftWidth = computed(() => (mrSub.value === 'changes' ? mrCodeWidth.value : mrDocWidth.value))
+const resizeMrLeft = (delta: number): void => {
+  const total = panes.value?.clientWidth ?? 1400
+  if (mrSub.value === 'changes') mrCodeWidth.value = clampSize(mrCodeWidth.value + delta, 320, total - 360)
+  else mrDocWidth.value = clampSize(mrDocWidth.value + delta, 420, total - 360)
+}
+const saveMrLeftWidth = (): void => {
+  if (mrSub.value === 'changes') writeSize('dash.mrCodeWidth', mrCodeWidth.value)
+  else writeSize('dash.mrDocWidth', mrDocWidth.value)
+}
+const stripLabel = computed(() => session.value?.name ?? session.value?.projectName ?? null)
+const stripColor = computed(() => (session.value ? (session.value.isLive ? 'var(--ok)' : '#666d78') : null))
+const mrCodeView = ref<{ goToFileLine: (path: string, line: number) => Promise<void> } | null>(null)
+let pendingMrLine: { path: string; line: number } | null = null
+const runPendingMrLine = (view: typeof mrCodeView.value): void => {
+  const pending = pendingMrLine
+  if (!view || !pending) return
+  pendingMrLine = null
+  void view.goToFileLine(pending.path, pending.line)
+}
+watch(mrCodeView, runPendingMrLine)
 const openLine = async (path: string, line: number): Promise<void> => {
-  showCode()
+  tab.value = 'mr'
+  mrSub.value = 'changes'
+  isMrChangesMounted.value = true
   await nextTick()
-  if (await codeView.value?.showPushed()) await codeView.value?.goToFileLine(path, line)
+  if (mrCodeView.value) await mrCodeView.value.goToFileLine(path, line)
+  else pendingMrLine = { path, line }
 }
 const openDraft = async (d: MrDraftNote): Promise<void> => {
   if (d.anchor) {
@@ -365,6 +445,7 @@ const openDraft = async (d: MrDraftNote): Promise<void> => {
   }
   if (!mrState.value) return
   tab.value = 'mr'
+  mrSub.value = 'overview'
   const target = mrState.value.revealDraft(d)
   await nextTick()
   flashElement(target)
@@ -515,16 +596,22 @@ onBeforeUnmount(() => {
         <span class="grow" />
         <span v-if="facts.length" class="facts">{{ facts.join('  ·  ') }}</span>
         <ContextChip v-if="session" :session="session" :mode="mode" />
-        <button v-if="session" class="btn" :class="{ on: isPinned }" :title="isPinned ? 'Unpin from the command panel grid' : 'Pin this session to the command panel grid'" @click="togglePanelPin"><Icon name="dashboard" :size="14" />{{ isPinned ? 'Pinned' : 'Pin' }}</button>
-        <AutonomyMenu
-          v-if="session?.isLive"
-          :value="choiceOf(sessionJob)"
-          :is-disabled="!sessionJob && !session.ticket"
-          :disabled-hint="autonomyError ?? 'Only a session with a ticket can be orchestrated'"
-          :title="autonomyError ?? 'Orchestrator autonomy for this session'"
-          @change="setSessionAutonomy"
+        <SessionMenu
+          v-if="session"
+          :color="stripColor"
+          :is-pinned="isPinned"
+          is-pin-shown
+          :autonomy="choiceOf(sessionJob)"
+          :is-autonomy-shown="session.isLive"
+          :is-autonomy-disabled="!sessionJob && !session.ticket"
+          :autonomy-hint="autonomyError ?? 'Only a session with a ticket can be orchestrated'"
+          :is-sleep-shown="session.isLive"
+          :is-stop-disabled="mode !== 'attach'"
+          @pin="togglePanelPin"
+          @autonomy="setSessionAutonomy"
+          @sleep="sleepCurrent"
+          @stop="stopTurn"
         />
-        <button v-if="session?.isLive" class="btn" title="Put this session to sleep: the Claude process stops and the session stays on the list" @click="sleepCurrent"><Icon name="moon" :size="14" />Sleep</button>
         <div v-if="tab === 'work'" class="seg" title="Show or hide the panes">
           <button :class="{ on: isCodeOpen }" @click="toggleCode"><Icon name="code" :size="14" />Code</button>
           <button :class="{ on: isClaudeOpen }" @click="toggleClaude"><Icon name="terminal" :size="14" />Claude</button>
@@ -536,6 +623,7 @@ onBeforeUnmount(() => {
         <MenuButton label="More actions" icon="more" is-icon title="More actions" :items="moreItems" />
       </div>
       <div v-if="addressError" class="warn">{{ addressError }}</div>
+      <div v-if="autonomyError" class="warn">{{ autonomyError }}</div>
       <template v-if="isReadyOpen && isMrMissing">
         <div class="scrim" @click="isReadyOpen = false" />
         <div class="readybox">
@@ -561,10 +649,40 @@ onBeforeUnmount(() => {
       </template>
     </header>
 
-    <div v-show="tab === 'work'" ref="panes" class="panes">
-      <section v-show="isCodeOpen" class="pane code" :style="isBothOpen ? { flex: 'none', width: `${codeWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
+    <div v-show="tab === 'work' || tab === 'mr'" ref="panes" class="panes">
+      <section v-if="ownMr && mrState" v-show="tab === 'mr'" class="pane" :style="isMrSplit ? { flex: 'none', width: `${mrLeftWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
+        <nav class="subtabs">
+          <button :class="{ on: mrSub === 'overview' }" @click="mrSub = 'overview'"><Icon name="fileText" :size="14" />Overview<span v-if="mrOpenCount" class="count">{{ mrOpenCount }}</span></button>
+          <button :class="{ on: mrSub === 'changes' }" @click="mrSub = 'changes'"><Icon name="code" :size="14" />Changes<span v-if="mrFiles" class="count">{{ mrFiles.length }}</span></button>
+        </nav>
+        <div v-show="mrSub === 'overview'" class="pane doc">
+          <MrOverview :key="mrStateId" :row="ownMr" :state="mrState" :is-gone="false" is-header-shown :is-address-pending="isAddressPending" @open-line="openLine" @address-comments="addressComments" />
+        </div>
+        <template v-if="isMrChangesMounted">
+          <CodeView
+            v-if="mrCwd"
+            v-show="mrSub === 'changes'"
+            ref="mrCodeView"
+            :cwd="mrCwd"
+            :ticket-key="row.key"
+            :branch-ref="{ source: ownMr.sourceBranch, target: ownMr.targetBranch }"
+            :mr="pushedMr"
+            :ticket-title="title.text"
+            :can-ask="mode === 'attach'"
+            :source-session-id="session?.id ?? null"
+            :comments="codeComments"
+            :commentable="commentable"
+            :review="mrState.runReview"
+            @ask="askClaude"
+            @version="onVersion"
+            @file-shown="onFileShown"
+          />
+          <p v-else v-show="mrSub === 'changes'" class="muted pad">Looking for the folder with {{ ownMr.sourceBranch }}…</p>
+        </template>
+      </section>
+      <Splitter v-if="isMrSplit" @resize="resizeMrLeft" @done="saveMrLeftWidth" />
+      <section v-show="tab === 'work' && isCodeOpen" class="pane code" :style="isBothOpen ? { flex: 'none', width: `${codeWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
         <CodeView
-          ref="codeView"
           :cwd="session?.projectPath ?? null"
           :ticket-key="row.key"
           :ticket-title="title.text"
@@ -582,8 +700,8 @@ onBeforeUnmount(() => {
           @file-shown="onFileShown"
         />
       </section>
-      <Splitter v-if="isBothOpen" @resize="resizeCode" @done="saveCodeWidth" />
-      <section v-show="isClaudeOpen" class="pane claude">
+      <Splitter v-if="tab === 'work' && isBothOpen" @resize="resizeCode" @done="saveCodeWidth" />
+      <section v-show="tab === 'work' ? isClaudeOpen : !isMrClaudeCollapsed" class="pane claude">
         <div class="chead">
           <div class="stabs">
             <button
@@ -603,7 +721,7 @@ onBeforeUnmount(() => {
               <option v-for="s in row.sessions" :key="s.id" :value="s.id">{{ s.name ?? s.projectName }} · {{ ago(s.lastActive) }}</option>
             </select>
           </div>
-          <button class="stop" :disabled="mode !== 'attach'" title="Interrupt Claude's current turn (Esc)" @click="stopTurn"><Icon name="stop" :size="12" />Stop</button>
+          <button v-if="tab === 'mr'" class="collapse" title="Hide Claude" @click="toggleMrClaude">▸</button>
         </div>
         <ClaudeTerminal
           v-for="s in openedSessions"
@@ -640,11 +758,9 @@ onBeforeUnmount(() => {
         </div>
         <QuickActions :session-id="session?.id ?? null" :mode="mode" :take-over="takeOverHere" :values="actionValues" :stage="stage ?? null" />
       </section>
+      <ClaudeStrip v-if="tab === 'mr' && isMrClaudeCollapsed" :label="stripLabel" :color="stripColor" @expand="toggleMrClaude" />
     </div>
 
-    <section v-if="ownMr && mrState" v-show="tab === 'mr'" class="pane doc">
-      <MrOverview :key="mrStateId" :row="ownMr" :state="mrState" :is-gone="false" is-header-shown :is-address-pending="isAddressPending" @open-line="openLine" @address-comments="addressComments" />
-    </section>
     <MrStateHost v-if="ownMr" :key="ownMr.key" :row="ownMr" :my-name="myName ?? null" @state="onMrState" @gone="onMrGone" />
 
     <section v-show="tab === 'server'" class="pane">
@@ -1117,29 +1233,6 @@ onBeforeUnmount(() => {
   border: 1px solid var(--line);
   border-radius: 6px;
 }
-.stop {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 10px;
-  font: 500 12px var(--font-ui);
-  color: var(--danger);
-  background: none;
-  border: 1px solid var(--danger-line);
-  border-radius: 6px;
-  cursor: pointer;
-}
-.stop:hover:not(:disabled) {
-  background: var(--danger-soft);
-  border-color: var(--danger);
-}
-.stop:disabled {
-  color: var(--text-5);
-  border-color: var(--line);
-  cursor: default;
-}
 .pane {
   flex: 1;
   min-width: 0;
@@ -1149,6 +1242,54 @@ onBeforeUnmount(() => {
 }
 .pane.doc {
   overflow-y: auto;
+}
+.subtabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  height: 38px;
+  padding: 0 10px;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+}
+.subtabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  font: 500 12.5px var(--font-ui);
+  color: var(--text-4);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.subtabs button:hover {
+  color: var(--text-2);
+}
+.subtabs button.on {
+  color: var(--text);
+  background: var(--bg-3);
+}
+.collapse {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  font-size: 13px;
+  color: var(--text-4);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.collapse:hover {
+  color: var(--text);
+  background: var(--bg-2);
+}
+.muted.pad {
+  padding: 24px;
+  color: var(--text-4);
 }
 .pane.claude {
   position: relative;

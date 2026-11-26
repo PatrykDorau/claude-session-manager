@@ -4313,7 +4313,7 @@ if (!app.requestSingleInstanceLock()) {
   })
   ipcMain.handle('mr-status', async (_e, key: string) => {
     const found = mrForAction(key)
-    if (!found) return { state: null, overview: null, approvals: null, discussions: null, drafts: null, diffRefs: null, problem: 'This merge request is no longer in your list' }
+    if (!found) return { state: null, overview: null, approvals: null, discussions: null, drafts: null, commits: null, diffRefs: null, problem: 'This merge request is no longer in your list' }
     return fetchMrStatus(appState.settings.gitlabBase, found.token, found.mr.projectId, found.mr.iid)
   })
   const offerReleaseStatus = async (ticket: string | null): Promise<string | null> => {
