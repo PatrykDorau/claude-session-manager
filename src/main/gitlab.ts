@@ -1,5 +1,6 @@
 import { branchTicket, findTicket } from './ticket'
 import type { MrFile, MrItem, MrReviewState, MrRow } from '../renderer/src/types'
+import { isBotUser } from './mrwatch'
 
 const asText = (v: unknown): string => (typeof v === 'string' ? v : '')
 const asNumber = (v: unknown): number | null => (typeof v === 'number' ? v : null)
@@ -35,6 +36,7 @@ const mrItem = (t: any, projectId: number | null, projectPath: string, projectNa
       openThreads: 0,
       waitingThreads: null,
       othersNotes: null,
+      replyToMeId: null,
       approvals: 0,
       isApprovedByMe: false,
       isDraft,
@@ -190,12 +192,40 @@ export const threadCounts = (
   return counts
 }
 
-const withThreadCounts = async (base: string, token: string, items: MrItem[], me: string | null): Promise<MrItem[]> =>
+interface ReplyNote extends ThreadNote {
+  id?: number
+  author?: { name?: string; username?: string }
+}
+
+export const lastReplyToMe = (json: unknown, me: string | null, bots: string[]): number | null => {
+  if (!me || !Array.isArray(json)) return null
+  const isReplyToMe = (n: ReplyNote): boolean =>
+    n.system !== true && typeof n.id === 'number' && n.author?.name !== me && !isBotUser(n.author?.username ?? '', bots)
+  const isMineNote = (n: ReplyNote): boolean => n.system !== true && n.author?.name === me
+  const replyIds = (d: { notes?: unknown }): number[] => {
+    const notes = (Array.isArray(d?.notes) ? d.notes : []) as ReplyNote[]
+    const first = notes.findIndex(isMineNote)
+    return first < 0 ? [] : notes.slice(first + 1).filter(isReplyToMe).map(noteIdOf)
+  }
+  const ids = (json as { notes?: unknown }[]).flatMap(replyIds)
+  return ids.length ? Math.max(...ids) : null
+}
+
+const noteIdOf = (n: ReplyNote): number => n.id as number
+
+const discussionCache = new Map<string, { at: string; json: unknown }>()
+
+const withThreadCounts = async (base: string, token: string, items: MrItem[], me: string | null, bots: string[]): Promise<MrItem[]> =>
   Promise.all(
     items.map(async (item) => {
-      if (!me || item.author !== me) return item
-      const json = await apiGet(base, token, `/projects/${item.projectId}/merge_requests/${item.iid}/discussions?per_page=100`)
-      return json === null ? item : { ...item, ...threadCounts(json, me) }
+      if (!me) return item
+      const at = `${item.updatedAt}|${item.notes}`
+      const cached = discussionCache.get(item.key)
+      const json = cached?.at === at ? cached.json : await apiGet(base, token, `/projects/${item.projectId}/merge_requests/${item.iid}/discussions?per_page=100`)
+      if (json === null) return item
+      discussionCache.set(item.key, { at, json })
+      const replyToMeId = lastReplyToMe(json, me, bots)
+      return item.author === me ? { ...item, ...threadCounts(json, me), replyToMeId } : { ...item, replyToMeId }
     })
   )
 
@@ -221,6 +251,7 @@ export const carryEnrichment = (items: MrItem[], previous: MrItem[]): MrItem[] =
           openThreads: old.openThreads,
           waitingThreads: old.waitingThreads,
           othersNotes: old.othersNotes,
+          replyToMeId: old.replyToMeId,
           isApprovedByMe: old.isApprovedByMe
         }
       : m
@@ -281,8 +312,8 @@ export const fetchMrsToReview = async (
   return { items, detail: null, me: reviews.me }
 }
 
-export const enrichMrs = async (base: string, token: string, items: MrItem[], me: string | null): Promise<MrItem[]> =>
-  withApprovals(base, token, await withThreadCounts(base, token, items, me), me)
+export const enrichMrs = async (base: string, token: string, items: MrItem[], me: string | null, bots: string[] = []): Promise<MrItem[]> =>
+  withApprovals(base, token, await withThreadCounts(base, token, items, me, bots), me)
 
 export const fetchDiffStats = async (base: string, token: string, projectId: number, iid: number): Promise<MrFile[] | null> => {
   const json = await apiGet(base, token, `/projects/${projectId}/merge_requests/${iid}/diffs?per_page=100`)

@@ -313,7 +313,7 @@ onBeforeUnmount(() => {
         />
       </section>
       <section v-show="tab === 'overview'" class="pane doc" :style="isSplit ? { flex: 'none', width: `${docWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
-        <MrOverview :row="row" :state="state" :is-gone="isGone" @open-line="openLine" @address-comments="addressComments" />
+        <MrOverview :row="row" :state="state" :is-gone="isGone" :is-shown="tab === 'overview'" @open-line="openLine" @address-comments="addressComments" />
       </section>
       <Splitter v-if="isSplit" @resize="resizeLeft" @done="saveLeftWidth" />
     <section v-show="isClaudeShown" class="pane claude">

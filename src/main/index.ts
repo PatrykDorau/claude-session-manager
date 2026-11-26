@@ -976,7 +976,7 @@ const refreshMyMrs = async (): Promise<void> => {
       isMrsLoaded = true
       pushMyMrs()
       const wanted = mrItems.filter((m) => isInProjects(m.projectPath, appState.settings.mrProjects))
-      const enrichedList = await enrichMrs(appState.settings.gitlabBase, token, wanted, gitlabMe)
+      const enrichedList = await enrichMrs(appState.settings.gitlabBase, token, wanted, gitlabMe, parseBots(appState.settings.orchestratorBots))
       const enriched = new Map(enrichedList.map((m) => [m.key, m]))
       mrItems = mrItems.map((m) => enriched.get(m.key) ?? m)
       const approvedMrs = pruneApproved(appState.approvedMrs, enrichedList)
@@ -4314,7 +4314,7 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle('mr-status', async (_e, key: string) => {
     const found = mrForAction(key)
     if (!found) return { state: null, overview: null, approvals: null, discussions: null, drafts: null, commits: null, diffRefs: null, problem: 'This merge request is no longer in your list' }
-    return fetchMrStatus(appState.settings.gitlabBase, found.token, found.mr.projectId, found.mr.iid)
+    return fetchMrStatus(appState.settings.gitlabBase, found.token, found.mr.projectId, found.mr.iid, parseBots(appState.settings.orchestratorBots))
   })
   const offerReleaseStatus = async (ticket: string | null): Promise<string | null> => {
     const token = appState.settings.jiraToken.trim()

@@ -14,6 +14,7 @@ import SessionBadge from './SessionBadge.vue'
 import SessionWorkList from './SessionWorkList.vue'
 import { sessionWorkRows, WITH_SESSION_FLAG } from './sessionwork'
 import type { TaskRow } from '../taskview'
+import { isReplyUnseen, seenReplies } from './mrreplies'
 
 const props = defineProps<{
   rows: MrRow[]
@@ -51,6 +52,7 @@ const setMineMode = (next: boolean): void => {
 }
 const mineCount = computed(() => (props.myName ? props.rows.filter((r) => r.author === props.myName).length : 0))
 const isToAddress = (r: MrRow): boolean => r.openThreads > 0
+const isNewReply = (r: MrRow): boolean => isReplyUnseen(r.replyToMeId, seenReplies.value[r.key])
 const sessionOf = (r: MrRow): Session | undefined => {
   const list = props.sessions ?? []
   return props.myName && r.author === props.myName ? findMineSession(list, r) : findReviewSession(list, r.sessionId)
@@ -212,6 +214,7 @@ const updatedAgo = (row: MrRow): string => {
       >
         <SessionBadge v-if="isLive(r)" :status="sessionOf(r)?.status ?? 'idle'" :model="sessionOf(r)?.model" :context-tokens="sessionOf(r)?.contextTokens" />
         <p class="summary"><span v-if="r.isDraft" class="draft">Draft</span>{{ r.title }}</p>
+        <div v-if="isNewReply(r)" class="attnrow newreply" title="Someone replied in a thread you wrote in and you have not opened it yet"><Icon name="message" :size="12" />New reply to you</div>
         <div v-if="isMineMode && isToAddress(r)" class="attnrow" :title="`${r.openThreads} unresolved ${r.openThreads === 1 ? 'thread' : 'threads'} to address`"><Icon name="message" :size="12" />{{ r.openThreads }}</div>
         <div class="meta">
           <PriorityIcon :name="r.priority" />
@@ -412,6 +415,11 @@ select:focus {
   color: var(--warn);
   background: var(--warn-soft);
   border-radius: 9px;
+}
+.attnrow.newreply {
+  margin-right: 6px;
+  color: var(--on-accent);
+  background: var(--accent);
 }
 .group {
   margin-top: 14px;

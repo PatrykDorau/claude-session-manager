@@ -21,6 +21,7 @@ import MrDraftsBar from './MrDraftsBar.vue'
 import MrStateHost from './MrStateHost.vue'
 import ClaudeStrip from './ClaudeStrip.vue'
 import { threadCounts } from './mrfilter'
+import { isReplyUnseen, seenReplies } from './mrreplies'
 import TestCasesDialog from './TestCasesDialog.vue'
 import ServerPanel from './ServerPanel.vue'
 import StatusMenu from './StatusMenu.vue'
@@ -44,6 +45,7 @@ const DETAIL_INTERVAL_MS = 5000
 
 const tab = ref<TicketTab>('work')
 const ownMr = computed(() => (props.mr && props.myName && props.mr.author === props.myName ? props.mr : null))
+const isMrNewReply = computed(() => !!ownMr.value && isReplyUnseen(ownMr.value.replyToMeId, seenReplies.value[ownMr.value.key]))
 const availableTabs = computed<TicketTab[]>(() => (ownMr.value ? ['work', 'mr', 'server', 'ticket'] : ['work', 'server', 'ticket']))
 watch(availableTabs, (tabs) => {
   if (!tabs.includes(tab.value)) tab.value = 'work'
@@ -589,7 +591,7 @@ onBeforeUnmount(() => {
       <div class="bar">
         <nav class="tabs">
           <button :class="{ on: tab === 'work' }" @click="tab = 'work'"><Icon name="code" :size="15" />Work</button>
-          <button v-if="ownMr" :class="{ on: tab === 'mr' }" @click="tab = 'mr'"><Icon name="pr" :size="15" />MR !{{ ownMr.iid }}<span v-if="ownMr.openThreads" class="count">{{ ownMr.openThreads }}</span></button>
+          <button v-if="ownMr" :class="{ on: tab === 'mr' }" @click="tab = 'mr'"><Icon name="pr" :size="15" />MR !{{ ownMr.iid }}<span v-if="ownMr.openThreads" class="count">{{ ownMr.openThreads }}</span><span v-if="isMrNewReply" class="count newreply" title="Someone replied in a thread you wrote in">new reply</span></button>
           <button :class="{ on: tab === 'server' }" @click="tab = 'server'"><Icon name="server" :size="15" />Server<span v-if="server" class="dot" /></button>
           <button :class="{ on: tab === 'ticket' }" @click="tab = 'ticket'"><Icon name="fileText" :size="15" />Ticket</button>
         </nav>
@@ -656,7 +658,7 @@ onBeforeUnmount(() => {
           <button :class="{ on: mrSub === 'changes' }" @click="mrSub = 'changes'"><Icon name="code" :size="14" />Changes<span v-if="mrFiles" class="count">{{ mrFiles.length }}</span></button>
         </nav>
         <div v-show="mrSub === 'overview'" class="pane doc">
-          <MrOverview :key="mrStateId" :row="ownMr" :state="mrState" :is-gone="false" is-header-shown :is-address-pending="isAddressPending" @open-line="openLine" @address-comments="addressComments" />
+          <MrOverview :key="mrStateId" :row="ownMr" :state="mrState" :is-gone="false" :is-shown="tab === 'mr' && mrSub === 'overview'" is-header-shown :is-address-pending="isAddressPending" @open-line="openLine" @address-comments="addressComments" />
         </div>
         <template v-if="isMrChangesMounted">
           <CodeView
@@ -1008,6 +1010,10 @@ onBeforeUnmount(() => {
   color: var(--text-3);
   background: var(--bg-4);
   border-radius: 8px;
+}
+.count.newreply {
+  color: var(--on-accent);
+  background: var(--accent);
 }
 .facts {
   margin-right: 6px;

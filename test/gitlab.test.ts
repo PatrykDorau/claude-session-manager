@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mrKey, parseTodos, parseReviewMrs, mergeMrs, mentionPath, countOpenThreads, threadCounts, countApprovals, isApprovedBy, approvalState, carryEnrichment, pruneApproved, isInProjects, reviewState, sortMrs, parseDiffStats, parseMrSha } from '../src/main/gitlab'
+import { mrKey, parseTodos, parseReviewMrs, mergeMrs, mentionPath, countOpenThreads, threadCounts, countApprovals, isApprovedBy, approvalState, carryEnrichment, pruneApproved, isInProjects, reviewState, sortMrs, parseDiffStats, parseMrSha, lastReplyToMe } from '../src/main/gitlab'
 import type { MrItem, MrRow } from '../src/renderer/src/types'
 
 const mrTodo = {
@@ -43,6 +43,7 @@ describe('parseTodos', () => {
         openThreads: 0,
         waitingThreads: null,
         othersNotes: null,
+        replyToMeId: null,
         approvals: 0,
         isApprovedByMe: false,
         isDraft: false,
@@ -314,5 +315,32 @@ describe('draft merge requests', () => {
     expect(flagged.isDraft).toBe(true)
     expect(titled.isDraft).toBe(true)
     expect(titled.title).toBe('feat(SOFRMPT-3675): Open TV Shop')
+  })
+})
+
+describe('lastReplyToMe', () => {
+  const note = (id: number, name: string, extra: Record<string, unknown> = {}) => ({ id, body: 'x', author: { name, username: name.toLowerCase() }, ...extra })
+  it('returns the newest note someone else wrote after me in my threads', () => {
+    const json = [
+      { notes: [note(1, 'Me'), note(2, 'Anna'), note(5, 'Jan')] },
+      { notes: [note(3, 'Anna'), note(4, 'Me')] },
+      { notes: [note(9, 'Anna'), note(10, 'Jan')] }
+    ]
+    expect(lastReplyToMe(json, 'Me', [])).toBe(5)
+  })
+  it('counts replies in a thread someone else started once I wrote in it', () => {
+    const json = [{ notes: [note(1, 'Anna'), note(2, 'Me'), note(3, 'Anna')] }]
+    expect(lastReplyToMe(json, 'Me', [])).toBe(3)
+  })
+  it('ignores bots, system notes and threads without my notes', () => {
+    const json = [
+      { notes: [note(1, 'Me'), note(2, 'dao-gitlab'), note(3, 'Group_1_bot_x'), note(4, 'Anna', { system: true })] },
+      { notes: [note(6, 'Anna')] }
+    ]
+    expect(lastReplyToMe(json, 'Me', ['dao-gitlab'])).toBeNull()
+  })
+  it('returns null without me or discussions', () => {
+    expect(lastReplyToMe(null, 'Me', [])).toBeNull()
+    expect(lastReplyToMe([{ notes: [note(1, 'Anna')] }], null, [])).toBeNull()
   })
 })

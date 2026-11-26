@@ -1,4 +1,5 @@
 import type { DiffRow, MrApprovals, MrDiffRefs, MrDiscussion, MrDraftNote, MrLinePosition, MrOverview, MrSnippet, MrState, MrStatus, MrVersionDiff, TicketMr } from '../renderer/src/types'
+import { isBotUser } from './mrwatch'
 
 const REQUEST_TIMEOUT_MS = 15000
 
@@ -103,7 +104,7 @@ export const anchorOf = (position: any): MrDiscussion['anchor'] => {
   return path && typeof line === 'number' && sha ? { path, line, sha, side: isNew ? 'new' : 'old' } : null
 }
 
-export const parseDiscussions = (json: unknown, myId: number | null = null): MrDiscussion[] =>
+export const parseDiscussions = (json: unknown, myId: number | null = null, bots: string[] = []): MrDiscussion[] =>
   Array.isArray(json)
     ? json.flatMap((d: any): MrDiscussion[] => {
         const raw = Array.isArray(d?.notes) ? d.notes.filter(Boolean) : []
@@ -120,7 +121,7 @@ export const parseDiscussions = (json: unknown, myId: number | null = null): MrD
             where: path ? `${path}${typeof line === 'number' ? `:${line}` : ''}` : null,
             anchor: anchorOf(first.position),
             snippet: null,
-            notes: raw.map((n: any) => ({ id: n.id, author: asText(n.author?.name), body: asText(n.body), createdAt: asText(n.created_at), isMine: myId !== null && n.author?.id === myId && n.system !== true }))
+            notes: raw.map((n: any) => ({ id: n.id, author: asText(n.author?.name), body: asText(n.body), createdAt: asText(n.created_at), isMine: myId !== null && n.author?.id === myId && n.system !== true, isBot: isBotUser(asText(n.author?.username), bots) }))
           }
         ]
       })
@@ -212,7 +213,7 @@ export const countCommits = (json: unknown[] | null): number | null => (json ? j
 
 let myIdCache: number | null = null
 
-export const fetchMrStatus = async (base: string, token: string, projectId: number, iid: number): Promise<MrStatus> => {
+export const fetchMrStatus = async (base: string, token: string, projectId: number, iid: number, bots: string[] = []): Promise<MrStatus> => {
   if (myIdCache === null) {
     const me = await request(base, token, 'GET', '/user')
     myIdCache = typeof me.json?.id === 'number' ? me.json.id : null
@@ -229,7 +230,7 @@ export const fetchMrStatus = async (base: string, token: string, projectId: numb
     state: mr.json ? parseMrState(mr.json) : null,
     overview: mr.json ? parseMrOverview(mr.json) : null,
     approvals: approvals.json ? parseApprovals(approvals.json, myIdCache) : null,
-    discussions: discussions.json ? await withSnippets(base, token, projectId, parseDiscussions(discussions.json, myIdCache), diffsByPath(diffs.json)) : null,
+    discussions: discussions.json ? await withSnippets(base, token, projectId, parseDiscussions(discussions.json, myIdCache, bots), diffsByPath(diffs.json)) : null,
     drafts: drafts.json ? parseDraftNotes(drafts.json) : null,
     commits: countCommits(commits.json),
     diffRefs: parseDiffRefs(mr.json),

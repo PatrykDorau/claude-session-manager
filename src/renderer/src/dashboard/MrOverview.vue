@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
-import type { MenuItem, MrReviewAction, MrRow } from '../types'
+import { ref, computed, watch, onActivated, onDeactivated } from 'vue'
+import type { MenuItem, MrDiscussion, MrReviewAction, MrRow } from '../types'
+import { isBotThread, isMyThread, lastThreadReply, markRepliesSeen, newReplyIds, seenReplies, sortThreads } from './mrreplies'
 import { readFlag, writeSize } from './dashboard'
 import { PIPELINE_COLOR, type MrState } from './mrstate'
 import { draftsForThread, generalDrafts } from './mrreview'
@@ -19,6 +20,7 @@ const props = defineProps<{
   isHeaderShown?: boolean
   isAddressPending?: boolean
   openItems?: MenuItem[]
+  isShown: boolean
 }>()
 const emit = defineEmits<{ 'open-line': [path: string, line: number]; 'address-comments': [] }>()
 
@@ -64,8 +66,38 @@ const setFilter = (next: ThreadFilter): void => {
 }
 const persistSystemShown = (value: boolean): void => writeSize('dash.mrSystemShown', value)
 watch(isSystemShown, persistSystemShown)
-const shownThreads = computed(() => filterThreads(threads.value, drafts.value, filter.value, isSystemShown.value, keptIds.value))
-const counts = computed(() => threadCounts(threads.value, drafts.value))
+const isBotsShown = ref(readFlag('dash.mrBotsShown'))
+const persistBotsShown = (value: boolean): void => writeSize('dash.mrBotsShown', value)
+watch(isBotsShown, persistBotsShown)
+const isShownThread = (t: MrDiscussion): boolean => isBotsShown.value || !isBotThread(t)
+const peopleThreads = computed(() => threads.value.filter(isShownThread))
+const botCount = computed(() => threads.value.filter(isBotThread).length)
+const readSeenReply = (): number => seenReplies.value[props.row.key] ?? 0
+const seenBefore = ref(readSeenReply())
+const isActive = ref(true)
+const markSeenWhenShown = (): void => {
+  if (isActive.value && props.isShown && status.value?.discussions) markRepliesSeen(props.row.key, lastThreadReply(threads.value))
+}
+const leaveView = (): void => {
+  isActive.value = false
+  seenBefore.value = readSeenReply()
+}
+const enterView = (): void => {
+  isActive.value = true
+  markSeenWhenShown()
+}
+onActivated(enterView)
+onDeactivated(leaveView)
+watch([threads, () => props.isShown], markSeenWhenShown, { immediate: true })
+const newIds = computed(() => newReplyIds(threads.value, seenBefore.value))
+const isNewNote = (n: { id: number }): boolean => newIds.value.has(n.id)
+const isNewThread = (t: MrDiscussion): boolean => t.notes.some(isNewNote)
+const threadIdOf = (t: MrDiscussion): string => t.id
+const newThreadIds = computed(() => threads.value.filter(isNewThread).map(threadIdOf))
+const shownThreads = computed(() =>
+  sortThreads(filterThreads(peopleThreads.value, drafts.value, filter.value, isSystemShown.value, [...keptIds.value, ...newThreadIds.value]), newIds.value)
+)
+const counts = computed(() => threadCounts(peopleThreads.value, drafts.value))
 const emptyText = computed(() => (filter.value === 'open' ? 'No open threads' : filter.value === 'resolved' ? 'No resolved threads' : 'No threads'))
 const commitsText = computed(() => {
   const n = status.value?.commits ?? null
@@ -360,7 +392,9 @@ const saveDesc = async (): Promise<void> => {
             <button :class="{ on: filter === 'resolved' }" @click="setFilter('resolved')">Resolved {{ counts.resolved }}</button>
             <button :class="{ on: filter === 'all' }" @click="setFilter('all')">All</button>
           </div>
+          <span v-if="newIds.size" class="newcount">{{ newIds.size }} {{ newIds.size === 1 ? 'new reply' : 'new replies' }} to you</span>
           <span class="grow" />
+          <label v-if="botCount" class="opts sysopt"><input v-model="isBotsShown" type="checkbox" />boty ({{ botCount }})</label>
           <label class="opts sysopt"><input v-model="isSystemShown" type="checkbox" />zdarzenia systemowe</label>
         </div>
         <p v-if="status.discussions === null" class="muted">Could not load the activity.</p>
@@ -375,29 +409,31 @@ const saveDesc = async (): Promise<void> => {
             <span class="md inline" v-html="noteHtml[d.notes[0].id]" />
             <span class="when">{{ ago(Date.parse(d.notes[0].createdAt)) }}</span>
           </div>
-          <button v-else-if="d.isResolved && !expandedResolved.has(d.id)" class="collapsed" @click="toggleResolved(d.id)">
+          <button v-else-if="d.isResolved && !expandedResolved.has(d.id) && !isNewThread(d)" class="collapsed" :class="{ mine: isMyThread(d) }" @click="toggleResolved(d.id)">
             <Icon name="check" :size="13" />
             <span class="cwhere">{{ d.where ?? 'Thread' }}</span>
             <span class="cwho">{{ d.notes[0].author }}: {{ d.notes[0].body.split(String.fromCharCode(10))[0] }}</span>
             <span class="ccount">{{ d.notes.length }} {{ d.notes.length === 1 ? 'comment' : 'comments' }}</span>
             <Icon name="chevronRight" :size="13" />
           </button>
-          <article v-else :id="`thread-${d.id}`" class="thread" :class="{ resolved: d.isResolved }" @click="onThreadClick($event, d.anchor?.path ?? null, d.anchor?.line ?? null)">
+          <article v-else :id="`thread-${d.id}`" class="thread" :class="{ resolved: d.isResolved && !isNewThread(d), mine: isMyThread(d), fresh: isNewThread(d) }" @click="onThreadClick($event, d.anchor?.path ?? null, d.anchor?.line ?? null)">
             <div class="thead">
               <code v-if="d.where && d.anchor?.side === 'new'" class="golink" title="Show in code" @click.stop="openLine(d.anchor.path, d.anchor.line)">{{ d.where }}</code>
               <code v-else-if="d.where">{{ d.where }}</code>
               <span v-else class="general">General</span>
               <span v-if="d.isResolvable" class="rs" :class="{ done: d.isResolved }">{{ d.isResolved ? 'resolved' : 'open' }}</span>
+              <span v-if="isNewThread(d)" class="newtag">New reply</span>
+              <span v-else-if="isMyThread(d)" class="mytag">Your thread</span>
               <span class="tcount">{{ d.notes.length }} {{ d.notes.length === 1 ? 'comment' : 'comments' }}</span>
             </div>
             <div v-if="d.snippet" class="snip">
               <div v-for="(r, i) in d.snippet.rows" :key="i" class="sl" :class="{ hit: r.isHit, add: r.mark === '+', del: r.mark === '-' }"><span class="ln">{{ r.no ?? '' }}</span><span class="mk">{{ r.mark }}</span>{{ r.text }}</div>
             </div>
-            <div v-for="n in d.notes" :key="n.id" class="note">
+            <div v-for="n in d.notes" :key="n.id" class="note" :class="{ isnew: isNewNote(n) }">
               <span class="av">{{ initials(n.author) }}</span>
               <div class="nbody">
                 <div class="nhead">
-                  <b>{{ n.author }}</b><span>{{ ago(Date.parse(n.createdAt)) }}</span>
+                  <b>{{ n.author }}</b><span>{{ ago(Date.parse(n.createdAt)) }}</span><span v-if="isNewNote(n)" class="newtag">New</span>
                   <span class="grow" />
                   <MenuButton v-if="editKey !== `n:${n.id}`" label="Note actions" icon="more" is-icon title="Note actions" :items="noteMenu(d, n)" />
                 </div>
@@ -1181,6 +1217,40 @@ const saveDesc = async (): Promise<void> => {
 }
 .thread.resolved {
   opacity: 0.6;
+}
+.thread.mine,
+.collapsed.mine {
+  border-left: 3px solid var(--info);
+}
+.thread.fresh {
+  border-color: var(--accent);
+  border-left: 3px solid var(--accent);
+}
+.note.isnew {
+  margin-left: -6px;
+  padding-left: 6px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 6px;
+}
+.newtag,
+.mytag,
+.newcount {
+  padding: 0 7px;
+  font-size: 11px;
+  line-height: 17px;
+  border-radius: 9px;
+}
+.newtag,
+.newcount {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+.mytag {
+  color: var(--info);
+  border: 1px solid var(--info);
+}
+.nhead .newtag {
+  margin-left: 6px;
 }
 .thead {
   display: flex;

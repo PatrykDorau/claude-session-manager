@@ -132,6 +132,7 @@ export interface MrItem {
   openThreads: number
   waitingThreads: number | null
   othersNotes: number | null
+  replyToMeId: number | null
   approvals: number
   isApprovedByMe: boolean
   isDraft: boolean
@@ -402,6 +403,7 @@ export interface MrNote {
   body: string
   createdAt: string
   isMine: boolean
+  isBot: boolean
 }
 
 export interface MrSnippet {
