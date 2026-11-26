@@ -36,6 +36,8 @@ import { findReviewSession } from './mrs'
 import { FOCUS_PING_MS, startFocusPing, type ActivitySurface } from './activity'
 import { countOpenHosts } from './hosts'
 import { onVisible, whenVisible } from './visibility'
+import { appShortcut } from './shortcuts'
+import DispatcherOverlay from './DispatcherOverlay.vue'
 
 const sessions = ref<Session[]>([])
 const tasks = ref<Record<string, TaskMeta>>({})
@@ -166,11 +168,40 @@ const viewingId = computed(() => {
 watch(viewingId, (id) => window.api.setViewingSession(id), { immediate: true })
 const isPromptSearchOpen = ref(false)
 const onGlobalKey = (ev: KeyboardEvent): void => {
-  if (!ev.ctrlKey || ev.altKey || ev.shiftKey || ev.key.toLowerCase() !== 'k') return
+  const shortcut = appShortcut(ev)
+  if (!shortcut) return
   ev.preventDefault()
   ev.stopPropagation()
+  if (ev.repeat) return
+  if (shortcut === 'dispatcher') {
+    void toggleDispatcher()
+    return
+  }
   promptTargetId.value = viewingId.value
   isPromptSearchOpen.value = !isPromptSearchOpen.value
+}
+const dispatcherId = ref<string | null>(null)
+const isDispatcherOpen = ref(false)
+const isDispatcherStarting = ref(false)
+const dispatcherError = ref<string | null>(null)
+const isDispatcherSession = (s: Session): boolean => !!dispatcherId.value && s.id.startsWith(dispatcherId.value)
+const dispatcherSession = computed(() => sessions.value.find(isDispatcherSession) ?? null)
+const isPanelSession = (s: Session): boolean => !isDispatcherSession(s)
+const panelSessionList = computed(() => sessions.value.filter(isPanelSession))
+const toggleDispatcher = async (): Promise<void> => {
+  if (isDispatcherOpen.value) {
+    isDispatcherOpen.value = false
+    return
+  }
+  isDispatcherOpen.value = true
+  isDispatcherStarting.value = true
+  try {
+    const result = await window.api.openDispatcher()
+    dispatcherError.value = result.error
+    dispatcherId.value = result.sessionId ?? dispatcherId.value
+  } finally {
+    isDispatcherStarting.value = false
+  }
 }
 const promptTargetId = ref<string | null>(null)
 const promptTargetLabel = computed(() => {
@@ -218,6 +249,7 @@ const orchestratorJobs = ref<Job[]>([])
 const isStartJobsOpen = ref(false)
 const applyOrchestrator = (state: OrchestratorState): void => {
   orchestratorJobs.value = state.jobs
+  dispatcherId.value = state.dispatcherSessionId
 }
 let stopOrchestrator: (() => void) | null = null
 const counts = computed<Record<DashboardPage, number>>(() => ({
@@ -452,10 +484,11 @@ onBeforeUnmount(() => {
         :tickets="myTasks.tickets"
         :mrs="myMrs.items"
         :my-name="myMrs.myName ?? null"
-        :sessions="sessions"
+        :sessions="panelSessionList"
         @open="openJob"
         @open-task="openSessionTask"
         @full-screen="setPanelFullScreen"
+        @dispatcher="toggleDispatcher"
       />
       <MrView
         v-else-if="isMrPage && selectedMr"
@@ -497,7 +530,24 @@ onBeforeUnmount(() => {
 
     <InboxPopup v-if="isInboxOpen" :rows="liveRows" :order="inboxOrder" @open="openInboxRow" @close="isInboxOpen = false" @order="setInboxOrder" />
     <PromptSearch v-if="isPromptSearchOpen" :session-id="promptTargetId" :target-label="promptTargetLabel" @close="isPromptSearchOpen = false" />
-    <StatusBar v-show="!isPanelFullScreen" :sessions="sessions" :servers="servers" :my-tasks="myTasks" :my-mrs="myMrs" @open="openPage" />
+    <DispatcherOverlay
+      v-if="isDispatcherOpen"
+      :session="dispatcherSession"
+      :error="dispatcherError"
+      :is-starting="isDispatcherStarting"
+      @close="isDispatcherOpen = false"
+    />
+    <StatusBar
+      v-show="!isPanelFullScreen"
+      :sessions="sessions"
+      :servers="servers"
+      :my-tasks="myTasks"
+      :my-mrs="myMrs"
+      :is-panel-page="page === 'today'"
+      :is-dispatcher-open="isDispatcherOpen"
+      @open="openPage"
+      @dispatcher="toggleDispatcher"
+    />
     <div v-if="isSettingsOpen" class="scrim" @click="isSettingsOpen = false" />
     <aside v-if="isSettingsOpen" class="drawer">
       <header class="dhead">
