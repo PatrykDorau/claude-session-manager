@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { layoutKey, columnsKey, parseLayout, followLayout, readColumns, writeColumns, DEFAULT_TILE, panelSessions, lastClosedSession, followPin, resolveSession, pinnedSessions, togglePin, gridColumns, resolvePins, needsYou, parsePins, mrOfSession, startableRows, pinStarted, isDoneStatus, matchesQuery, groupByStatus, movePin, cellKey, parseCellLooks, crCandidates, sectionOf, isNewActivity, newNotesCount, readSeen, baselineSeen, markSeen, groupSections, trackWorkingSince, trackWaitingSince, pruneAcknowledged, formatWait, panelShortcut, assignIdentities, identityOf, IDENTITY_COLORS, IDENTITY_ICONS, IDENTITY_LETTERS, readIdentities, stageOf, matchSessions, isRecentSession } from '../src/renderer/src/dashboard/commandpanel'
+import { layoutKey, columnsKey, parseLayout, followLayout, readColumns, writeColumns, DEFAULT_TILE, panelSessions, lastClosedSession, followPin, resolveSession, pinnedSessions, togglePin, gridColumns, resolvePins, needsYou, parsePins, mrOfSession, startableRows, pinStarted, isDoneStatus, matchesQuery, groupByStatus, movePin, cellKey, parseCellLooks, crCandidates, sectionOf, isNewActivity, newNotesCount, readSeen, baselineSeen, markSeen, groupSections, trackWorkingSince, orderBySince, trackWaitingSince, pruneAcknowledged, formatWait, panelShortcut, assignIdentities, identityOf, IDENTITY_COLORS, IDENTITY_ICONS, IDENTITY_LETTERS, readIdentities, stageOf, matchSessions, isRecentSession } from '../src/renderer/src/dashboard/commandpanel'
 import type { MrRow, Session } from '../src/renderer/src/types'
 import type { SeenMr } from '../src/renderer/src/dashboard/commandpanel'
 import type { PickRow } from '../src/renderer/src/dashboard/orchestrator'
@@ -358,6 +358,14 @@ describe('sections', () => {
     const left = trackWorkingSince(first, [s('a')], 300)
     expect(left).toEqual({})
     expect(trackWorkingSince(left, working, 400)).toEqual({ a: 400 })
+  })
+
+  it('orderBySince keeps the oldest entry first whatever lastActive says, unknown ones last by id', () => {
+    const sessions = [s('c', { lastActive: 900 }), s('b', { lastActive: 50 }), s('a', { lastActive: 500 }), s('d', { lastActive: 999 })]
+    const since = { a: 300, b: 100, c: 200 }
+    expect(orderBySince(sessions, since).map((x) => x.id)).toEqual(['b', 'c', 'a', 'd'])
+    const touched = sessions.map((x) => ({ ...x, lastActive: x.lastActive + 10_000 }))
+    expect(orderBySince(touched, since).map((x) => x.id)).toEqual(['b', 'c', 'a', 'd'])
   })
 })
 

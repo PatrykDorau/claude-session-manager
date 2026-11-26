@@ -400,6 +400,7 @@ const api = {
   adoptSession: (sessionId: string): Promise<{ error: string | null }> => ipcRenderer.invoke('orchestrator-adopt', sessionId),
   setSessionAutonomy: (sessionId: string, choice: import('../main/orchestrator').AutonomyChoice): Promise<{ error: string | null }> =>
     ipcRenderer.invoke('orchestrator-session-autonomy', sessionId, choice),
+  openDispatcher: (): Promise<{ error: string | null; sessionId?: string }> => ipcRenderer.invoke('dispatcher-open'),
   getOrchestrator: (): Promise<import('../main/orchestrator').OrchestratorState> => ipcRenderer.invoke('orchestrator-get'),
   onOrchestrator: (cb: (state: import('../main/orchestrator').OrchestratorState) => void): (() => void) => {
     const handler = (_e: unknown, state: import('../main/orchestrator').OrchestratorState): void => cb(state)

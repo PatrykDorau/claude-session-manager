@@ -185,26 +185,22 @@ const setAutonomy = async (autonomy: AutonomyChoice): Promise<void> => {
   position: relative;
 }
 .cell.is-waiting {
-  box-shadow:
-    0 0 10px 2px color-mix(in srgb, var(--warn) 55%, transparent),
-    inset 0 0 12px 1px color-mix(in srgb, var(--warn) 35%, transparent);
+  border-color: var(--warn);
+  outline: 3px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  outline-offset: -5px;
 }
 .cell.is-calling {
   animation: call 1.6s ease-in-out infinite;
 }
 @keyframes call {
   50% {
-    box-shadow:
-      0 0 18px 6px color-mix(in srgb, var(--warn) 90%, transparent),
-      inset 0 0 22px 4px color-mix(in srgb, var(--warn) 60%, transparent);
+    outline-color: var(--warn);
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .cell.is-calling {
     animation: none;
-    box-shadow:
-      0 0 14px 4px color-mix(in srgb, var(--warn) 80%, transparent),
-      inset 0 0 18px 3px color-mix(in srgb, var(--warn) 50%, transparent);
+    outline-color: var(--warn);
   }
 }
 .wait-badge {

@@ -18,6 +18,8 @@ const FORBIDDEN_QUESTION = new RegExp(
   'iu'
 )
 
+const DISPATCHER_FORBIDDEN = /koment|comment|jir|publish|publik/iu
+
 const IGNORED_QUESTION_WORD = /^(?:uncommit|niezacommit)/iu
 
 const FILE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']
@@ -37,19 +39,29 @@ const isForbiddenCommand = (command: string): boolean => {
   return normalized.split(/[;&|\n]/).some(isForbiddenGitSegment) || FORBIDDEN_COMMANDS.some((pattern) => pattern.test(normalized))
 }
 
-const questionText = (rawInput: any): string => {
-  const questions = Array.isArray(rawInput?.questions) ? rawInput.questions : []
-  return questions
-    .flatMap((q: any) => [q?.header, q?.question, ...(Array.isArray(q?.options) ? q.options.map((o: any) => o?.label) : [])])
-    .filter((text: unknown): text is string => typeof text === 'string')
-    .join('\n')
+const withoutIgnoredWords = (text: string): string =>
+  text
     .split(/[^\p{L}\p{N}_]+/u)
     .filter((word: string) => !IGNORED_QUESTION_WORD.test(word))
     .join(' ')
+
+const questionText = (rawInput: any): string => {
+  const questions = Array.isArray(rawInput?.questions) ? rawInput.questions : []
+  return withoutIgnoredWords(
+    questions
+      .flatMap((q: any) => [q?.header, q?.question, ...(Array.isArray(q?.options) ? q.options.map((o: any) => o?.label) : [])])
+      .filter((text: unknown): text is string => typeof text === 'string')
+      .join('\n')
+  )
 }
 
 const isForbiddenPath = (rawInput: any): boolean =>
   [rawInput?.file_path, rawInput?.notebook_path].some((path) => typeof path === 'string' && FORBIDDEN_PATH.test(path.trim()))
+
+export const isForbiddenPrompt = (text: string): boolean =>
+  isForbiddenCommand(text) || FORBIDDEN_QUESTION.test(withoutIgnoredWords(text)) || DISPATCHER_FORBIDDEN.test(text)
+
+export const isForbiddenDispatcherQuestion = (rawInput: unknown): boolean => DISPATCHER_FORBIDDEN.test(questionText(rawInput))
 
 export const isForbiddenRequest = (toolName: string, rawInput: unknown): boolean => {
   if (FILE_TOOLS.includes(toolName)) return isForbiddenPath(rawInput)

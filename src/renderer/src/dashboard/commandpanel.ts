@@ -599,6 +599,12 @@ export const trackWorkingSince = (
   return Object.fromEntries(sessions.filter(isWorking).map(sinceOf))
 }
 
+export const orderBySince = (sessions: Session[], since: Record<string, number>): Session[] => {
+  const sinceOf = (s: Session): number => since[s.id] ?? Number.POSITIVE_INFINITY
+  const bySince = (a: Session, b: Session): number => sinceOf(a) - sinceOf(b) || a.id.localeCompare(b.id)
+  return [...sessions].sort(bySince)
+}
+
 export const trackWaitingSince = (
   previous: Record<string, number>,
   sessions: Session[],

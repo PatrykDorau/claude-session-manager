@@ -86,11 +86,24 @@ describe('withAutonomy', () => {
 
 describe('loadOrchestrator', () => {
   it('returns empty state for missing input', () => {
-    expect(loadOrchestrator(undefined)).toEqual({ jobs: [] })
-    expect(emptyOrchestrator()).toEqual({ jobs: [] })
+    expect(loadOrchestrator(undefined)).toEqual({ jobs: [], dispatcherSessionId: null })
+    expect(emptyOrchestrator()).toEqual({ jobs: [], dispatcherSessionId: null })
   })
   it('keeps only valid jobs', () => {
-    expect(loadOrchestrator({ jobs: [validJob, { kind: 'bogus' }, 7] })).toEqual({ jobs: [validJob] })
+    expect(loadOrchestrator({ jobs: [validJob, { kind: 'bogus' }, 7] })).toEqual({
+      jobs: [validJob],
+      dispatcherSessionId: null
+    })
+  })
+  it('keeps a string dispatcher session id', () => {
+    expect(loadOrchestrator({ jobs: [], dispatcherSessionId: 'abc' }).dispatcherSessionId).toBe('abc')
+  })
+  it('defaults the dispatcher session id to null', () => {
+    expect(loadOrchestrator({ jobs: [] }).dispatcherSessionId).toBeNull()
+    expect(emptyOrchestrator().dispatcherSessionId).toBeNull()
+  })
+  it('drops a non-string dispatcher session id', () => {
+    expect(loadOrchestrator({ jobs: [], dispatcherSessionId: 7 }).dispatcherSessionId).toBeNull()
   })
   it('reloads a starting job without a session as queued', () => {
     const loaded = loadOrchestrator({ jobs: [{ ...validJob, state: 'starting', sessionId: null }] })
