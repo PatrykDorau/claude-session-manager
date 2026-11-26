@@ -230,6 +230,21 @@ import {
   type JobRequest,
   type SessionView
 } from './orchestrator'
+import {
+  appendEvents,
+  dispatcherArgs,
+  dispatcherStartError,
+  eventsSince,
+  findDispatcherSession,
+  isDispatcherLive,
+  jobLogEvents,
+  jobRow,
+  refusedAnswer,
+  refusedPrompt,
+  startRequestOf,
+  waitingEvent,
+  type DispatchEvent
+} from './dispatcher'
 import { decideWaiting, allowedKeys, judgePrompt, judgeArgs, parseVerdict, JUDGE_TIMEOUT_MS, type Verdict } from './judge'
 import { isForbiddenRequest } from './guard'
 import { parseBots, newHumanNotes, watchAction, watchStep, newCommentsPrompt, parseMrKey, ownMrsToWatch } from './mrwatch'
@@ -1398,6 +1413,8 @@ const inboxItem = async (id: string): Promise<InboxItem | null> => {
 
 const NOT_PENDING = { error: 'This request is no longer pending' }
 
+const answeredToolUses = new Set<string>()
+
 const isStillPending = (id: string, toolUseId: string): boolean =>
   isAnswerCurrent({ status: sessionById(id)?.status ?? 'closed', toolUseId: sessionTail(id)?.pendingTool?.toolUseId ?? null }, toolUseId)
 
@@ -1409,7 +1426,8 @@ const answerInbox = async (id: string, toolUseId: string, key: string): Promise<
     if (opened.error) return opened
   }
   if (!(await waitForQuietOutput(id, true))) return { error: 'Claude is busy in the terminal, so nothing was sent' }
-  if (!isStillPending(id, toolUseId)) return NOT_PENDING
+  if (!isStillPending(id, toolUseId) || answeredToolUses.has(toolUseId)) return NOT_PENDING
+  answeredToolUses.add(toolUseId)
   ptyHost.write(id, key)
   return { error: null }
 }
@@ -2241,12 +2259,47 @@ const waitMarks = new Map<string, string>()
 const transcriptPaths = new Map<string, string>()
 const busyJobs = new Set<string>()
 const judgedToolUses = new Set<string>()
+const announcedToolUses = new Set<string>()
+const dispatcherWaits = new Map<string, string>()
 const warnedSkips = new Set<string>()
+let dispatchEvents: DispatchEvent[] = []
+const FEED_ID = Date.now()
 let gitlabUsername: string | null = null
 let isWatchingMrs = false
 
+const dispatcherLive = (): boolean => {
+  const id = appState.orchestrator.dispatcherSessionId
+  return isDispatcherLive(findDispatcherSession(lastSessions, id)?.status ?? null)
+}
+
+let isDispatcherStarting = false
+
+const openDispatcher = async (): Promise<{ error: string | null; sessionId?: string }> => {
+  const known = findDispatcherSession(lastSessions, appState.orchestrator.dispatcherSessionId)
+  if (known && dispatcherLive()) return { error: null, sessionId: known.id }
+  if (isDispatcherStarting) return { error: 'dispatcher is already starting' }
+  const exe = resolveClaudeExe()
+  if (!exe) return { error: 'claude.exe not found' }
+  isDispatcherStarting = true
+  try {
+    const out = await spawnBackground(exe, joinPath(homedir(), '.claude'), dispatcherArgs(), true)
+    const shortId = parseBgId(out)
+    if (!shortId) return { error: dispatcherStartError(out) }
+    const id = (await waitForSessionId(shortId, 10000)) ?? shortId
+    appState = { ...appState, orchestrator: { ...appState.orchestrator, dispatcherSessionId: id } }
+    saveState(statePath, appState)
+    sendAll('orchestrator', appState.orchestrator)
+    await refreshAgents()
+    await rescanAndPush()
+    return { error: null, sessionId: findDispatcherSession(lastSessions, id)?.id ?? id }
+  } finally {
+    isDispatcherStarting = false
+  }
+}
+
 const setJobs = (jobs: Job[]): void => {
-  appState = { ...appState, orchestrator: { jobs } }
+  dispatchEvents = appendEvents(dispatchEvents, jobLogEvents(appState.orchestrator.jobs, jobs, Date.now()))
+  appState = { ...appState, orchestrator: { ...appState.orchestrator, jobs } }
   saveState(statePath, appState)
   sendAll('orchestrator', appState.orchestrator)
 }
@@ -2364,7 +2417,18 @@ const handleWaiting = async (id: string, sessionId: string): Promise<void> => {
   const pending = tail.pendingTool
   const rawInput = pendingRawInput(lines)
   const job = findJob(id)
+  const isDispatcherUp = dispatcherLive()
+  if (!isDispatcherUp) dispatcherWaits.delete(id)
   if (!job || (pending && judgedToolUses.has(pending.toolUseId))) return
+  if (pending && !announcedToolUses.has(pending.toolUseId)) {
+    announcedToolUses.add(pending.toolUseId)
+    dispatchEvents = appendEvents(dispatchEvents, [waitingEvent(job, pending, tail.questionOptions, Date.now())])
+  }
+  if (pending && job.autonomy === 'autonomous' && isDispatcherUp) {
+    if (dispatcherWaits.get(id) === pending.toolUseId) return
+    dispatcherWaits.set(id, pending.toolUseId)
+    return logJob(id, 'waiting for the dispatcher')
+  }
   const decision = decideWaiting(job.autonomy, pending, rawInput, (await modeOf(sessionId)) === 'attach')
   if (decision === 'escalate' || !pending) {
     if (pending) judgedToolUses.add(pending.toolUseId)
@@ -2533,7 +2597,8 @@ const tickJob = (job: Job, links: Map<string, string>, now: number, actions: (()
   jobStatus.set(job.id, status)
   if (status === 'working' && prev !== 'working') turnStarts.set(job.id, now)
   const mark = status === 'waiting' ? transcriptMark(sessionId) : ''
-  if (status === 'waiting' && (prev !== 'waiting' || mark !== waitMarks.get(job.id))) {
+  const isHandedOffToDeadDispatcher = dispatcherWaits.has(job.id) && !dispatcherLive()
+  if (status === 'waiting' && (prev !== 'waiting' || mark !== waitMarks.get(job.id) || isHandedOffToDeadDispatcher)) {
     waitMarks.set(job.id, mark)
     actions.push(runBusy(job.id, () => handleWaiting(job.id, sessionId)))
     return next
@@ -2606,7 +2671,7 @@ const setJobAutonomy = (id: string, autonomy: Autonomy): void =>
   updateJob(id, (j) => withAutonomy(j, autonomy, Date.now()))
 
 const forgetJob = (id: string): void => {
-  for (const map of [launchingJobs, jobStatus, turnStarts, phaseSince, clearSentAt, clearMarks, waitMarks]) map.delete(id)
+  for (const map of [launchingJobs, jobStatus, turnStarts, phaseSince, clearSentAt, clearMarks, waitMarks, dispatcherWaits]) map.delete(id)
   warnedSkips.delete(id)
 }
 
@@ -2867,7 +2932,85 @@ const serverRoute = async (body: Record<string, unknown>, isUserAction: boolean)
   }
 }
 
+const jobPendingPrompt = (job: Job) => {
+  const sessionId = job.sessionId ? boundSessionId(job.sessionId, throughCleared(continuations.links)) : null
+  const file = sessionId && sessionById(sessionId)?.status === 'waiting' ? cachedTranscript(sessionId) : null
+  const lines = file ? readTailLines(file) : []
+  const tail = parseTail(lines)
+  return { sessionId, pending: tail.pendingTool, rawInput: pendingRawInput(lines), questionOptions: tail.questionOptions }
+}
+
+const dispatcherRefusal = (job: Job, reason: string): { error: string } => {
+  logJob(job.id, `dispatcher refused: ${reason}`)
+  return { error: reason }
+}
+
 const bridgeRoutes = {
+  '/jobs': async (): Promise<unknown> => ({
+    jobs: appState.orchestrator.jobs.map((job) => {
+      const { pending, questionOptions } = jobPendingPrompt(job)
+      return jobRow(job, pending, questionOptions)
+    })
+  }),
+  '/events': async (body: Record<string, unknown>): Promise<unknown> => ({
+    ...eventsSince(dispatchEvents, typeof body.since === 'number' ? body.since : 0),
+    feedId: FEED_ID
+  }),
+  '/answer': async (body: Record<string, unknown>): Promise<unknown> => {
+    const job = findJob(asString(body.job))
+    if (!job) return { error: 'unknown job' }
+    const { sessionId, pending, rawInput, questionOptions } = jobPendingPrompt(job)
+    if (!sessionId) return { error: 'job has no session' }
+    const toolUseId = asString(body.toolUseId)
+    if (!pending || pending.toolUseId !== toolUseId) return { error: 'no such pending prompt' }
+    const key = asString(body.key)
+    const reason = refusedAnswer(pending, rawInput, questionOptions, key)
+    if (reason) return dispatcherRefusal(job, reason)
+    const answered = await answerInbox(sessionId, toolUseId, key)
+    if (answered.error) return answered
+    logJob(job.id, `dispatcher: ${key}`)
+    return { error: null }
+  },
+  '/prompt': async (body: Record<string, unknown>): Promise<unknown> => {
+    const job = findJob(asString(body.job))
+    if (!job) return { error: 'unknown job' }
+    const text = asString(body.text)
+    if (!text) return { error: 'empty prompt' }
+    const { sessionId } = jobPendingPrompt(job)
+    if (!sessionId) return { error: 'job has no session' }
+    const reason = refusedPrompt(text, sessionById(sessionId)?.status ?? null)
+    if (reason) return dispatcherRefusal(job, reason)
+    const isStillIdle = (): boolean => sessionById(sessionId)?.status === 'idle' && !sessionTail(sessionId)?.pendingTool
+    const sent = await sendPrompt(sessionId, text, isStillIdle)
+    if (sent.error) return sent
+    logJob(job.id, 'dispatcher prompt sent')
+    return { error: null }
+  },
+  '/start': async (body: Record<string, unknown>): Promise<unknown> => {
+    const request = startRequestOf(
+      { ticket: asString(body.ticket), review: asString(body.review), watch: asString(body.watch), autonomy: asString(body.autonomy) },
+      {
+        jiraTitles: Object.fromEntries(Object.entries(appState.jira).map(([k, v]) => [k, v.summary ?? ''])),
+        mrs: mrItems,
+        repoFor: (key) => appState.repoByPrefix[ticketPrefix(key)] ?? repoRoots(lastSessions)[0]?.path ?? null
+      }
+    )
+    return request ? startJobs([request]) : { error: 'unknown ticket or MR' }
+  },
+  '/autonomy': async (body: Record<string, unknown>): Promise<unknown> => {
+    const job = findJob(asString(body.job))
+    if (!job) return { error: 'unknown job' }
+    const level = asString(body.level)
+    if (!['manual', 'autonomous', 'routine'].includes(level)) return { error: 'invalid level' }
+    setJobAutonomy(job.id, level as Autonomy)
+    return { error: null }
+  },
+  '/remove': async (body: Record<string, unknown>): Promise<unknown> => {
+    const job = findJob(asString(body.job))
+    if (!job) return { error: 'unknown job' }
+    removeJob(job.id)
+    return { error: null }
+  },
   '/server': async (body: Record<string, unknown>): Promise<unknown> => serverRoute(body, false),
   '/chrome': async (body: Record<string, unknown>): Promise<unknown> => {
     const key = asString(body.ticket).toUpperCase() || ticketFromPath(asString(body.cwd)) || null
@@ -3095,18 +3238,20 @@ const openOnDemand = async (id: string): Promise<boolean> => {
 
 const terminalWriter = createOnDemandWriter({ isOpen: ptyHost.isOpen, open: openOnDemand, write: ptyHost.write })
 
-const sendKeys = async (id: string, data: string): Promise<{ error: string | null }> => {
+const sendKeys = async (id: string, data: string, isStillSafe?: () => boolean): Promise<{ error: string | null }> => {
   await terminalWriter.whenFlushed(id)
   if (!ptyHost.isOpen(id)) {
     const opened = await openFromMain(id)
     if (opened.error) return opened
   }
   if (!(await waitForQuietOutput(id))) return { error: 'the session did not answer' }
+  if (isStillSafe && !isStillSafe()) return { error: 'the session is no longer idle, so nothing was sent' }
   ptyHost.write(id, data)
   return { error: null }
 }
 
-const sendPrompt = (id: string, text: string): Promise<{ error: string | null }> => sendKeys(id, pasteInput(text))
+const sendPrompt = (id: string, text: string, isStillSafe?: () => boolean): Promise<{ error: string | null }> =>
+  sendKeys(id, pasteInput(text), isStillSafe)
 
 const takeOver = async (id: string, cols: number, rows: number): Promise<{ error: string | null }> => {
   handedToVscode.delete(id)
@@ -4153,6 +4298,7 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle('orchestrator-adopt', (_e, sessionId: string) => adoptSession(sessionId))
   ipcMain.handle('orchestrator-session-autonomy', (_e, sessionId: string, choice: AutonomyChoice) => setSessionAutonomy(sessionId, choice))
   ipcMain.handle('orchestrator-get', () => appState.orchestrator)
+  ipcMain.handle('dispatcher-open', () => openDispatcher())
   ipcMain.handle('local-hosts', () => listLocalHosts())
   ipcMain.handle('close-chrome', async (_e, key: string | null) => ({ error: await closeChrome(typeof key === 'string' ? key : null) }))
   ipcMain.handle('ticket-server', async (_e, key: string, cwd: string | null) => serverRoute({ ticket: key, cwd: cwd ?? '' }, true))

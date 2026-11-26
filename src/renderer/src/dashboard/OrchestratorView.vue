@@ -37,6 +37,7 @@ import {
   resolveSession,
   trackWaitingSince,
   trackWorkingSince,
+  orderBySince,
   writeCellLooks,
   writeColumns,
   writeIdentities,
@@ -74,6 +75,7 @@ import PriorityIcon from './PriorityIcon.vue'
 import StartJobsDialog from './StartJobsDialog.vue'
 import ReplyToCrDialog from './ReplyToCrDialog.vue'
 import PanelGrid from './PanelGrid.vue'
+import ClaudeTerminal from './ClaudeTerminal.vue'
 import FocusOverlay from './FocusOverlay.vue'
 import AutonomyMenu from './AutonomyMenu.vue'
 import Icon from './Icon.vue'
@@ -200,8 +202,13 @@ const toggleSection = (key: SectionKey): void => {
   }
 }
 const isFilledGroup = (g: { sessions: Session[] }): boolean => g.sessions.length > 0
+const steadyOrder = (g: { key: SectionKey; sessions: Session[] }): { key: SectionKey; sessions: Session[] } => {
+  if (g.key === 'working') return { ...g, sessions: orderBySince(g.sessions, workingSince.value) }
+  if (g.key === 'needs-input') return { ...g, sessions: orderBySince(g.sessions, waitingSince.value) }
+  return g
+}
 const groupLive = (): { key: SectionKey; sessions: Session[] }[] =>
-  groupSections(live.value, mrOf, seen.value, props.myName).filter(isFilledGroup)
+  groupSections(live.value, mrOf, seen.value, props.myName).filter(isFilledGroup).map(steadyOrder)
 const sections = computed(groupLive)
 const newNotesOf = (sessions: Session[]): number => {
   const addNotes = (sum: number, s: Session): number => {
@@ -325,6 +332,20 @@ const sleepNow = async (s: Session): Promise<void> => {
   if (!window.confirm(`Put the session ${labelOf(s)} to sleep? The Claude process stops and the session stays on the list.`)) return
   notice.value = (await window.api.sleepSession(s.id)).error
 }
+const dispatcherId = ref<string | null>(null)
+const isDispatcherOpen = ref(false)
+const dispatcherSession = computed(() => (dispatcherId.value ? (props.sessions.find((s) => s.id.startsWith(dispatcherId.value!)) ?? null) : null))
+const openDispatcher = async (): Promise<void> => {
+  if (isDispatcherOpen.value) {
+    isDispatcherOpen.value = false
+    return
+  }
+  const result = await window.api.openDispatcher()
+  notice.value = result.error
+  if (result.error) return
+  dispatcherId.value = result.sessionId ?? dispatcherId.value
+  isDispatcherOpen.value = true
+}
 
 const { roots, repoFor } = repoChoices(window.api.getTaskRepos())
 const liveTickets = computed(() => new Set(live.value.flatMap((s) => (s.ticket ? [s.ticket.toUpperCase()] : []))))
@@ -393,6 +414,7 @@ const resumeRow = (s: Session): void => {
 
 const applyState = (state: OrchestratorState): void => {
   jobs.value = state.jobs
+  dispatcherId.value = state.dispatcherSessionId
   pinAwaiting()
 }
 let stopListening: (() => void) | null = null
@@ -764,6 +786,9 @@ onBeforeUnmount(leavePanel)
       <button v-if="crCount" class="head-btn cr" @click="isReplyOpen = true">
         <Icon name="message" :size="13" />Reply to CR<span class="badge">{{ crCount }}</span>
       </button>
+      <button class="head-btn ghost" title="Start the dispatcher session or open its tab" @click="openDispatcher">
+        <Icon name="message" :size="13" />Dispatcher
+      </button>
       <button class="head-btn primary" @click="isDialogOpen = true"><Icon name="plus" :size="13" />Start jobs…</button>
     </header>
     <div class="body">
@@ -1044,6 +1069,9 @@ onBeforeUnmount(leavePanel)
           @close="closeSearch"
         />
       </section>
+      <aside v-if="isDispatcherOpen && dispatcherSession" class="dispatcher-pane">
+        <ClaudeTerminal :session-id="dispatcherSession.id" :project-name="dispatcherSession.projectName" />
+      </aside>
     </div>
     <FocusOverlay
       v-if="activeSession"
@@ -1123,6 +1151,12 @@ onBeforeUnmount(leavePanel)
   flex: 1;
   min-height: 0;
   display: flex;
+}
+.dispatcher-pane {
+  flex: none;
+  width: 440px;
+  display: flex;
+  border-left: 1px solid var(--line);
 }
 .side {
   flex: none;

@@ -7,7 +7,7 @@ export type WaitingDecision = 'escalate' | 'judge'
 
 export const JUDGE_TIMEOUT_MS = 60_000
 
-const JUDGEABLE_TOOLS = ['Bash', 'AskUserQuestion', 'Read', 'Grep', 'Glob', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit']
+export const JUDGEABLE_TOOLS = ['Bash', 'AskUserQuestion', 'Read', 'Grep', 'Glob', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit']
 const MAX_TAIL_MESSAGE_CHARS = 2000
 const MAX_PROMPT_CHARS = 20_000
 const MAX_INPUT_CHARS = 6000
@@ -16,7 +16,7 @@ const MAX_OPTION_CHARS = 300
 const OPEN_FENCE = '<untrusted_data>'
 const CLOSE_FENCE = '</untrusted_data>'
 
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+export const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
 export const decideWaiting = (
