@@ -1,5 +1,19 @@
 import { describe, it, expect, vi } from 'vitest'
-import { pickTicketMr, parseMrState, parseApprovals, parseDiscussions, parseMrOverview, snippetAround, snippetFromDiff, diffRows, parseDraftNotes, draftNoteBody, recreateDraft } from '../src/main/mractions'
+import { pickTicketMr, parseMrState, parseApprovals, parseDiscussions, parseMrOverview, snippetAround, snippetFromDiff, diffRows, parseDraftNotes, draftNoteBody, recreateDraft, countCommits } from '../src/main/mractions'
+
+describe('countCommits', () => {
+  it('counts the commits', () => {
+    expect(countCommits([{}, {}, {}])).toBe(3)
+  })
+
+  it('returns 0 for an empty list', () => {
+    expect(countCommits([])).toBe(0)
+  })
+
+  it('returns null when the read failed', () => {
+    expect(countCommits(null)).toBeNull()
+  })
+})
 
 describe('draft note resolve', () => {
   it('reads resolve_discussion into isResolving', () => {
@@ -56,7 +70,7 @@ describe('parseDiscussions', () => {
   it('keeps system notes as one-line events', () => {
     const json = [{ id: 'd3', individual_note: true, notes: [{ id: 4, body: 'assigned to @pd', author: { name: 'Patryk' }, created_at: 't', system: true }] }]
     expect(parseDiscussions(json)).toEqual([
-      { id: 'd3', isSystem: true, isResolved: false, isResolvable: false, where: null, anchor: null, snippet: null, notes: [{ id: 4, author: 'Patryk', body: 'assigned to @pd', createdAt: 't', isMine: false }] }
+      { id: 'd3', isSystem: true, isResolved: false, isResolvable: false, where: null, anchor: null, snippet: null, notes: [{ id: 4, author: 'Patryk', body: 'assigned to @pd', createdAt: 't', isMine: false, isBot: false }] }
     ])
   })
   it('keeps human notes and drops empty threads', () => {
@@ -80,11 +94,27 @@ describe('parseDiscussions', () => {
         anchor: { path: 'a.ts', line: 4, sha: 'h1', side: 'new' },
         snippet: null,
         notes: [
-          { id: 1, author: 'Anna', body: 'Looks good', createdAt: '2026-11-10T10:00:00Z', isMine: false },
-          { id: 2, author: 'Jan', body: 'Thanks', createdAt: '2026-11-10T10:05:00Z', isMine: false }
+          { id: 1, author: 'Anna', body: 'Looks good', createdAt: '2026-11-10T10:00:00Z', isMine: false, isBot: false },
+          { id: 2, author: 'Jan', body: 'Thanks', createdAt: '2026-11-10T10:05:00Z', isMine: false, isBot: false }
         ]
       }
     ])
+  })
+})
+
+describe('parseDiscussions with bots', () => {
+  it('marks notes from listed bots and GitLab token bots', () => {
+    const json = [
+      {
+        id: 'd1',
+        notes: [
+          { id: 1, body: 'a', author: { name: '****', username: 'group_1379_bot_9f94' } },
+          { id: 2, body: 'b', author: { name: 'DAO', username: 'dao-gitlab' } },
+          { id: 3, body: 'c', author: { name: 'Anna', username: 'anna' } }
+        ]
+      }
+    ]
+    expect(parseDiscussions(json, null, ['dao-gitlab'])[0].notes.map((n) => n.isBot)).toEqual([true, true, false])
   })
 })
 

@@ -18,6 +18,7 @@ import {
   TICK_MS,
   assignIdentities,
   baselineSeen,
+  clearLayouts,
   crCandidates,
   followLayout,
   groupSections,
@@ -37,6 +38,7 @@ import {
   resolveSession,
   trackWaitingSince,
   trackWorkingSince,
+  orderBySince,
   writeCellLooks,
   writeColumns,
   writeIdentities,
@@ -86,6 +88,8 @@ const emit = defineEmits<{
   open: [job: Job]
   'open-task': [session: Session]
   'full-screen': [isOn: boolean]
+  dispatcher: []
+  'open-mr': [key: string]
 }>()
 
 const jobs = ref<Job[]>([])
@@ -104,6 +108,10 @@ const pinReplies = (ids: string[]): void => {
   const isUnpinned = (id: string): boolean => !pins.value.includes(id)
   const fresh = ids.filter(isUnpinned)
   if (fresh.length) savePins([...pins.value, ...fresh])
+}
+const openReplyMr = (key: string): void => {
+  isReplyOpen.value = false
+  emit('open-mr', key)
 }
 
 const syncPins = (): void => {
@@ -124,6 +132,15 @@ const setColumns = (count: 1 | 2 | 3): void => {
   if (view.value === 'activity') return
   columns.value = { ...columns.value, [view.value]: count }
   writeColumns(view.value, count)
+}
+const layoutEpoch = ref(0)
+const resetLayout = async (): Promise<void> => {
+  if (view.value === 'activity') return
+  const target = view.value
+  setColumns(3)
+  await nextTick()
+  clearLayouts(target)
+  layoutEpoch.value += 1
 }
 let isLayoutFollowed = false
 const followLayouts = (): void => {
@@ -200,8 +217,13 @@ const toggleSection = (key: SectionKey): void => {
   }
 }
 const isFilledGroup = (g: { sessions: Session[] }): boolean => g.sessions.length > 0
+const steadyOrder = (g: { key: SectionKey; sessions: Session[] }): { key: SectionKey; sessions: Session[] } => {
+  if (g.key === 'working') return { ...g, sessions: orderBySince(g.sessions, workingSince.value) }
+  if (g.key === 'needs-input') return { ...g, sessions: orderBySince(g.sessions, waitingSince.value) }
+  return g
+}
 const groupLive = (): { key: SectionKey; sessions: Session[] }[] =>
-  groupSections(live.value, mrOf, seen.value, props.myName).filter(isFilledGroup)
+  groupSections(live.value, mrOf, seen.value, props.myName).filter(isFilledGroup).map(steadyOrder)
 const sections = computed(groupLive)
 const newNotesOf = (sessions: Session[]): number => {
   const addNotes = (sum: number, s: Session): number => {
@@ -748,6 +770,14 @@ onBeforeUnmount(leavePanel)
         </button>
       </span>
       <button
+        v-if="view !== 'activity'"
+        class="head-btn ghost"
+        title="Lay the tiles out again: 3 columns, 2 rows per screen"
+        @click="resetLayout"
+      >
+        Reset layout
+      </button>
+      <button
         v-if="view === 'live'"
         class="head-btn ghost"
         :class="{ on: isLiveRecent }"
@@ -763,6 +793,9 @@ onBeforeUnmount(leavePanel)
       <span class="grow" />
       <button v-if="crCount" class="head-btn cr" @click="isReplyOpen = true">
         <Icon name="message" :size="13" />Reply to CR<span class="badge">{{ crCount }}</span>
+      </button>
+      <button class="head-btn ghost" title="Start the dispatcher session or open it (Ctrl+Shift+D)" @click="emit('dispatcher')">
+        <Icon name="message" :size="13" />Dispatcher
       </button>
       <button class="head-btn primary" @click="isDialogOpen = true"><Icon name="plus" :size="13" />Start jobs…</button>
     </header>
@@ -953,6 +986,7 @@ onBeforeUnmount(leavePanel)
         <div v-show="view === 'pinned'" class="grid">
           <PanelGrid
             ref="pinnedGrid"
+            :key="`pinned-${layoutEpoch}`"
             view="pinned"
             :sessions="grid"
             :all-sessions="sessions"
@@ -997,7 +1031,7 @@ onBeforeUnmount(leavePanel)
             </button>
             <PanelGrid
               v-if="!collapsedZones.has(z.key)"
-              :key="zoneLayoutOf(z.key)"
+              :key="`${zoneLayoutOf(z.key)}-${layoutEpoch}`"
               :ref="bindZoneGrid(z.key)"
               :view="zoneLayoutOf(z.key)"
               :sessions="z.tiles"
@@ -1076,6 +1110,7 @@ onBeforeUnmount(leavePanel)
       :identity-of="identityFor"
       @close="isReplyOpen = false"
       @started="pinReplies"
+      @open-mr="openReplyMr"
     />
   </main>
 </template>

@@ -11,7 +11,7 @@ const props = defineProps<{
   sessions: Session[]
   identityOf: (session: Session) => Identity
 }>()
-const emit = defineEmits<{ close: []; started: [sessionIds: string[]] }>()
+const emit = defineEmits<{ close: []; started: [sessionIds: string[]]; 'open-mr': [key: string] }>()
 
 const startedKeys = ref<Set<string>>(new Set())
 const markStarted = (c: CrCandidate): CrCandidate =>
@@ -105,7 +105,13 @@ const start = async (): Promise<void> => {
                 :size="18"
               />
               <span class="chip project">{{ c.mr.projectName }}</span>
-              <span class="key">!{{ c.mr.iid }}</span>
+              <button
+                class="key"
+                title="Open the merge request and its threads"
+                @click.prevent.stop="emit('open-mr', c.mr.key)"
+              >
+                !{{ c.mr.iid }}
+              </button>
               <span class="chip" :class="{ attn: !c.isRunning && !c.isMineLast }">{{
                 summary(c)
               }}</span>
@@ -214,8 +220,15 @@ h2 {
 }
 .key {
   flex: none;
+  padding: 0;
   font: 600 12px var(--font-mono);
-  color: var(--text);
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.key:hover {
+  text-decoration: underline;
 }
 .title {
   min-width: 0;

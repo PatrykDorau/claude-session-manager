@@ -91,6 +91,18 @@ export const writeLayout = (view: LayoutKey, layout: ViewLayout): void => {
   }
 }
 
+export const clearLayouts = (view: PanelViewKey): void => {
+  const pinnedKey = layoutKey('pinned')
+  const isOfView = (key: string): boolean =>
+    view === 'pinned' ? key === pinnedKey : key.startsWith('orch.layout.') && key !== pinnedKey
+  const removeKey = (key: string): void => localStorage.removeItem(key)
+  try {
+    Object.keys(localStorage).filter(isOfView).forEach(removeKey)
+  } catch {
+    return
+  }
+}
+
 export const readColumns = (view: PanelViewKey): 1 | 2 | 3 => {
   try {
     const columns = Number(localStorage.getItem(columnsKey(view)))
@@ -597,6 +609,12 @@ export const trackWorkingSince = (
   const isWorking = (s: Session): boolean => s.status === 'working'
   const sinceOf = (s: Session): [string, number] => [s.id, previous[s.id] ?? now]
   return Object.fromEntries(sessions.filter(isWorking).map(sinceOf))
+}
+
+export const orderBySince = (sessions: Session[], since: Record<string, number>): Session[] => {
+  const sinceOf = (s: Session): number => since[s.id] ?? Number.POSITIVE_INFINITY
+  const bySince = (a: Session, b: Session): number => sinceOf(a) - sinceOf(b) || a.id.localeCompare(b.id)
+  return [...sessions].sort(bySince)
 }
 
 export const trackWaitingSince = (

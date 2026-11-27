@@ -161,6 +161,19 @@ export const doTransition = async (browseBase: string, token: string, key: strin
   }
 }
 
+export const unassignIssue = async (browseBase: string, token: string, key: string): Promise<boolean> => {
+  try {
+    const res = await fetch(`${new URL(browseBase).origin}/rest/api/2/issue/${encodeURIComponent(key)}/assignee`, {
+      method: 'PUT',
+      headers: jiraHeaders(token),
+      body: JSON.stringify({ name: null })
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 export const searchIssues = async (
   browseBase: string,
   token: string,

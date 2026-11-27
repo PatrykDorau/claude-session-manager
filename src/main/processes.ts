@@ -122,7 +122,19 @@ export interface AgentInfo {
   kind: string
   status: string
   name: string | null
+  isRunning: boolean
 }
+
+interface RawAgent {
+  sessionId?: string
+  kind?: string
+  status?: string
+  name?: string
+  pid?: number
+  state?: string
+}
+
+export const isRunningAgent = (a: RawAgent): boolean => a.kind !== 'background' || a.pid !== undefined
 
 export async function listAgents(): Promise<AgentInfo[] | null> {
   return new Promise((resolve) => {
@@ -140,13 +152,14 @@ export async function listAgents(): Promise<AgentInfo[] | null> {
       try {
         const arr = JSON.parse(out.slice(start, end + 1))
         resolve(
-          (arr as { sessionId?: string; kind?: string; status?: string; name?: string }[])
+          (arr as RawAgent[])
             .filter((a) => a.sessionId)
             .map((a) => ({
               sessionId: a.sessionId as string,
               kind: a.kind ?? 'interactive',
               status: a.status ?? 'idle',
-              name: a.name ?? null
+              name: a.name ?? null,
+              isRunning: isRunningAgent(a)
             }))
         )
       } catch {

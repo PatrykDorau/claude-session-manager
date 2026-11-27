@@ -42,7 +42,7 @@ const base: State = {
   sleptSessions: {},
   userStoppedServers: [],
   insightsLastRun: null,
-  orchestrator: { jobs: [] },
+  orchestrator: { jobs: [], dispatcherSessionId: null },
   settings: {
     jiraBase: 'https://jira.redge.com/browse/',
     jiraToken: '',
@@ -98,7 +98,7 @@ describe('ticket-level state', () => {
     expect(s.insightsLastRun).toBeNull()
     expect(s.settings.taskJql).toBe(base.settings.taskJql)
     expect(s.settings.startPrompt).toBe(base.settings.startPrompt)
-    expect(s.orchestrator).toEqual({ jobs: [] })
+    expect(s.orchestrator).toEqual({ jobs: [], dispatcherSessionId: null })
     expect(s.settings.orchestratorMaxParallel).toBe(2)
     expect(s.settings.orchestratorBots).toBe('dao-gitlab')
     rmSync(dir, { recursive: true, force: true })
@@ -238,7 +238,7 @@ describe('store io', () => {
       sleptSessions: { a: 123 },
       userStoppedServers: ['SOFRMPT-1'],
       insightsLastRun: 1700000000000,
-      orchestrator: { jobs: [] },
+      orchestrator: { jobs: [], dispatcherSessionId: null },
       settings: {
         jiraBase: 'http://jira.local/',
         jiraToken: 'tok',

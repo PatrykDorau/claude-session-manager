@@ -6,8 +6,8 @@ import { statusCounts } from './statuscounts'
 import { ago } from '../display'
 import { onVisible, whenVisible } from './visibility'
 
-const props = defineProps<{ sessions: Session[]; servers: DevServer[]; myTasks: MyTasks; myMrs: MyMrs }>()
-const emit = defineEmits<{ open: [page: DashboardPage] }>()
+const props = defineProps<{ sessions: Session[]; servers: DevServer[]; myTasks: MyTasks; myMrs: MyMrs; isPanelPage: boolean; isDispatcherOpen: boolean; dispatcherCount: { total: number; isWaiting: boolean } }>()
+const emit = defineEmits<{ open: [page: DashboardPage]; dispatcher: [] }>()
 
 const isJumpKeyReady = window.api.isJumpKeyReady()
 const now = ref(Date.now())
@@ -45,6 +45,12 @@ const syncText = (at: number | null | undefined): string => {
     <span class="item" :title="myMrs.errorDetail ?? myMrs.error ?? ''"><i v-if="myMrs.error" class="err" />GitLab {{ syncText(myMrs.syncedAt) }}</span>
     <span class="grow" />
     <span v-if="isJumpKeyReady" class="hint"><kbd>Ctrl+Alt+Space</kbd>next session that needs you</span>
+    <button class="hint item" :class="{ on: isDispatcherOpen }" title="Open or close the dispatcher" @click="emit('dispatcher')"><kbd>Ctrl+Shift+D</kbd>dispatcher<span v-if="dispatcherCount.total" class="badge" :class="{ hot: dispatcherCount.isWaiting }">{{ dispatcherCount.total }}</span></button>
+    <template v-if="isPanelPage">
+      <span class="hint"><kbd>Ctrl+F</kbd>find session</span>
+      <span class="hint"><kbd>Ctrl+Shift+E</kbd>focus panel</span>
+      <span class="hint"><kbd>Ctrl+Shift+F</kbd>full screen</span>
+    </template>
     <span class="hint"><kbd>Ctrl+K</kbd>prompts</span>
     <span class="hint"><kbd>Ctrl+Shift+Space</kbd>show/hide</span>
     <span class="hint"><kbd>Esc</kbd>close dialogs</span>
@@ -83,7 +89,8 @@ const syncText = (at: number | null | undefined): string => {
 button.item {
   cursor: pointer;
 }
-button.item:hover {
+button.item:hover,
+button.item.on {
   color: var(--text-2);
 }
 .warn {
@@ -104,6 +111,19 @@ button.item:hover {
 }
 .grow {
   flex: 1;
+}
+.badge {
+  min-width: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: var(--bg-3);
+  color: var(--text-2);
+  font: 600 10px/14px var(--font-ui);
+  text-align: center;
+}
+.badge.hot {
+  background: var(--warn);
+  color: var(--bg-1);
 }
 .hint {
   display: inline-flex;

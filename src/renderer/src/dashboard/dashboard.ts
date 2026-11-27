@@ -44,7 +44,7 @@ export const readSize = (key: string, fallback: number): number => {
   }
 }
 
-export const writeSize = (key: string, value: number | boolean): void => {
+export const writeSize = (key: string, value: number | boolean | string): void => {
   try {
     localStorage.setItem(key, String(value))
   } catch {

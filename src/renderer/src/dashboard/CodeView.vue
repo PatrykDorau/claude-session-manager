@@ -519,6 +519,7 @@ const activeComments = computed(() =>
 )
 const commentIndex = ref(-1)
 const goToFileLine = async (path: string, line: number): Promise<void> => {
+  await pendingRefresh
   if (openPath.value !== path) await open(path)
   const v = editor.value
   if (!v || openPath.value !== path) return
@@ -1480,8 +1481,10 @@ const flatTree = computed(() => {
   return rows
 })
 
+let pendingRefresh: Promise<void> = Promise.resolve()
+const ignoreRefreshError = (): void => undefined
 const refreshAll = (): void => {
-  void refresh()
+  pendingRefresh = refresh().catch(ignoreRefreshError)
   if (!isExplaining.value) void loadExplain()
   if (!isReviewing.value) void loadParts()
 }

@@ -6,6 +6,11 @@ export const parseBots = (csv: string): string[] =>
     .map((name) => name.trim().toLowerCase())
     .filter((name) => name !== '')
 
+const TOKEN_BOT = /^(group|project)_\d+_bot(_|$)/i
+
+export const isBotUser = (username: string, bots: string[]): boolean =>
+  bots.includes(username.toLowerCase()) || TOKEN_BOT.test(username)
+
 export const newHumanNotes = (
   discussionsJson: unknown,
   lastSeenId: number | null,
@@ -21,7 +26,7 @@ export const newHumanNotes = (
       return (
         n.system !== true &&
         username !== me.toLowerCase() &&
-        !bots.includes(username) &&
+        !isBotUser(username, bots) &&
         (lastSeenId === null || n.id > lastSeenId)
       )
     })

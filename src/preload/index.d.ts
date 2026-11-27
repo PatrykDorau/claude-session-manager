@@ -219,6 +219,8 @@ declare global {
       signInGitlab: () => Promise<boolean>
       getMrExplanations: (key: string) => Promise<Record<string, string>>
       getTicketMr: (ticket: string) => Promise<import('../renderer/src/types').TicketMr | null>
+      checkRelease: (tickets: { key: string; summary: string; status: string }[]) => Promise<import('../renderer/src/types').ReleaseRow[]>
+      runRelease: (keys: string[]) => Promise<import('../renderer/src/types').ReleaseResult[]>
       mrReview: (key: string, action: import('../renderer/src/types').MrReviewAction) => Promise<{ error: string | null; isCancelled: boolean }>
       mrCommentable: (key: string, folder: string | null, isReadOnly: boolean, path: string | null) => Promise<import('../renderer/src/types').MrCommentable>
       refreshLists: () => Promise<boolean>
@@ -247,11 +249,13 @@ declare global {
       postMrComment: (key: string, body: string) => Promise<{ error: string | null; isCancelled: boolean }>
       startReview: (key: string) => Promise<{ error: string | null; sessionId?: string }>
       startAddress: (key: string) => Promise<{ error: string | null; sessionId?: string }>
+      markMrSeen: (key: string) => void
       startJobs: (jobs: import('../main/orchestrator').JobRequest[]) => Promise<{ error: string | null }>
       setJobAutonomy: (id: string, autonomy: import('../main/orchestrator').Autonomy) => Promise<void>
       removeJob: (id: string) => Promise<void>
       adoptSession: (sessionId: string) => Promise<{ error: string | null }>
       setSessionAutonomy: (sessionId: string, choice: import('../main/orchestrator').AutonomyChoice) => Promise<{ error: string | null }>
+      openDispatcher: () => Promise<{ error: string | null; sessionId?: string }>
       getOrchestrator: () => Promise<import('../main/orchestrator').OrchestratorState>
       onOrchestrator: (cb: (state: import('../main/orchestrator').OrchestratorState) => void) => () => void
       setAllProjects: (isAll: boolean) => void

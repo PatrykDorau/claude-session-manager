@@ -58,6 +58,12 @@ describe('isForbiddenRequest', () => {
     }
   })
 
+  it('leaves Jira comment and publish wording to the dispatcher guard', () => {
+    const ask = (question: string): unknown => ({ questions: [{ question, options: [{ label: 'Tak' }, { label: 'Nie' }] }] })
+    expect(isForbiddenRequest('AskUserQuestion', ask('Dodać komentarz w Jirze?'))).toBe(false)
+    expect(isForbiddenRequest('AskUserQuestion', ask('Publish the review?'))).toBe(false)
+  })
+
   it('scans the question header', () => {
     const input = { questions: [{ header: 'Push', question: 'Co dalej?', options: [{ label: 'Tak' }] }] }
     expect(isForbiddenRequest('AskUserQuestion', input)).toBe(true)

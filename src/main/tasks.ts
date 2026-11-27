@@ -76,6 +76,9 @@ export const addressArgs = (input: { iid: number; url: string; ticket: string; f
   return ['--bg', '--model', input.model, '--name', `${input.ticket}-cr`, `${where} ${start} ${request}`]
 }
 
+export const addressFollowUp = (iid: number, url: string): string =>
+  `W MR !${iid} (${url}) są nowe komentarze. Użyj ponownie skilla address-mr-comments: pobierz wątki od nowa, odnieś się do każdego nierozwiązanego wątku od ludzi, którego jeszcze nie omówiliśmy, popraw kod tam, gdzie uwaga jest trafna, i przygotuj krótkie odpowiedzi. Najpierw pokaż mi wszystko i poczekaj na moje potwierdzenie. Niczego nie publikuj w GitLabie.`
+
 const COCKPIT = 'node C:/Users/ASSET-17300/.claude/skills/_shared/cockpit.js'
 
 export const taskContext = (key: string, worktree: string, repo: string, now: Date): string => {

@@ -132,6 +132,7 @@ export interface MrItem {
   openThreads: number
   waitingThreads: number | null
   othersNotes: number | null
+  replyToMeId: number | null
   approvals: number
   isApprovedByMe: boolean
   isDraft: boolean
@@ -402,6 +403,7 @@ export interface MrNote {
   body: string
   createdAt: string
   isMine: boolean
+  isBot: boolean
 }
 
 export interface MrSnippet {
@@ -448,6 +450,7 @@ export interface MrStatus {
   approvals: MrApprovals | null
   discussions: MrDiscussion[] | null
   drafts: MrDraftNote[] | null
+  commits: number | null
   diffRefs: MrDiffRefs | null
   problem: string | null
 }
@@ -662,3 +665,10 @@ export interface CatalogRead {
   body: string
   siblings: string[]
 }
+
+export interface ReleaseMr { iid: number; projectId: number; state: 'opened' | 'merged'; title: string; url: string; targetBranch: string; mergeSha: string | null; mergedAt: string | null }
+export interface ReleaseDeploy { environment: string; status: string }
+export interface ReleaseCheck { mr: ReleaseMr; pipeline: { id: number; status: string } | null; deploys: ReleaseDeploy[] | null }
+export type ReleaseStage = 'ready' | 'waiting' | 'unfinished'
+export interface ReleaseRow { key: string; summary: string; status: string; stage: ReleaseStage; blockers: string[]; checks: ReleaseCheck[]; hasTestCases: boolean }
+export interface ReleaseResult { key: string; error: string | null; done: string[] }

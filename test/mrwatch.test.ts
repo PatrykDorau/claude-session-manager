@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { newCommentsPrompt, newHumanNotes, ownMrsToWatch, parseBots, parseMrKey, watchAction, watchStep } from '../src/main/mrwatch'
+import { isBotUser, newCommentsPrompt, newHumanNotes, ownMrsToWatch, parseBots, parseMrKey, watchAction, watchStep } from '../src/main/mrwatch'
 
 const note = (id: number, username: string, system = false) => ({ id, system, author: { username } })
 
@@ -117,5 +117,27 @@ describe('newCommentsPrompt', () => {
     expect(prompt).toContain('Nie commituj')
     expect(prompt).toContain('nie pushuj')
     expect(prompt).toContain('nie odpowiadaj w GitLabie')
+  })
+})
+
+describe('isBotUser', () => {
+  it('treats listed usernames as bots, ignoring case', () => {
+    expect(isBotUser('DAO-GitLab', ['dao-gitlab'])).toBe(true)
+  })
+  it('treats GitLab group and project token users as bots', () => {
+    expect(isBotUser('group_1379_bot_9f9496523c939bf9970d778a2d0156ba', [])).toBe(true)
+    expect(isBotUser('project_42_bot', [])).toBe(true)
+  })
+  it('keeps people', () => {
+    expect(isBotUser('pawel.kolano', ['dao-gitlab'])).toBe(false)
+    expect(isBotUser('robot.fan', [])).toBe(false)
+    expect(isBotUser('', [])).toBe(false)
+  })
+})
+
+describe('newHumanNotes with token bots', () => {
+  it('skips notes from GitLab group token bots', () => {
+    const json = [{ notes: [{ id: 7, body: 'Quality Gate passed', author: { username: 'group_1379_bot_abc' } }, { id: 8, body: 'hi', author: { username: 'anna' } }] }]
+    expect(newHumanNotes(json, null, 'me', []).ids).toEqual([8])
   })
 })

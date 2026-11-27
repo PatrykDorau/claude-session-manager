@@ -387,12 +387,15 @@ const api = {
   signInGitlab: (): Promise<boolean> => ipcRenderer.invoke('gitlab-sign-in'),
   getMrExplanations: (key: string): Promise<Record<string, string>> => ipcRenderer.invoke('mr-explanations', key),
   getTicketMr: (ticket: string): Promise<import('../renderer/src/types').TicketMr | null> => ipcRenderer.invoke('ticket-mr', ticket),
+  checkRelease: (tickets: { key: string; summary: string; status: string }[]): Promise<import('../renderer/src/types').ReleaseRow[]> => ipcRenderer.invoke('release-check', tickets),
+  runRelease: (keys: string[]): Promise<import('../renderer/src/types').ReleaseResult[]> => ipcRenderer.invoke('release-run', keys),
   mrReview: (key: string, action: import('../renderer/src/types').MrReviewAction): Promise<{ error: string | null; isCancelled: boolean }> =>
     ipcRenderer.invoke('mr-review', key, action),
   mrCommentable: (key: string, folder: string | null, isReadOnly: boolean, path: string | null): Promise<import('../renderer/src/types').MrCommentable> =>
     ipcRenderer.invoke('mr-commentable', key, folder, isReadOnly, path),
   startReview: (key: string): Promise<{ error: string | null; sessionId?: string }> => ipcRenderer.invoke('start-review', key),
   startAddress: (key: string): Promise<{ error: string | null; sessionId?: string }> => ipcRenderer.invoke('mr-start-address', key),
+  markMrSeen: (key: string): void => ipcRenderer.send('mr-seen', key),
   startJobs: (jobs: import('../main/orchestrator').JobRequest[]): Promise<{ error: string | null }> => ipcRenderer.invoke('orchestrator-start', jobs),
   setJobAutonomy: (id: string, autonomy: import('../main/orchestrator').Autonomy): Promise<void> =>
     ipcRenderer.invoke('orchestrator-set-autonomy', id, autonomy),
@@ -400,6 +403,7 @@ const api = {
   adoptSession: (sessionId: string): Promise<{ error: string | null }> => ipcRenderer.invoke('orchestrator-adopt', sessionId),
   setSessionAutonomy: (sessionId: string, choice: import('../main/orchestrator').AutonomyChoice): Promise<{ error: string | null }> =>
     ipcRenderer.invoke('orchestrator-session-autonomy', sessionId, choice),
+  openDispatcher: (): Promise<{ error: string | null; sessionId?: string }> => ipcRenderer.invoke('dispatcher-open'),
   getOrchestrator: (): Promise<import('../main/orchestrator').OrchestratorState> => ipcRenderer.invoke('orchestrator-get'),
   onOrchestrator: (cb: (state: import('../main/orchestrator').OrchestratorState) => void): (() => void) => {
     const handler = (_e: unknown, state: import('../main/orchestrator').OrchestratorState): void => cb(state)

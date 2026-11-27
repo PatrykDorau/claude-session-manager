@@ -31,6 +31,7 @@ export interface Job {
 
 export interface OrchestratorState {
   jobs: Job[]
+  dispatcherSessionId: string | null
 }
 
 export const LOG_LIMIT = 20
@@ -40,7 +41,7 @@ const JOB_KINDS: JobKind[] = ['ticket', 'review', 'address', 'watch']
 const JOB_STATES: JobState[] = ['queued', 'starting', 'working', 'waiting', 'handoff', 'finished', 'failed']
 const HANDOFF_PHASES: HandoffPhase[] = ['none', 'handoff', 'clearing', 'resuming']
 
-export const emptyOrchestrator = (): OrchestratorState => ({ jobs: [] })
+export const emptyOrchestrator = (): OrchestratorState => ({ jobs: [], dispatcherSessionId: null })
 
 export const defaultAutonomy = (issueType: string | null): Autonomy =>
   issueType === 'Bug' ? 'autonomous' : 'manual'
@@ -102,7 +103,10 @@ const loadJob = (raw: unknown): Job | null => {
 
 export const loadOrchestrator = (raw: unknown): OrchestratorState => {
   if (!isRecord(raw) || !Array.isArray(raw.jobs)) return emptyOrchestrator()
-  return { jobs: raw.jobs.map(loadJob).filter((j): j is Job => j !== null) }
+  return {
+    jobs: raw.jobs.map(loadJob).filter((j): j is Job => j !== null),
+    dispatcherSessionId: typeof raw.dispatcherSessionId === 'string' ? raw.dispatcherSessionId : null
+  }
 }
 
 export interface SessionView {

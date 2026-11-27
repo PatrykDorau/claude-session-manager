@@ -39,6 +39,12 @@ export const buildInboxRows = (sessions: Session[], titles: Record<string, strin
     .flatMap((s) => (s.isLive && isInboxStatus(s.status) ? [toRow(s, s.status, titles, mrs)] : []))
     .sort((a, b) => Number(a.status === 'checkout') - Number(b.status === 'checkout') || a.since - b.since)
 
+export const dispatcherRows = (rows: InboxRow[], dispatcherId: string | null): InboxRow[] => {
+  const isOwnRow = (r: InboxRow): boolean => !!dispatcherId && r.sessionId.startsWith(dispatcherId)
+  const isOtherRow = (r: InboxRow): boolean => !isOwnRow(r)
+  return rows.filter(isOtherRow)
+}
+
 export type LiveOrder = 'attention' | 'newest'
 
 const ATTENTION: Partial<Record<Session['status'], number>> = { waiting: 0, checkout: 1, working: 2 }

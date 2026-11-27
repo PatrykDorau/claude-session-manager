@@ -51,6 +51,7 @@ import {
   extractAttachPids,
   runningResumePids,
   listAgents,
+  type AgentInfo,
   gitDirty,
   probeCommand,
   branchMergedOrGone,
@@ -136,13 +137,14 @@ import {
 } from './closing'
 import { worktreeRows, parseCount, isLinkedWorktreeGitFile, branchToDelete, nodeModulesAction, removeWorktreeFolder } from './worktrees'
 import { serverAction, userStoppedMessage } from './serverguard'
-import { taskContext, startPrompt, parseBgId, ticketPrefix, repoRoots, startArgs, claudeExeCandidates, attachCommand, repoForProject, reviewArgs, addressArgs, scoreArgs, insightsTestArgs, warmUpTask, mediaFiles } from './tasks'
-import { searchIssues, fetchDescription, postComment, fetchTransitions, doTransition, fetchTicketDetail, fetchPriority, releaseTransition } from './jira'
+import { taskContext, startPrompt, parseBgId, ticketPrefix, repoRoots, startArgs, claudeExeCandidates, attachCommand, repoForProject, reviewArgs, addressArgs, addressFollowUp, scoreArgs, insightsTestArgs, warmUpTask, mediaFiles } from './tasks'
+import { searchIssues, fetchDescription, postComment, fetchTransitions, doTransition, fetchTicketDetail, fetchPriority, releaseTransition, unassignIssue } from './jira'
+import { checkRelease, isReleasable, releaseTicket, findTestCases, type ReleaseDeps } from './release'
 import { isSafeRef, worktreeForBranch, parseStatusPaths, safeRelPath, parseStatus, isNoisePath, parseNameStatus, countChanges, parseGrep, searchArgs, parseNumstat, parseRawBlobs, type CodeMatch, type LineCounts } from './ide'
 import { parseExplainDoc, explainArgs, explainName } from './explaindoc'
 import { buildCatalog, readCatalogItem, isInsideDir } from './catalog'
 import { parseReviewDoc, reviewArgs as reviewPartsArgs, reviewName } from './reviewdoc'
-import { fetchMrsToReview, enrichMrs, forgetApprovals, fetchDiffStats, fetchMrSha, isInProjects, reviewState, approvalState, carryEnrichment, pruneApproved, sortMrs } from './gitlab'
+import { fetchMrsToReview, enrichMrs, forgetApprovals, fetchDiffStats, fetchMrSha, isInProjects, reviewState, approvalState, carryEnrichment, pruneApproved, sortMrs, seenShas } from './gitlab'
 import type { JiraTicket, MrFile, MrItem, MyMrs } from '../renderer/src/types'
 import {
   loadState,
@@ -192,7 +194,7 @@ import {
   type MergeOptions
 } from './mractions'
 import { anchorPosition, withDraftTitle, commentableState, reviewConfirm, explanationFiles } from './mrreview'
-import type { MrCommentable, MrLineAnchor, MrLinePosition, MrReviewAction } from '../renderer/src/types'
+import type { MrCommentable, MrLineAnchor, MrLinePosition, MrReviewAction, ReleaseResult, ReleaseRow } from '../renderer/src/types'
 import { clearInheritedSessionMarker } from './env'
 import { nearestEdge, dockBounds, pickDisplay } from './dock'
 import { registerAppBar, unregisterAppBar } from './appbar'
@@ -229,6 +231,25 @@ import {
   type JobRequest,
   type SessionView
 } from './orchestrator'
+import {
+  appendEvents,
+  dispatcherArgs,
+  dispatcherStartError,
+  eventsSince,
+  findDispatcherSession,
+  findSessionRef,
+  pendingOptions,
+  isDispatcherLive,
+  jobLogEvents,
+  jobRow,
+  refusedAnswer,
+  refusedPrompt,
+  sessionEvents,
+  startRequestOf,
+  waitingEvent,
+  type DispatchEvent,
+  type SessionEventInput
+} from './dispatcher'
 import { decideWaiting, allowedKeys, judgePrompt, judgeArgs, parseVerdict, JUDGE_TIMEOUT_MS, type Verdict } from './judge'
 import { isForbiddenRequest } from './guard'
 import { parseBots, newHumanNotes, watchAction, watchStep, newCommentsPrompt, parseMrKey, ownMrsToWatch } from './mrwatch'
@@ -342,6 +363,7 @@ let dirtyMap: Record<string, boolean> = {}
 let changeMap: Record<string, number> = {}
 let lastUsage: UsageResult | null = null
 let bgAgents = new Map<string, { status: string; name: string | null }>()
+let agentNames = new Map<string, string>()
 let clearedIds = new Map<string, string>()
 let isAutoHandoffRunning = false
 let continuations: Continuations = { links: new Map(), seen: new Map(), active: new Map() }
@@ -485,7 +507,7 @@ function decorate(sessions: Session[]): Session[] {
       worktree: !!repo,
       repo: repo ?? null,
       watched: appState.watched.includes(s.id),
-      name: resolveById(appState.names, s.id) ?? bgAgents.get(s.id)?.name ?? s.name ?? null,
+      name: resolveById(appState.names, s.id) ?? bgAgents.get(s.id)?.name ?? agentNames.get(s.id) ?? s.name ?? null,
       dirty: dirtyMap[key] ?? false,
       changes: changeMap[key] ?? 0,
       bg: bgAgents.has(s.id),
@@ -518,7 +540,12 @@ async function refreshRunning(): Promise<void> {
 async function refreshAgents(): Promise<void> {
   const found = await listAgents()
   if (!found) return
-  const list = found.map((a) => ({ ...a, sessionId: clearedIds.get(a.sessionId) ?? a.sessionId }))
+  const all = found.map((a) => ({ ...a, sessionId: clearedIds.get(a.sessionId) ?? a.sessionId }))
+  const isRunning = (a: AgentInfo): boolean => a.isRunning
+  const list = all.filter(isRunning)
+  const isNamed = (a: AgentInfo): boolean => !!a.name
+  const toNameEntry = (a: AgentInfo): [string, string] => [a.sessionId, a.name as string]
+  agentNames = new Map(all.filter(isNamed).map(toNameEntry))
   liveAgentIds = new Set(list.map((a) => a.sessionId))
   agentStatus = new Map(list.map((a) => [a.sessionId, a.status]))
   bgAgents = new Map(
@@ -947,6 +974,20 @@ const myMrs = (): MyMrs => ({
 
 const pushMyMrs = (): void => sendAll('my-mrs', myMrs())
 
+const isMrKey =
+  (key: string) =>
+  (m: MrItem): boolean =>
+    m.key === key
+
+const markMrSeen = (key: string): void => {
+  const mr = mrItems.find(isMrKey(key))
+  const seen = mr ? seenShas(mr, { reviewedMrs: appState.reviewedMrs, approvedMrs: appState.approvedMrs }) : null
+  if (!seen) return
+  appState = { ...appState, ...seen }
+  saveState(statePath, appState)
+  pushMyMrs()
+}
+
 const refreshMyMrs = async (): Promise<void> => {
   const token = appState.settings.gitlabToken.trim()
   if (!token) {
@@ -962,7 +1003,7 @@ const refreshMyMrs = async (): Promise<void> => {
       isMrsLoaded = true
       pushMyMrs()
       const wanted = mrItems.filter((m) => isInProjects(m.projectPath, appState.settings.mrProjects))
-      const enrichedList = await enrichMrs(appState.settings.gitlabBase, token, wanted, gitlabMe)
+      const enrichedList = await enrichMrs(appState.settings.gitlabBase, token, wanted, gitlabMe, parseBots(appState.settings.orchestratorBots))
       const enriched = new Map(enrichedList.map((m) => [m.key, m]))
       mrItems = mrItems.map((m) => enriched.get(m.key) ?? m)
       const approvedMrs = pruneApproved(appState.approvedMrs, enrichedList)
@@ -1399,6 +1440,8 @@ const inboxItem = async (id: string): Promise<InboxItem | null> => {
 
 const NOT_PENDING = { error: 'This request is no longer pending' }
 
+const answeredToolUses = new Set<string>()
+
 const isStillPending = (id: string, toolUseId: string): boolean =>
   isAnswerCurrent({ status: sessionById(id)?.status ?? 'closed', toolUseId: sessionTail(id)?.pendingTool?.toolUseId ?? null }, toolUseId)
 
@@ -1410,7 +1453,8 @@ const answerInbox = async (id: string, toolUseId: string, key: string): Promise<
     if (opened.error) return opened
   }
   if (!(await waitForQuietOutput(id, true))) return { error: 'Claude is busy in the terminal, so nothing was sent' }
-  if (!isStillPending(id, toolUseId)) return NOT_PENDING
+  if (!isStillPending(id, toolUseId) || answeredToolUses.has(toolUseId)) return NOT_PENDING
+  answeredToolUses.add(toolUseId)
   ptyHost.write(id, key)
   return { error: null }
 }
@@ -2207,6 +2251,18 @@ const startAddress = async (key: string, isOrchestrated = false): Promise<{ erro
   let isStarted = false
   try {
     const ticket = mr.ticket ?? `MR-${mr.iid}`
+    const isAddressSession = (s: Session): boolean => s.name === `${ticket}-cr`
+    const byRecent = (a: Session, b: Session): number => b.lastActive - a.lastActive
+    const previous = lastSessions.filter(isAddressSession).sort(byRecent)[0]
+    if (previous) {
+      const sent = await sendPrompt(previous.id, addressFollowUp(mr.iid, mr.url))
+      if (sent.error) return sent
+      isStarted = true
+      appState = { ...appState, mrSessions: { ...appState.mrSessions, [key]: previous.id } }
+      saveState(statePath, appState)
+      pushMyMrs()
+      return { error: null, sessionId: previous.id }
+    }
     const folder = (await branchFolder(repo, mr.sourceBranch)) ?? (await addBranchWorktree(repo, ticket, mr.sourceBranch))
     const mcpConfig = folder ? prepareTaskBrowser(ticket.toUpperCase(), folder) : null
     const handoff = findHandoff(ticket)
@@ -2242,12 +2298,48 @@ const waitMarks = new Map<string, string>()
 const transcriptPaths = new Map<string, string>()
 const busyJobs = new Set<string>()
 const judgedToolUses = new Set<string>()
+const announcedToolUses = new Set<string>()
+const dispatcherWaits = new Map<string, string>()
 const warnedSkips = new Set<string>()
+let dispatchEvents: DispatchEvent[] = []
+let sessionStatuses: Record<string, Session['status']> = {}
+const FEED_ID = Date.now()
 let gitlabUsername: string | null = null
 let isWatchingMrs = false
 
+const dispatcherLive = (): boolean => {
+  const id = appState.orchestrator.dispatcherSessionId
+  return isDispatcherLive(findDispatcherSession(lastSessions, id)?.status ?? null)
+}
+
+let isDispatcherStarting = false
+
+const openDispatcher = async (): Promise<{ error: string | null; sessionId?: string }> => {
+  const known = findDispatcherSession(lastSessions, appState.orchestrator.dispatcherSessionId)
+  if (known && dispatcherLive()) return { error: null, sessionId: known.id }
+  if (isDispatcherStarting) return { error: 'dispatcher is already starting' }
+  const exe = resolveClaudeExe()
+  if (!exe) return { error: 'claude.exe not found' }
+  isDispatcherStarting = true
+  try {
+    const out = await spawnBackground(exe, joinPath(homedir(), '.claude'), dispatcherArgs(), true)
+    const shortId = parseBgId(out)
+    if (!shortId) return { error: dispatcherStartError(out) }
+    const id = (await waitForSessionId(shortId, 10000)) ?? shortId
+    appState = { ...appState, orchestrator: { ...appState.orchestrator, dispatcherSessionId: id } }
+    saveState(statePath, appState)
+    sendAll('orchestrator', appState.orchestrator)
+    await refreshAgents()
+    await rescanAndPush()
+    return { error: null, sessionId: findDispatcherSession(lastSessions, id)?.id ?? id }
+  } finally {
+    isDispatcherStarting = false
+  }
+}
+
 const setJobs = (jobs: Job[]): void => {
-  appState = { ...appState, orchestrator: { jobs } }
+  dispatchEvents = appendEvents(dispatchEvents, jobLogEvents(appState.orchestrator.jobs, jobs, Date.now()))
+  appState = { ...appState, orchestrator: { ...appState.orchestrator, jobs } }
   saveState(statePath, appState)
   sendAll('orchestrator', appState.orchestrator)
 }
@@ -2365,7 +2457,18 @@ const handleWaiting = async (id: string, sessionId: string): Promise<void> => {
   const pending = tail.pendingTool
   const rawInput = pendingRawInput(lines)
   const job = findJob(id)
+  const isDispatcherUp = dispatcherLive()
+  if (!isDispatcherUp) dispatcherWaits.delete(id)
   if (!job || (pending && judgedToolUses.has(pending.toolUseId))) return
+  if (pending && !announcedToolUses.has(pending.toolUseId)) {
+    announcedToolUses.add(pending.toolUseId)
+    dispatchEvents = appendEvents(dispatchEvents, [waitingEvent(job, pending, tail.questionOptions, Date.now())])
+  }
+  if (pending && job.autonomy === 'autonomous' && isDispatcherUp) {
+    if (dispatcherWaits.get(id) === pending.toolUseId) return
+    dispatcherWaits.set(id, pending.toolUseId)
+    return logJob(id, 'waiting for the dispatcher')
+  }
   const decision = decideWaiting(job.autonomy, pending, rawInput, (await modeOf(sessionId)) === 'attach')
   if (decision === 'escalate' || !pending) {
     if (pending) judgedToolUses.add(pending.toolUseId)
@@ -2534,7 +2637,8 @@ const tickJob = (job: Job, links: Map<string, string>, now: number, actions: (()
   jobStatus.set(job.id, status)
   if (status === 'working' && prev !== 'working') turnStarts.set(job.id, now)
   const mark = status === 'waiting' ? transcriptMark(sessionId) : ''
-  if (status === 'waiting' && (prev !== 'waiting' || mark !== waitMarks.get(job.id))) {
+  const isHandedOffToDeadDispatcher = dispatcherWaits.has(job.id) && !dispatcherLive()
+  if (status === 'waiting' && (prev !== 'waiting' || mark !== waitMarks.get(job.id) || isHandedOffToDeadDispatcher)) {
     waitMarks.set(job.id, mark)
     actions.push(runBusy(job.id, () => handleWaiting(job.id, sessionId)))
     return next
@@ -2607,7 +2711,7 @@ const setJobAutonomy = (id: string, autonomy: Autonomy): void =>
   updateJob(id, (j) => withAutonomy(j, autonomy, Date.now()))
 
 const forgetJob = (id: string): void => {
-  for (const map of [launchingJobs, jobStatus, turnStarts, phaseSince, clearSentAt, clearMarks, waitMarks]) map.delete(id)
+  for (const map of [launchingJobs, jobStatus, turnStarts, phaseSince, clearSentAt, clearMarks, waitMarks, dispatcherWaits]) map.delete(id)
   warnedSkips.delete(id)
 }
 
@@ -2868,7 +2972,157 @@ const serverRoute = async (body: Record<string, unknown>, isUserAction: boolean)
   }
 }
 
+const jobPendingPrompt = (job: Job) => {
+  const sessionId = job.sessionId ? boundSessionId(job.sessionId, throughCleared(continuations.links)) : null
+  const file = sessionId && sessionById(sessionId)?.status === 'waiting' ? cachedTranscript(sessionId) : null
+  const lines = file ? readTailLines(file) : []
+  const tail = parseTail(lines)
+  return { sessionId, pending: tail.pendingTool, rawInput: pendingRawInput(lines), questionOptions: tail.questionOptions }
+}
+
+const sessionPendingPrompt = (sessionId: string) => {
+  const file = sessionById(sessionId)?.status === 'waiting' ? cachedTranscript(sessionId) : null
+  const lines = file ? readTailLines(file) : []
+  const tail = parseTail(lines)
+  return { pending: tail.pendingTool, rawInput: pendingRawInput(lines), questionOptions: tail.questionOptions }
+}
+
+const LAST_REPLY_CHARS = 600
+const isAssistantMessage = (m: { role: string }): boolean => m.role === 'assistant'
+const lastReplyOf = (id: string): string => {
+  const text = [...sessionDetail(id).messages].reverse().find(isAssistantMessage)?.text.trim() ?? ''
+  return text.length > LAST_REPLY_CHARS ? `${text.slice(0, LAST_REPLY_CHARS - 1)}…` : text
+}
+
+const dispatchableSessions = (): (SessionEventInput & { jobId: string | null })[] => {
+  const dispatcherId = findDispatcherSession(lastSessions, appState.orchestrator.dispatcherSessionId)?.id
+  const isDispatchable = (s: Session): boolean => s.isLive && s.id !== dispatcherId
+  const jobIdOf = (s: Session): string | null => {
+    const isSessionJob = (job: Job): boolean => !!job.sessionId && s.id.startsWith(job.sessionId)
+    return appState.orchestrator.jobs.find(isSessionJob)?.id ?? null
+  }
+  const toDispatchable = (s: Session): SessionEventInput & { jobId: string | null } => ({ ...toSessionEventInput(s), jobId: jobIdOf(s) })
+  return lastSessions.filter(isDispatchable).map(toDispatchable)
+}
+
+const sessionBridgeRow = (s: SessionEventInput & { jobId: string | null }): unknown => {
+  const { pending, questionOptions } = sessionPendingPrompt(s.id)
+  return {
+    id: s.id.slice(0, 8),
+    label: s.label,
+    title: s.title,
+    status: s.status,
+    jobId: s.jobId,
+    pending: pending ? { toolUseId: pending.toolUseId, tool: pending.name, text: pending.input, options: pendingOptions(pending, questionOptions) } : null,
+    lastReply: lastReplyOf(s.id)
+  }
+}
+
+const answerSession = async (body: Record<string, unknown>): Promise<unknown> => {
+  const target = findSessionRef(dispatchableSessions(), asString(body.session))
+  if (!target) return { error: 'unknown or ambiguous session' }
+  const { pending, rawInput, questionOptions } = sessionPendingPrompt(target.id)
+  const toolUseId = asString(body.toolUseId)
+  if (!pending || pending.toolUseId !== toolUseId) return { error: 'no such pending prompt' }
+  const key = asString(body.key)
+  const reason = refusedAnswer(pending, rawInput, questionOptions, key)
+  if (reason) return { error: reason }
+  return answerInbox(target.id, toolUseId, key)
+}
+
+const promptSession = async (body: Record<string, unknown>): Promise<unknown> => {
+  const target = findSessionRef(dispatchableSessions(), asString(body.session))
+  if (!target) return { error: 'unknown or ambiguous session' }
+  const text = asString(body.text)
+  if (!text) return { error: 'empty prompt' }
+  const reason = refusedPrompt(text, sessionById(target.id)?.status ?? null)
+  if (reason) return { error: reason }
+  const isStillIdle = (): boolean => sessionById(target.id)?.status === 'idle' && !sessionTail(target.id)?.pendingTool
+  return sendPrompt(target.id, text, isStillIdle)
+}
+
+const dispatcherRefusal = (job: Job, reason: string): { error: string } => {
+  logJob(job.id, `dispatcher refused: ${reason}`)
+  return { error: reason }
+}
+
 const bridgeRoutes = {
+  '/jobs': async (): Promise<unknown> => ({
+    jobs: appState.orchestrator.jobs.map((job) => {
+      const { pending, questionOptions } = jobPendingPrompt(job)
+      return jobRow(job, pending, questionOptions)
+    })
+  }),
+  '/events': async (body: Record<string, unknown>): Promise<unknown> => ({
+    ...eventsSince(dispatchEvents, typeof body.since === 'number' ? body.since : 0),
+    feedId: FEED_ID
+  }),
+  '/sessions': async (): Promise<unknown> => ({ sessions: dispatchableSessions().map(sessionBridgeRow) }),
+  '/answer': async (body: Record<string, unknown>): Promise<unknown> => {
+    if (asString(body.session)) return answerSession(body)
+    const job = findJob(asString(body.job))
+    if (!job) return { error: 'unknown job' }
+    const { sessionId, pending, rawInput, questionOptions } = jobPendingPrompt(job)
+    if (!sessionId) return { error: 'job has no session' }
+    const toolUseId = asString(body.toolUseId)
+    if (!pending || pending.toolUseId !== toolUseId) return { error: 'no such pending prompt' }
+    const key = asString(body.key)
+    const reason = refusedAnswer(pending, rawInput, questionOptions, key)
+    if (reason) return dispatcherRefusal(job, reason)
+    const answered = await answerInbox(sessionId, toolUseId, key)
+    if (answered.error) return answered
+    logJob(job.id, `dispatcher: ${key}`)
+    return { error: null }
+  },
+  '/prompt': async (body: Record<string, unknown>): Promise<unknown> => {
+    if (asString(body.session)) return promptSession(body)
+    const job = findJob(asString(body.job))
+    if (!job) return { error: 'unknown job' }
+    const text = asString(body.text)
+    if (!text) return { error: 'empty prompt' }
+    const { sessionId } = jobPendingPrompt(job)
+    if (!sessionId) return { error: 'job has no session' }
+    const reason = refusedPrompt(text, sessionById(sessionId)?.status ?? null)
+    if (reason) return dispatcherRefusal(job, reason)
+    const isStillIdle = (): boolean => sessionById(sessionId)?.status === 'idle' && !sessionTail(sessionId)?.pendingTool
+    const sent = await sendPrompt(sessionId, text, isStillIdle)
+    if (sent.error) return sent
+    logJob(job.id, 'dispatcher prompt sent')
+    return { error: null }
+  },
+  '/start': async (body: Record<string, unknown>): Promise<unknown> => {
+    const asked = asString(body.ticket).toUpperCase()
+    const isAsked = (t: JiraTicket): boolean => t.key === asked
+    const titleEntry = (t: JiraTicket): [string, string] => [t.key, t.summary ?? '']
+    const isKnown = !asked || !!appState.jira[asked] || myTasks.tickets.some(isAsked)
+    if (!isKnown) await fetchTickets([asked])
+    const request = startRequestOf(
+      { ticket: asString(body.ticket), review: asString(body.review), watch: asString(body.watch), autonomy: asString(body.autonomy) },
+      {
+        jiraTitles: {
+          ...Object.fromEntries(myTasks.tickets.map(titleEntry)),
+          ...Object.fromEntries(Object.entries(appState.jira).map(([k, v]) => [k, v.summary ?? '']))
+        },
+        mrs: mrItems,
+        repoFor: (key) => appState.repoByPrefix[ticketPrefix(key)] ?? repoRoots(lastSessions)[0]?.path ?? null
+      }
+    )
+    return request ? startJobs([request]) : { error: 'unknown ticket or MR' }
+  },
+  '/autonomy': async (body: Record<string, unknown>): Promise<unknown> => {
+    const job = findJob(asString(body.job))
+    if (!job) return { error: 'unknown job' }
+    const level = asString(body.level)
+    if (!['manual', 'autonomous', 'routine'].includes(level)) return { error: 'invalid level' }
+    setJobAutonomy(job.id, level as Autonomy)
+    return { error: null }
+  },
+  '/remove': async (body: Record<string, unknown>): Promise<unknown> => {
+    const job = findJob(asString(body.job))
+    if (!job) return { error: 'unknown job' }
+    removeJob(job.id)
+    return { error: null }
+  },
   '/server': async (body: Record<string, unknown>): Promise<unknown> => serverRoute(body, false),
   '/chrome': async (body: Record<string, unknown>): Promise<unknown> => {
     const key = asString(body.ticket).toUpperCase() || ticketFromPath(asString(body.cwd)) || null
@@ -3096,18 +3350,20 @@ const openOnDemand = async (id: string): Promise<boolean> => {
 
 const terminalWriter = createOnDemandWriter({ isOpen: ptyHost.isOpen, open: openOnDemand, write: ptyHost.write })
 
-const sendKeys = async (id: string, data: string): Promise<{ error: string | null }> => {
+const sendKeys = async (id: string, data: string, isStillSafe?: () => boolean): Promise<{ error: string | null }> => {
   await terminalWriter.whenFlushed(id)
   if (!ptyHost.isOpen(id)) {
     const opened = await openFromMain(id)
     if (opened.error) return opened
   }
   if (!(await waitForQuietOutput(id))) return { error: 'the session did not answer' }
+  if (isStillSafe && !isStillSafe()) return { error: 'the session is no longer idle, so nothing was sent' }
   ptyHost.write(id, data)
   return { error: null }
 }
 
-const sendPrompt = (id: string, text: string): Promise<{ error: string | null }> => sendKeys(id, pasteInput(text))
+const sendPrompt = (id: string, text: string, isStillSafe?: () => boolean): Promise<{ error: string | null }> =>
+  sendKeys(id, pasteInput(text), isStillSafe)
 
 const takeOver = async (id: string, cols: number, rows: number): Promise<{ error: string | null }> => {
   handedToVscode.delete(id)
@@ -3221,7 +3477,9 @@ const sleepTick = async (): Promise<void> => {
   isSleepTickRunning = true
   try {
     const afterHours = appState.settings.sleepAfterHours
-    const due = sessionsToSleep(lastSessions.map(toSleepCandidate), Date.now(), afterHours)
+    const dispatcherId = findDispatcherSession(lastSessions, appState.orchestrator.dispatcherSessionId)?.id
+    const isNotDispatcher = (id: string): boolean => id !== dispatcherId
+    const due = sessionsToSleep(lastSessions.map(toSleepCandidate), Date.now(), afterHours).filter(isNotDispatcher)
     for (const id of due) {
       if (closingIds.has(id)) continue
       try {
@@ -3327,6 +3585,32 @@ function notifyContext(s: Session): void {
   n.show()
 }
 
+const toSessionEventInput = (s: Session): SessionEventInput => ({
+  id: s.id,
+  status: s.status,
+  isLive: s.isLive,
+  label: s.ticket ?? s.name ?? s.projectName,
+  title: (s.ticket ? lastTasks[s.ticket]?.title : null) ?? s.firstPrompt ?? ''
+})
+
+const jobSessionId = (job: Job): string | null => job.sessionId
+const isPresent = (id: string | null): id is string => !!id
+const isPrefixOf =
+  (full: string) =>
+  (prefix: string): boolean =>
+    full.startsWith(prefix)
+const sessionIdOf = (s: Session): string => s.id
+
+const reportSessionEvents = (shown: Session[]): void => {
+  const jobSessionIds = appState.orchestrator.jobs.map(jobSessionId).filter(isPresent)
+  const isJobSession = (s: Session): boolean => jobSessionIds.some(isPrefixOf(s.id))
+  const dispatcherId = findDispatcherSession(lastSessions, appState.orchestrator.dispatcherSessionId)?.id
+  const skipIds = shown.filter(isJobSession).map(sessionIdOf).concat(dispatcherId ? [dispatcherId] : [])
+  const result = sessionEvents(sessionStatuses, shown.map(toSessionEventInput), skipIds, Date.now())
+  sessionStatuses = result.next
+  if (result.events.length) dispatchEvents = appendEvents(dispatchEvents, result.events)
+}
+
 function updateAttention(sessions: Session[], shown: Session[]): void {
   if (!mainWindow) return
   const waitingIds = new Set<string>()
@@ -3339,6 +3623,7 @@ function updateAttention(sessions: Session[], shown: Session[]): void {
     }
   }
   for (const id of [...notifiedWaiting]) if (!waitingIds.has(id)) notifiedWaiting.delete(id)
+  reportSessionEvents(shown)
   if (isProcessScanReady) {
     const check = finishedTransitions(lastTurnStatus, shown)
     lastTurnStatus = check.next
@@ -4148,12 +4433,14 @@ if (!app.requestSingleInstanceLock()) {
     return { repo, folder: await branchFolder(repo, mr.sourceBranch) }
   })
   ipcMain.handle('mr-start-address', (_e, key: string) => startAddress(key))
+  ipcMain.on('mr-seen', (_e, key: string) => markMrSeen(key))
   ipcMain.handle('orchestrator-start', (_e, jobs: unknown) => startJobs(jobs))
   ipcMain.handle('orchestrator-set-autonomy', (_e, id: string, autonomy: Autonomy) => setJobAutonomy(id, autonomy))
   ipcMain.handle('orchestrator-remove', (_e, id: string) => removeJob(id))
   ipcMain.handle('orchestrator-adopt', (_e, sessionId: string) => adoptSession(sessionId))
   ipcMain.handle('orchestrator-session-autonomy', (_e, sessionId: string, choice: AutonomyChoice) => setSessionAutonomy(sessionId, choice))
   ipcMain.handle('orchestrator-get', () => appState.orchestrator)
+  ipcMain.handle('dispatcher-open', () => openDispatcher())
   ipcMain.handle('local-hosts', () => listLocalHosts())
   ipcMain.handle('close-chrome', async (_e, key: string | null) => ({ error: await closeChrome(typeof key === 'string' ? key : null) }))
   ipcMain.handle('ticket-server', async (_e, key: string, cwd: string | null) => serverRoute({ ticket: key, cwd: cwd ?? '' }, true))
@@ -4168,8 +4455,8 @@ if (!app.requestSingleInstanceLock()) {
   })
   ipcMain.handle('mr-status', async (_e, key: string) => {
     const found = mrForAction(key)
-    if (!found) return { state: null, overview: null, approvals: null, discussions: null, drafts: null, diffRefs: null, problem: 'This merge request is no longer in your list' }
-    return fetchMrStatus(appState.settings.gitlabBase, found.token, found.mr.projectId, found.mr.iid)
+    if (!found) return { state: null, overview: null, approvals: null, discussions: null, drafts: null, commits: null, diffRefs: null, problem: 'This merge request is no longer in your list' }
+    return fetchMrStatus(appState.settings.gitlabBase, found.token, found.mr.projectId, found.mr.iid, parseBots(appState.settings.orchestratorBots))
   })
   const offerReleaseStatus = async (ticket: string | null): Promise<string | null> => {
     const token = appState.settings.jiraToken.trim()
@@ -4298,6 +4585,61 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
     const token = appState.settings.gitlabToken.trim()
     if (!token || !/^[A-Z][A-Z0-9]*-\d+$/i.test(ticket ?? '')) return null
     return findTicketMr(appState.settings.gitlabBase, token, ticket.toUpperCase())
+  })
+  ipcMain.handle('release-check', async (_e, tickets: { key: string; summary: string; status: string }[]): Promise<ReleaseRow[]> => {
+    const token = appState.settings.gitlabToken.trim()
+    if (!token) return []
+    const rows: ReleaseRow[] = []
+    for (const ticket of tickets ?? []) rows.push(await checkRelease(appState.settings.gitlabBase, token, ticket, opisDir()))
+    return rows
+  })
+  ipcMain.handle('release-run', async (_e, requestedKeys: string[]): Promise<ReleaseResult[]> => {
+    const keys = Array.isArray(requestedKeys) ? requestedKeys : []
+    const jiraToken = appState.settings.jiraToken.trim()
+    const gitlabToken = appState.settings.gitlabToken.trim()
+    const toError = (key: string, error: string): ReleaseResult => ({ key, error, done: [] })
+    const toMissingTokenError = (key: string): ReleaseResult => toError(key, 'Add a Jira and GitLab token in Settings first')
+    if (!jiraToken || !gitlabToken) return keys.map(toMissingTokenError)
+    const skipped: ReleaseResult[] = []
+    const ready: string[] = []
+    for (const key of keys) {
+      const issue = await fetchIssue(appState.settings.jiraBase, jiraToken, key)
+      if (!issue) {
+        skipped.push(toError(key, `Not ready: could not read ${key} from Jira`))
+        continue
+      }
+      const row = await checkRelease(appState.settings.gitlabBase, gitlabToken, { key, summary: issue.summary ?? '', status: issue.status }, opisDir())
+      if (isReleasable(row)) ready.push(key)
+      else skipped.push(toError(key, `Not ready: ${row.blockers[0] ?? 'status is not Waiting for internal release'}`))
+    }
+    if (!ready.length) return skipped
+    const detail = `${ready.join('\n')}\n\nMoves each to Internal testing, posts test-case.md as a comment and removes you as assignee.`
+    if (!(await confirmMr(`Hand ${ready.length} ticket(s) to QA?`, 'Hand to QA', detail))) return []
+    const base = appState.settings.jiraBase
+    const toBody = (c: { body: string }): string => c.body
+    const readStatus = async (key: string): Promise<string | null> => (await fetchIssue(base, jiraToken, key))?.status ?? null
+    const readTransitions = (key: string): ReturnType<typeof fetchTransitions> => fetchTransitions(base, jiraToken, key)
+    const runTransition = (key: string, id: string): Promise<boolean> => doTransition(base, jiraToken, key, id)
+    const readComments = async (key: string): Promise<string[] | null> => {
+      const detailed = await fetchTicketDetail(base, jiraToken, key)
+      return detailed ? detailed.comments.map(toBody) : null
+    }
+    const addComment = (key: string, body: string): Promise<boolean> => postComment(base, jiraToken, key, body)
+    const removeAssignee = (key: string): Promise<boolean> => unassignIssue(base, jiraToken, key)
+    const readTestCases = (key: string): string | null => findTestCases(opisDir(), key)
+    const deps: ReleaseDeps = {
+      status: readStatus,
+      transitions: readTransitions,
+      transition: runTransition,
+      comments: readComments,
+      comment: addComment,
+      unassign: removeAssignee,
+      testCases: readTestCases
+    }
+    const done: ReleaseResult[] = []
+    for (const key of ready) done.push(await releaseTicket(key, deps))
+    void refreshMyTasks()
+    return [...skipped, ...done]
   })
   ipcMain.handle('mr-review', async (_e, key: string, action: MrReviewAction) => {
     const found = mrForAction(key)
