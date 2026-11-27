@@ -1,5 +1,50 @@
 import { describe, it, expect } from 'vitest'
-import { pickPort, serverCommand, bashCandidates, DEFAULT_SERVER_COMMAND } from '../src/main/devserver'
+import { createServer, type Server } from 'node:net'
+import { pickPort, serverCommand, bashCandidates, isPortFree, DEFAULT_SERVER_COMMAND } from '../src/main/devserver'
+
+const listenOn = (host: string): Promise<{ server: Server; port: number }> =>
+  new Promise((resolve, reject) => {
+    const server = createServer()
+    server.once('error', reject)
+    server.listen(0, host, () => resolve({ server, port: (server.address() as { port: number }).port }))
+  })
+
+const closeServer = (server: Server): Promise<void> => new Promise((resolve) => server.close(() => resolve()))
+
+describe('isPortFree', () => {
+  it('sees a dev server listening on every IPv4 address, as vue-cli does by default', async () => {
+    const { server, port } = await listenOn('0.0.0.0')
+    try {
+      expect(await isPortFree(port)).toBe(false)
+    } finally {
+      await closeServer(server)
+    }
+  })
+
+  it('sees a server listening on the IPv6 wildcard', async () => {
+    const { server, port } = await listenOn('::')
+    try {
+      expect(await isPortFree(port)).toBe(false)
+    } finally {
+      await closeServer(server)
+    }
+  })
+
+  it('sees a server listening on loopback', async () => {
+    const { server, port } = await listenOn('127.0.0.1')
+    try {
+      expect(await isPortFree(port)).toBe(false)
+    } finally {
+      await closeServer(server)
+    }
+  })
+
+  it('reports a closed port as free', async () => {
+    const { server, port } = await listenOn('127.0.0.1')
+    await closeServer(server)
+    expect(await isPortFree(port)).toBe(true)
+  })
+})
 
 describe('pickPort', () => {
   it('takes the first port from 8080 that is neither used by our servers nor busy', () => {

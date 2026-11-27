@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, onActivated, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, onActivated, nextTick } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { attachClipboard } from './termclipboard'
 import '@xterm/xterm/css/xterm.css'
 import type { DevServer, ServerChoice, ServerProfile } from '../types'
+import { runningChoice } from './serverchoice'
 
 const props = defineProps<{ ticketKey: string; cwd: string | null; servers: DevServer[] }>()
 
@@ -25,6 +26,10 @@ const host = ref<HTMLDivElement | null>(null)
 
 const running = computed(() => props.servers.find((s) => s.key === props.ticketKey) ?? null)
 const url = computed(() => running.value?.url ?? null)
+const syncChoice = (server: DevServer | null): void => {
+  if (server) choice.value = runningChoice(server.label, choice.value)
+}
+watch(running, syncChoice, { immediate: true })
 
 let term: Terminal | null = null
 let fit: FitAddon | null = null

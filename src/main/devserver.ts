@@ -18,10 +18,19 @@ export const bashCandidates = (programFiles: string, localAppData: string): stri
   win32.join(localAppData, 'Programs', 'Git', 'bin', 'bash.exe')
 ]
 
-export const isPortFree = (port: number): Promise<boolean> =>
+const PROBE_HOSTS = ['127.0.0.1', '0.0.0.0', '::1', '::']
+const MISSING_ADDRESS_CODES = ['EADDRNOTAVAIL', 'EAFNOSUPPORT']
+
+const isHostPortFree = (port: number, host: string): Promise<boolean> =>
   new Promise((resolve) => {
     const probe = createServer()
-    probe.once('error', () => resolve(false))
+    const onError = (err: NodeJS.ErrnoException): void => resolve(MISSING_ADDRESS_CODES.includes(err.code ?? ''))
+    probe.once('error', onError)
     probe.once('listening', () => probe.close(() => resolve(true)))
-    probe.listen(port, '127.0.0.1')
+    probe.listen(port, host)
   })
+
+export const isPortFree = async (port: number): Promise<boolean> => {
+  for (const host of PROBE_HOSTS) if (!(await isHostPortFree(port, host))) return false
+  return true
+}
