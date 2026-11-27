@@ -1,3 +1,4 @@
+import type { FlowMapStep } from '../../../main/flow'
 import { isJobOver, type Autonomy, type Job, type JobState } from '../../../main/orchestrator'
 import type { Session, Stage, Status } from '../types'
 
@@ -156,4 +157,34 @@ export const coordinatorBars = (
   const byRecency = (a: CoordinatorBar, b: CoordinatorBar): number =>
     barRank(a) - barRank(b) || (stamps.get(b.id) ?? 0) - (stamps.get(a.id) ?? 0)
   return bars.sort(byRecency)
+}
+
+const STAGE_STEP_PREFIX: Record<string, string> = {
+  repro: 'repro',
+  plan: 'plan',
+  impl: 'implementation',
+  verify: 'verify',
+  qa: 'qa test cases',
+  review: 'review self',
+  mr: 'draft mr'
+}
+
+const STATIC_STAGE_INFO: Record<string, string> = {
+  posted: 'The review comments are posted as draft notes on the MR.',
+  watching: 'The coordinator keeps watching this item and reports changes.'
+}
+
+export const STAGE_INFO_FALLBACK = 'No description available for this stage.'
+
+export const stageInfo = (label: string, steps: Pick<FlowMapStep, 'name' | 'summary'>[]): string => {
+  if (STATIC_STAGE_INFO[label]) return STATIC_STAGE_INFO[label]
+  const prefix = STAGE_STEP_PREFIX[label]
+  if (!prefix) return STAGE_INFO_FALLBACK
+  const isMatch = (step: Pick<FlowMapStep, 'name'>): boolean => step.name.toLowerCase().startsWith(prefix)
+  return steps.find(isMatch)?.summary || STAGE_INFO_FALLBACK
+}
+
+export const stageState = (step: BarStep): 'done' | 'current' | 'not yet' => {
+  if (step.isDone) return 'done'
+  return step.isCurrent ? 'current' : 'not yet'
 }

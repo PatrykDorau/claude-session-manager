@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import type { JiraTicket, MrRow, Session } from '../types'
 import type { Autonomy, AutonomyChoice, Job } from '../../../main/orchestrator'
 import type { InboxRow } from './inbox'
-import { coordinatorBars, type CoordinatorBar as Bar } from './coordinator'
+import { coordinatorBars, stageInfo, type CoordinatorBar as Bar } from './coordinator'
+import type { FlowMapStep } from '../../../main/flow'
 import OrchestratorView from './OrchestratorView.vue'
 import DispatcherPane from './DispatcherPane.vue'
 import CoordinatorBar from './CoordinatorBar.vue'
@@ -105,6 +106,24 @@ const forwardFullScreen = (isOn: boolean): void => {
 const forwardDispatcher = (): void => emit('dispatcher')
 const forwardOpenMr = (key: string): void => emit('open-mr', key)
 const forwardOpenRow = (row: InboxRow): void => emit('open-row', row)
+const flowSteps = ref<FlowMapStep[]>([])
+const loadFlowSteps = async (): Promise<void> => {
+  try {
+    flowSteps.value = (await window.api.getFlow([])).skill.steps
+  } catch {
+    flowSteps.value = []
+  }
+}
+onMounted(loadFlowSteps)
+const stageSummary = (label: string): string => stageInfo(label, flowSteps.value)
+const openBar = (bar: Bar): void => {
+  const isBarJob = (item: Job): boolean => item.id === bar.jobId
+  const isBarSession = (item: Session): boolean => item.id === bar.sessionId
+  const job = props.jobs.find(isBarJob)
+  const session = props.sessions.find(isBarSession)
+  if (job) forwardOpen(job)
+  else if (session) forwardOpenTask(session)
+}
 </script>
 
 <template>
@@ -153,7 +172,16 @@ const forwardOpenRow = (row: InboxRow): void => emit('open-row', row)
         <section class="bars">
           <p v-if="notice" class="note warn">{{ notice }}</p>
           <p v-if="!bars.length" class="note">No sessions or jobs to coordinate.</p>
-          <CoordinatorBar v-for="bar in bars" :key="`${bar.id}:${gateResets}`" :bar="bar" :is-selected="bar.id === selectedId" @select="selectBar" @gate="changeGate" />
+          <CoordinatorBar
+            v-for="bar in bars"
+            :key="`${bar.id}:${gateResets}`"
+            :bar="bar"
+            :is-selected="bar.id === selectedId"
+            :stage-info="stageSummary"
+            @select="selectBar"
+            @gate="changeGate"
+            @open="openBar"
+          />
         </section>
         <BarPreview
           v-if="selectedBar"
@@ -277,8 +305,8 @@ const forwardOpenRow = (row: InboxRow): void => emit('open-row', row)
   min-width: 300px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
+  gap: 10px;
+  padding: 12px;
   overflow-y: auto;
   border-left: 1px solid var(--line);
 }

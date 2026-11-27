@@ -4,6 +4,9 @@ import type { Session } from '../src/renderer/src/types'
 import {
   coordinatorBars,
   jobSteps,
+  stageInfo,
+  stageState,
+  STAGE_INFO_FALLBACK,
   ticketStages,
   type BarStep,
   type CoordinatorBar
@@ -140,5 +143,31 @@ describe('coordinator bars', () => {
     const failed = job({ id: 'ticket:F-1', key: 'F-1', state: 'failed', sessionId: null, createdAt: 9 })
     const bars = coordinatorBars([failed], [session({ id: 'a' })], titleOf, null)
     expect(bars.map(barId)).toEqual(['a', 'ticket:F-1'])
+  })
+})
+
+describe('stageInfo', () => {
+  const steps = [
+    { name: 'Repro', summary: 'reproduce it' },
+    { name: 'Implementation', summary: 'write code' },
+    { name: 'Review SELF', summary: 'self review' }
+  ]
+  it('matches labels to steps by name prefix', () => {
+    expect(stageInfo('repro', steps)).toBe('reproduce it')
+    expect(stageInfo('impl', steps)).toBe('write code')
+    expect(stageInfo('review', steps)).toBe('self review')
+  })
+  it('uses static text for posted and watching', () => {
+    expect(stageInfo('watching', [])).toContain('watching')
+    expect(stageInfo('posted', [])).toContain('posted')
+  })
+  it('falls back when nothing matches', () => {
+    expect(stageInfo('qa', steps)).toBe(STAGE_INFO_FALLBACK)
+    expect(stageInfo('zzz', steps)).toBe(STAGE_INFO_FALLBACK)
+  })
+  it('names the step state', () => {
+    expect(stageState({ label: 'a', isDone: true, isCurrent: false })).toBe('done')
+    expect(stageState({ label: 'a', isDone: false, isCurrent: true })).toBe('current')
+    expect(stageState({ label: 'a', isDone: false, isCurrent: false })).toBe('not yet')
   })
 })
