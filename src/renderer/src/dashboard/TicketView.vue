@@ -53,19 +53,9 @@ watch(availableTabs, (tabs) => {
   if (!tabs.includes(tab.value)) tab.value = 'work'
 })
 const isCodeOpen = ref(!readFlag('dash.codeHidden'))
-const isClaudeOpen = ref(!readFlag('dash.claudeHidden'))
-const isBothOpen = computed(() => isCodeOpen.value && isClaudeOpen.value)
 const toggleCode = (): void => {
   isCodeOpen.value = !isCodeOpen.value
-  if (!isCodeOpen.value) isClaudeOpen.value = true
   writeSize('dash.codeHidden', !isCodeOpen.value)
-  writeSize('dash.claudeHidden', !isClaudeOpen.value)
-}
-const toggleClaude = (): void => {
-  isClaudeOpen.value = !isClaudeOpen.value
-  if (!isClaudeOpen.value) isCodeOpen.value = true
-  writeSize('dash.codeHidden', !isCodeOpen.value)
-  writeSize('dash.claudeHidden', !isClaudeOpen.value)
 }
 const showClaude = (): void => {
   if (tab.value === 'mr') {
@@ -73,12 +63,7 @@ const showClaude = (): void => {
     writeSize('dash.mrClaudeCollapsed', false)
     return
   }
-  if (isSideTab.value) {
-    if (!isSideClaudeOpen.value) toggleSideClaude()
-    return
-  }
-  tab.value = 'work'
-  if (!isClaudeOpen.value) toggleClaude()
+  if (!isSideTab.value) tab.value = 'work'
 }
 const showCode = (): void => {
   tab.value = 'work'
@@ -417,14 +402,7 @@ const toggleMrClaude = (): void => {
 const isMrSplit = computed(() => tab.value === 'mr' && !isMrClaudeCollapsed.value && !!ownMr.value && !!mrState.value)
 const toIsSideTab = (): boolean => tab.value === 'server' || tab.value === 'ticket'
 const isSideTab = computed(toIsSideTab)
-const isSideClaudeOpen = ref(readFlag('dash.sideClaudeOpen'))
-const toggleSideClaude = (): void => {
-  isSideClaudeOpen.value = !isSideClaudeOpen.value
-  writeSize('dash.sideClaudeOpen', isSideClaudeOpen.value)
-}
-const toggleTabClaude = (): void => (isSideTab.value ? toggleSideClaude() : toggleMrClaude())
-const toClaudeMode = (): ClaudePaneMode =>
-  claudePaneMode(tab.value, { isWorkOpen: isClaudeOpen.value, isMrCollapsed: isMrClaudeCollapsed.value, isSideOpen: isSideClaudeOpen.value })
+const toClaudeMode = (): ClaudePaneMode => claudePaneMode(tab.value, { isMrCollapsed: isMrClaudeCollapsed.value })
 const claudeMode = computed(toClaudeMode)
 const toIsSideSplit = (): boolean => isSideTab.value && claudeMode.value === 'pane'
 const isSideSplit = computed(toIsSideSplit)
@@ -639,10 +617,6 @@ onBeforeUnmount(() => {
           @sleep="sleepCurrent"
           @stop="stopTurn"
         />
-        <div v-if="tab === 'work'" class="seg" title="Show or hide the panes">
-          <button :class="{ on: isCodeOpen }" @click="toggleCode"><Icon name="code" :size="14" />Code</button>
-          <button :class="{ on: isClaudeOpen }" @click="toggleClaude"><Icon name="terminal" :size="14" />Claude</button>
-        </div>
         <button class="btn" :class="{ primary: !row.sessions.length, on: isStartOpen }" @click="isStartOpen = !isStartOpen">
           <Icon name="plus" :size="15" />{{ row.sessions.length ? 'New session' : 'Start session' }}
         </button>
@@ -722,7 +696,8 @@ onBeforeUnmount(() => {
         />
       </section>
       <Splitter v-if="isSideSplit" @resize="resizeSide" @done="saveSideWidth" />
-      <section v-show="tab === 'work' && isCodeOpen" class="pane code" :style="isBothOpen ? { flex: 'none', width: `${codeWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
+      <ClaudeStrip v-if="tab === 'work' && !isCodeOpen" label="Code" :color="null" title="Show code" is-left @expand="toggleCode" />
+      <section v-show="tab === 'work' && isCodeOpen" class="pane code" :style="isCodeOpen ? { flex: 'none', width: `${codeWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
         <CodeView
           :cwd="session?.projectPath ?? null"
           :ticket-key="row.key"
@@ -741,9 +716,10 @@ onBeforeUnmount(() => {
           @file-shown="onFileShown"
         />
       </section>
-      <Splitter v-if="tab === 'work' && isBothOpen" @resize="resizeCode" @done="saveCodeWidth" />
+      <Splitter v-if="tab === 'work' && isCodeOpen" @resize="resizeCode" @done="saveCodeWidth" />
       <section v-show="claudeMode === 'pane'" class="pane claude">
         <div class="chead">
+          <button v-if="tab === 'work' && isCodeOpen" class="collapse" title="Hide code" @click="toggleCode">◂</button>
           <div class="stabs">
             <button
               v-for="s in tabSessions"
@@ -762,7 +738,7 @@ onBeforeUnmount(() => {
               <option v-for="s in row.sessions" :key="s.id" :value="s.id">{{ s.name ?? s.projectName }} · {{ ago(s.lastActive) }}</option>
             </select>
           </div>
-          <button v-if="tab !== 'work'" class="collapse" title="Hide Claude" @click="toggleTabClaude">▸</button>
+          <button v-if="tab === 'mr'" class="collapse" title="Hide Claude" @click="toggleMrClaude">▸</button>
         </div>
         <ClaudeTerminal
           v-for="s in openedSessions"
@@ -799,7 +775,7 @@ onBeforeUnmount(() => {
         </div>
         <QuickActions :session-id="session?.id ?? null" :mode="mode" :take-over="takeOverHere" :values="actionValues" :stage="stage ?? null" />
       </section>
-      <ClaudeStrip v-if="claudeMode === 'strip'" :label="stripLabel" :color="stripColor" @expand="toggleTabClaude" />
+      <ClaudeStrip v-if="claudeMode === 'strip'" :label="stripLabel" :color="stripColor" @expand="toggleMrClaude" />
     </div>
 
     <MrStateHost v-if="ownMr" :key="ownMr.key" :row="ownMr" :my-name="myName ?? null" @state="onMrState" @gone="onMrGone" />
@@ -1047,35 +1023,6 @@ onBeforeUnmount(() => {
   white-space: pre;
   font-size: 12px;
   color: var(--text-4);
-}
-.seg {
-  flex: none;
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  background: var(--bg-0);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-.seg button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 24px;
-  padding: 0 10px;
-  font: 500 12.5px var(--font-ui);
-  color: var(--text-4);
-  background: none;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.seg button:hover {
-  color: var(--text-2);
-}
-.seg button.on {
-  color: var(--text);
-  background: var(--bg-4);
 }
 .btn {
   flex: none;

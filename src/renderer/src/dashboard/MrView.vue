@@ -45,14 +45,9 @@ const resizeCode = (delta: number): void => {
 }
 const saveCodeWidth = (): void => writeSize('dash.mrCodeWidth', codeWidth.value)
 const docWidth = ref(readSize('dash.mrDocWidth', 820))
-const isSideClaudeOpen = ref(readFlag('dash.sideClaudeOpen'))
-const toClaudeMode = (): ClaudePaneMode => claudePaneMode(tab.value, { isWorkOpen: true, isMrCollapsed: isClaudeCollapsed.value, isSideOpen: isSideClaudeOpen.value })
+const toClaudeMode = (): ClaudePaneMode => claudePaneMode(tab.value, { isMrCollapsed: isClaudeCollapsed.value })
 const claudeMode = computed(toClaudeMode)
-const toggleClaudePane = (): void => {
-  if (tab.value !== 'server') return toggleCollapsed()
-  isSideClaudeOpen.value = !isSideClaudeOpen.value
-  writeSize('dash.sideClaudeOpen', isSideClaudeOpen.value)
-}
+const toggleClaudePane = (): void => toggleCollapsed()
 const toIsClaudeShown = (): boolean => claudeMode.value === 'pane'
 const isClaudeShown = computed(toIsClaudeShown)
 const isSplit = computed(() => isClaudeShown.value)
@@ -349,7 +344,7 @@ onBeforeUnmount(() => {
     <section v-show="isClaudeShown" class="pane claude">
       <div class="chead">
         <span class="grow" />
-        <button class="collapse" title="Hide Claude" @click="toggleClaudePane">▸</button>
+        <button v-if="tab !== 'server'" class="collapse" title="Hide Claude" @click="toggleClaudePane">▸</button>
       </div>
       <div v-if="paneSessions.length > 1" class="stabs">
         <button

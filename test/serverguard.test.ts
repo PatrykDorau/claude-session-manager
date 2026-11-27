@@ -2,16 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { serverAction, userStoppedMessage, keptStoppedMessage, createStartRequests, START_REQUEST_MS, userStartAnswer, waitingAgentReply } from '../src/main/serverguard'
 
 describe('serverAction', () => {
-  it('blocks an automatic start after the user stopped it', () => {
-    expect(serverAction({ isRunning: false, isMismatch: false, isUserStopped: true, isUserAction: false })).toBe('blocked')
-  })
-
-  it('user start clears the block', () => {
+  it('lets a session start the server after the user stopped it', () => {
+    expect(serverAction({ isRunning: false, isMismatch: false, isUserStopped: true, isUserAction: false })).toBe('start')
     expect(serverAction({ isRunning: false, isMismatch: false, isUserStopped: true, isUserAction: true })).toBe('start')
   })
 
-  it('blocked call does not restart on a tenant mismatch', () => {
-    expect(serverAction({ isRunning: true, isMismatch: true, isUserStopped: true, isUserAction: false })).toBe('reuse')
+  it('lets a session restart the server on a tenant mismatch after the user stopped it', () => {
+    expect(serverAction({ isRunning: true, isMismatch: true, isUserStopped: true, isUserAction: false })).toBe('restart')
   })
 
   it('keeps today behaviour when not stopped by the user', () => {

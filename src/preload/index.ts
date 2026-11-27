@@ -303,7 +303,7 @@ const api = {
     cols: number,
     rows: number
   ): Promise<{ error: string | null; port?: number }> => ipcRenderer.invoke('server-start', key, cwd, spec, port, cols, rows),
-  getServerProfile: (cwd: string): ServerProfile => ipcRenderer.sendSync('server-profile', cwd),
+  getServerProfile: (cwd: string, kind?: ServerProfile['kind']): ServerProfile => ipcRenderer.sendSync('server-profile', cwd, kind),
   listFiles: (cwd: string): Promise<string[]> => ipcRenderer.invoke('ide-files', cwd),
   searchCode: (cwd: string, query: string, scope: string, isWord: boolean): Promise<{ path: string; line: number; text: string }[]> => ipcRenderer.invoke('ide-search', cwd, query, scope, isWord),
   listChanges: (cwd: string): Promise<ChangedFile[]> => ipcRenderer.invoke('ide-status', cwd),

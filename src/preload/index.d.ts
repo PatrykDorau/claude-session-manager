@@ -190,7 +190,7 @@ declare global {
       getTimesheetDay: (day: string, isForced?: boolean) => Promise<DayResult>
       getServers: () => DevServer[]
       getServerLog: (key: string) => string
-      getServerProfile: (cwd: string) => ServerProfile
+      getServerProfile: (cwd: string, kind?: ServerProfile['kind']) => ServerProfile
       listFiles: (cwd: string) => Promise<string[]>
       searchCode: (cwd: string, query: string, scope: string, isWord: boolean) => Promise<{ path: string; line: number; text: string }[]>
       listChanges: (cwd: string) => Promise<ChangedFile[]>

@@ -9,13 +9,25 @@ import { runningChoice } from './serverchoice'
 
 const props = defineProps<{ ticketKey: string; cwd: string | null; servers: DevServer[] }>()
 
-const profile: ServerProfile | null = props.cwd ? window.api.getServerProfile(props.cwd) : null
-const command = ref(profile?.command ?? '')
-const choice = ref<ServerChoice>({ ...(profile?.choice ?? { tenant: '', environment: '', platform: 'web', resolution: '1280x720' }) })
+const KINDS: { value: ServerProfile['kind']; label: string }[] = [
+  { value: 'web', label: 'Web' },
+  { value: 'stv', label: 'Smart TV' },
+  { value: 'custom', label: 'Custom command' }
+]
+const loadProfile = (kind?: ServerProfile['kind']): ServerProfile | null => (props.cwd ? window.api.getServerProfile(props.cwd, kind) : null)
+const profile = ref<ServerProfile | null>(loadProfile())
+const command = ref(profile.value?.command ?? '')
+const choice = ref<ServerChoice>({ ...(profile.value?.choice ?? { tenant: '', environment: '', platform: 'web', resolution: '1280x720' }) })
+const setKind = (kind: ServerProfile['kind']): void => {
+  const next = loadProfile(kind)
+  profile.value = next
+  command.value = next?.command ?? ''
+  choice.value = { ...(next?.choice ?? choice.value) }
+}
 const preview = computed(() => {
-  if (!profile || profile.kind === 'custom') return command.value
+  if (!profile.value || profile.value.kind === 'custom') return command.value
   const c = choice.value
-  return profile.kind === 'stv'
+  return profile.value.kind === 'stv'
     ? `TENANT=${c.tenant} ENVIRONMENT=${c.environment} PLATFORM=${c.platform} RESOLUTION=${c.resolution} npm run serve -- --port …`
     : `.env.local ← .env.${c.tenant}-${c.environment}, then npm run serve -- --port …`
 })
@@ -65,7 +77,7 @@ const start = async (): Promise<void> => {
     const result = await window.api.startServer(
       props.ticketKey,
       props.cwd,
-      { kind: profile?.kind ?? 'custom', choice: { ...choice.value }, command: command.value },
+      { kind: profile.value?.kind ?? 'custom', choice: { ...choice.value }, command: command.value },
       wanted,
       term?.cols ?? 120,
       term?.rows ?? 30
@@ -114,7 +126,14 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="sp">
-    <div v-if="profile && profile.kind !== 'custom'" class="choices">
+    <div v-if="profile" class="choices">
+      <label>
+        <span>Mode</span>
+        <select :value="profile.kind" :disabled="!!running" @change="setKind(($event.target as HTMLSelectElement).value as ServerProfile['kind'])">
+          <option v-for="k in KINDS" :key="k.value" :value="k.value">{{ k.label }}</option>
+        </select>
+      </label>
+      <template v-if="profile.kind !== 'custom'">
       <label>
         <span>Tenant</span>
         <select v-model="choice.tenant" :disabled="!!running">
@@ -140,6 +159,7 @@ onBeforeUnmount(() => {
             <option v-for="r in profile.resolutions" :key="r" :value="r">{{ r }}</option>
           </select>
         </label>
+      </template>
       </template>
     </div>
     <div class="bar">

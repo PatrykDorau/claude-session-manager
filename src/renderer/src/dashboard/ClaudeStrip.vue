@@ -1,12 +1,12 @@
 <script setup lang="ts">
-defineProps<{ label: string | null; color: string | null }>()
+defineProps<{ label: string | null; color: string | null; title?: string; isLeft?: boolean }>()
 const emit = defineEmits<{ expand: [] }>()
 const expand = (): void => emit('expand')
 </script>
 
 <template>
-  <button class="strip" title="Show Claude" @click="expand">
-    <span class="arrow">◂</span>
+  <button class="strip" :class="{ left: isLeft }" :title="title ?? 'Show Claude'" @click="expand">
+    <span class="arrow">{{ isLeft ? '▸' : '◂' }}</span>
     <i v-if="color" :style="{ background: color }" />
     <span class="label">{{ label ?? 'No session' }}</span>
   </button>
@@ -28,6 +28,10 @@ const expand = (): void => emit('expand')
   border: none;
   border-left: 1px solid var(--line);
   cursor: pointer;
+}
+.strip.left {
+  border-left: none;
+  border-right: 1px solid var(--line);
 }
 .strip:hover {
   color: var(--text);

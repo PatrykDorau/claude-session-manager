@@ -33,7 +33,7 @@ import { createConnection } from 'node:net'
 import type { LocalHost, BranchChanges, ChangedFile, ExplainFile, ReviewDoc, ServerProfile, ServerSpec } from '../renderer/src/types'
 import { terminalMode, attachArgs, attachStep, resumeBackgroundArgs, pasteInput, STOP_TURN, createOpenGuard, isHandedOff, type TerminalMode } from './terminal'
 import { readdir, readFile } from 'node:fs/promises'
-import { join as joinPath, dirname, basename } from 'node:path'
+import { join as joinPath, dirname, basename, resolve as resolvePath } from 'node:path'
 import { createHash } from 'node:crypto'
 import { spawn, execFile, execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
@@ -1606,7 +1606,11 @@ const listDir = (dir: string): string[] => {
   }
 }
 
-const serverProfile = (cwd: string): ServerProfile => {
+const SERVER_KINDS: ServerProfile['kind'][] = ['stv', 'web', 'custom']
+const asServerKind = (value: unknown): ServerProfile['kind'] | null =>
+  SERVER_KINDS.find((k) => k === value) ?? null
+
+const serverProfile = (cwd: string, wantedKind: ServerProfile['kind'] | null = null): ServerProfile => {
   const repo = repoNameOf(cwd)
   const saved = parseChoice(appState.serverCommands[`${repo}#choice`])
   const configDir = joinPath(cwd, 'config')
@@ -1617,7 +1621,8 @@ const serverProfile = (cwd: string): ServerProfile => {
   )
   const stv = stvOptions(stvDirs)
   const web = webOptions(listDir(cwd))
-  const kind: ServerProfile['kind'] = stv.tenants.length ? 'stv' : web.tenants.length ? 'web' : 'custom'
+  const detected: ServerProfile['kind'] = stv.tenants.length ? 'stv' : web.tenants.length ? 'web' : 'custom'
+  const kind = wantedKind ?? asServerKind(appState.serverCommands[`${repo}#kind`]) ?? detected
   const options = kind === 'stv' ? stv : kind === 'web' ? web : { tenants: [], environments: [] }
   return {
     kind,
@@ -1662,6 +1667,21 @@ const prepareWebEnv = (cwd: string, choice: StvChoice): { error: string | null; 
   return { error: null, isHttps: isHttpsIn(merged) }
 }
 
+const prepareRevSync = async (cwd: string): Promise<void> => {
+  if (!existsSync(joinPath(cwd, 'node_modules', 'git-rev-sync'))) return
+  const linked = /^gitdir:\s*(.+)$/m.exec(readText(joinPath(cwd, '.git')) ?? '')?.[1]?.trim()
+  const gitDir = linked ? resolvePath(cwd, linked) : null
+  const branch = gitDir ? /^ref: refs\/heads\/(.+)$/m.exec(readText(joinPath(gitDir, 'HEAD')) ?? '')?.[1]?.trim() : null
+  if (!gitDir || !branch || existsSync(joinPath(gitDir, 'refs', 'heads', branch))) return
+  const head = await runGit(cwd, ['rev-parse', 'HEAD'])
+  if (!head.isOk) return
+  try {
+    writeFileSync(joinPath(gitDir, 'packed-refs'), `${head.out.trim()} refs/heads/${branch}\n`, 'utf8')
+  } catch {
+    return
+  }
+}
+
 const startServer = async (
   key: string,
   cwd: string,
@@ -1679,6 +1699,7 @@ const startServer = async (
   const chosen = port ?? pickPort(ours, (p) => busy.has(p))
   if (port !== null && (ours.includes(port) || busy.has(port))) return { error: `Port ${port} is already in use` }
   const repo = repoNameOf(cwd)
+  await prepareRevSync(cwd)
   let command = serverCommand(spec.command, chosen)
   let isHttps = false
   let label = 'custom'
@@ -1703,6 +1724,7 @@ const startServer = async (
     ...appState,
     serverCommands: {
       ...appState.serverCommands,
+      [`${repo}#kind`]: spec.kind,
       ...(spec.kind === 'custom' ? { [repo]: spec.command } : { [`${repo}#choice`]: JSON.stringify(spec.choice) })
     }
   }
@@ -3002,7 +3024,7 @@ const serverStarts = new Map<string, Promise<unknown>>()
 const startServerFor = async (key: string, cwd: string, body: Record<string, unknown>): Promise<unknown> => {
   const folder = await serverFolderFor(key, cwd)
   if (!folder) return { error: `No folder found for ${key}` }
-  const profile = serverProfile(folder)
+  const profile = serverProfile(folder, asServerKind(body.kind))
   const choice = {
     tenant: asString(body.tenant) || profile.choice.tenant,
     environment: asString(body.environment) || profile.choice.environment,
@@ -4489,8 +4511,8 @@ if (!app.requestSingleInstanceLock()) {
     const token = appState.settings.jiraToken.trim()
     return token ? fetchTicketDetail(appState.settings.jiraBase, token, key) : null
   })
-  ipcMain.on('server-profile', (e, cwd: string) => {
-    e.returnValue = serverProfile(cwd)
+  ipcMain.on('server-profile', (e, cwd: string, kind?: string) => {
+    e.returnValue = serverProfile(cwd, asServerKind(kind))
   })
   ipcMain.on('open-in-chrome', (_e, url: string, key?: string) => {
     if (/^https?:\/\/[a-z0-9.-]+(:\d+)?(\/|$)/i.test(url)) openInChrome(url, typeof key === 'string' && /^[A-Z][A-Z0-9]+-\d+$/.test(key) ? key : null)
