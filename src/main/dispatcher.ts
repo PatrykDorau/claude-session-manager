@@ -1,5 +1,6 @@
 import type { Autonomy, Job, JobKind, JobRequest, JobState } from './orchestrator'
-import type { PendingTool, Status } from '../renderer/src/types'
+import type { PendingPrompt, PendingTool, Status } from '../renderer/src/types'
+import { answerKeystrokes, type PromptAnswer } from './answerkeys'
 import { isForbiddenDispatcherQuestion, isForbiddenPrompt, isForbiddenRequest } from './guard'
 import { JUDGEABLE_TOOLS, allowedKeys, isPlainObject } from './judge'
 import { PERMISSION_KEYS } from '../renderer/src/dashboard/inbox'
@@ -21,12 +22,13 @@ export interface DispatchEvent {
   toolUseId: string | null
   tool: string | null
   options: DispatchOption[]
+  prompt: PendingPrompt | null
 }
 
 export const EVENT_LIMIT = 500
 export const DISPATCHER_NAME = 'dispatcher'
 
-type NewEvent = Omit<DispatchEvent, 'seq'>
+export type NewEvent = Omit<DispatchEvent, 'seq'>
 
 export const appendEvents = (events: DispatchEvent[], added: NewEvent[]): DispatchEvent[] => {
   const last = events.length > 0 ? events[events.length - 1].seq : 0
@@ -59,7 +61,8 @@ export const jobLogEvents = (prev: Job[], next: Job[], at: number): NewEvent[] =
         text: line.text,
         toolUseId: null,
         tool: null,
-        options: []
+        options: [],
+        prompt: null
       }))
   })
 
@@ -82,19 +85,79 @@ export const findSessionRef = <T extends { id: string; label: string }>(rows: T[
   return byLabel.length === 1 ? byLabel[0] : null
 }
 
-export const waitingEvent = (job: Job, pending: PendingTool, questionOptions: string[], at: number): NewEvent => {
-  return {
-    at,
-    type: 'waiting',
-    jobId: job.id,
-    key: job.key,
-    kind: job.kind,
-    state: job.state,
-    text: pending.input,
-    toolUseId: pending.toolUseId,
-    tool: pending.name,
-    options: pendingOptions(pending, questionOptions)
+export const OPAQUE_PROMPT_TEXT = 'opaque: open the session'
+
+export const opaquePrompt = (toolUseId: string, tool: string): PendingPrompt => ({
+  toolUseId,
+  tool,
+  isOpaque: true,
+  text: OPAQUE_PROMPT_TEXT,
+  questions: []
+})
+
+const promptOptions = (prompt: PendingPrompt): DispatchOption[] => {
+  if (prompt.isOpaque) return []
+  if (prompt.tool !== 'AskUserQuestion') return pendingOptions({ name: prompt.tool, input: prompt.text, toolUseId: prompt.toolUseId }, [])
+  const toOption = (option: { key: string; label: string }): DispatchOption => ({ key: option.key, label: option.label })
+  return (prompt.questions[0]?.options ?? []).map(toOption)
+}
+
+export const waitingEvent = (job: Job, prompt: PendingPrompt, at: number): NewEvent => ({
+  at,
+  type: 'waiting',
+  jobId: job.id,
+  key: job.key,
+  kind: job.kind,
+  state: job.state,
+  text: prompt.isOpaque ? OPAQUE_PROMPT_TEXT : prompt.text,
+  toolUseId: prompt.toolUseId,
+  tool: prompt.tool,
+  options: promptOptions(prompt),
+  prompt
+})
+
+const OPAQUE_KEY_SUFFIX = ':opaque'
+
+export interface WaitingSession {
+  id: string
+  label: string
+  title: string
+  prompt: PendingPrompt | null
+}
+
+export const sessionWaitingEvents = (
+  seen: Set<string>,
+  sessions: WaitingSession[],
+  skipIds: string[],
+  at: number
+): { events: NewEvent[]; seen: Set<string> } => {
+  const isReported = (s: WaitingSession): boolean => !skipIds.includes(s.id)
+  const promptOf = (s: WaitingSession): PendingPrompt => s.prompt ?? opaquePrompt('', 'unknown')
+  const seenKeyOf = (s: WaitingSession): string => s.prompt?.toolUseId || `${s.id}${OPAQUE_KEY_SUFFIX}`
+  const reported = sessions.filter(isReported)
+  const currentKeys = new Set(reported.map(seenKeyOf))
+  const isKept = (key: string): boolean => !key.endsWith(OPAQUE_KEY_SUFFIX) || currentKeys.has(key)
+  const isNew = (s: WaitingSession): boolean => !seen.has(seenKeyOf(s))
+  const toEvent = (s: WaitingSession): NewEvent => {
+    const prompt = promptOf(s)
+    return {
+      at,
+      type: 'waiting',
+      jobId: s.id,
+      key: s.label,
+      kind: 'session',
+      state: 'waiting',
+      text: prompt.isOpaque ? OPAQUE_PROMPT_TEXT : prompt.text,
+      toolUseId: prompt.toolUseId,
+      tool: prompt.tool,
+      options: promptOptions(prompt),
+      prompt
+    }
   }
+  const fresh = reported.filter(isNew)
+  const next = new Set([...seen].filter(isKept))
+  for (const s of fresh) next.add(seenKeyOf(s))
+  return { events: fresh.map(toEvent), seen: next }
 }
 
 export interface SessionEventInput {
@@ -127,19 +190,90 @@ export const sessionEvents = (
     text: s.title,
     toolUseId: null,
     tool: null,
-    options: []
+    options: [],
+    prompt: null
   })
   const toEntry = (s: SessionEventInput): [string, Status] => [s.id, s.status]
   return { events: live.filter(isReported).map(toEvent), next: Object.fromEntries(live.map(toEntry)) }
 }
 
-export const refusedAnswer =(pending: PendingTool, rawInput: unknown, questionOptions: string[], key: string): string | null => {
+const refusedTool = (pending: PendingTool, rawInput: unknown): string | null => {
   if (!JUDGEABLE_TOOLS.includes(pending.name) || !isPlainObject(rawInput)) return 'only the user can answer this prompt'
   if (isForbiddenRequest(pending.name, rawInput)) return 'forbidden request'
   if (pending.name === 'AskUserQuestion' && isForbiddenDispatcherQuestion(rawInput)) return 'forbidden request'
+  return null
+}
+
+export const refusedAnswer =(pending: PendingTool, rawInput: unknown, questionOptions: string[], key: string): string | null => {
+  const toolReason = refusedTool(pending, rawInput)
+  if (toolReason) return toolReason
   if (pending.name !== 'AskUserQuestion' && key === PERMISSION_KEYS.always) return 'always-allow is not permitted'
   if (!allowedKeys(pending, questionOptions).includes(key)) return 'key not allowed'
   return null
+}
+
+const trimmedString = (value: unknown): string => (typeof value === 'string' ? value.trim() : '')
+
+export const parseAnswer = (body: Record<string, unknown>): PromptAnswer => {
+  const keys = trimmedString(body.keys)
+  const key = trimmedString(body.key)
+  const text = trimmedString(body.text)
+  const isPresent = (part: string): boolean => part !== ''
+  const splitKeys = (part: string): string[] => part.split(',').map(trimmedString).filter(isPresent)
+  const choices = keys ? keys.split('|').map(splitKeys) : key ? [[key]] : []
+  return { choices, text: text || null }
+}
+
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/
+
+const isReason = (reason: string | null): reason is string => reason !== null
+
+export const refusedPromptAnswer = (prompt: PendingPrompt, rawInput: unknown, answer: PromptAnswer): string | null => {
+  if (prompt.isOpaque) return 'only the user can answer this prompt'
+  const pending: PendingTool = { name: prompt.tool, input: prompt.text, toolUseId: prompt.toolUseId }
+  const toolReason = refusedTool(pending, rawInput)
+  if (toolReason) return toolReason
+  if (answer.text !== null && isForbiddenPrompt(answer.text)) return 'forbidden text'
+  if (answer.text !== null && CONTROL_CHARACTER.test(answer.text)) return 'text has control characters'
+  const keys = answer.choices.flat()
+  if (prompt.tool !== 'AskUserQuestion') {
+    if (answer.text !== null || keys.length !== 1) return 'a permission takes one key'
+    return refusedAnswer(pending, rawInput, [], keys[0])
+  }
+  const labelOf = (option: { label: string }): string => option.label
+  const refusedChoice = (choice: string[], index: number): string | null => {
+    const labels = (prompt.questions[index]?.options ?? []).map(labelOf)
+    const refusedKey = (key: string): string | null => refusedAnswer(pending, rawInput, labels, key)
+    return choice.map(refusedKey).find(isReason) ?? null
+  }
+  return answer.choices.map(refusedChoice).find(isReason) ?? null
+}
+
+export interface AnswerTarget {
+  prompt: PendingPrompt | null
+  rawInput: unknown
+  writeKeys: (keystrokes: string[]) => Promise<{ error: string | null }>
+}
+
+export const answerPrompt = async (
+  target: AnswerTarget,
+  toolUseId: string,
+  answer: PromptAnswer
+): Promise<{ error: string | null; isRefusal: boolean }> => {
+  const { prompt } = target
+  if (!prompt || !toolUseId || prompt.toolUseId !== toolUseId) return { error: 'no such pending prompt', isRefusal: false }
+  const reason = refusedPromptAnswer(prompt, target.rawInput, answer)
+  if (reason) return { error: reason, isRefusal: true }
+  const keystrokes = prompt.tool === 'AskUserQuestion' ? answerKeystrokes(prompt, answer) : answer.choices.flat()
+  if ('error' in keystrokes) return { error: keystrokes.error, isRefusal: false }
+  const written = await target.writeKeys(keystrokes)
+  return { error: written.error, isRefusal: false }
+}
+
+export const answerSummary = (answer: PromptAnswer): string => {
+  const joinKeys = (choice: string[]): string => choice.join(',')
+  const parts = answer.choices.map(joinKeys)
+  return (answer.text === null ? parts : [...parts, 'text']).join('|')
 }
 
 export const refusedPrompt = (text: string, status: Status | null): string | null => {
@@ -157,9 +291,10 @@ export interface DispatchJobRow {
   autonomy: Autonomy
   log: string[]
   pending: { toolUseId: string; tool: string; text: string; options: DispatchOption[] } | null
+  prompt: PendingPrompt | null
 }
 
-export const jobRow = (job: Job, pending: PendingTool | null, questionOptions: string[]): DispatchJobRow => ({
+export const jobRow = (job: Job, pending: PendingTool | null, questionOptions: string[], prompt: PendingPrompt | null = null): DispatchJobRow => ({
   id: job.id,
   kind: job.kind,
   key: job.key,
@@ -168,8 +303,9 @@ export const jobRow = (job: Job, pending: PendingTool | null, questionOptions: s
   autonomy: job.autonomy,
   log: job.log.slice(-3).map((line) => line.text),
   pending: pending
-    ? { toolUseId: pending.toolUseId, tool: pending.name, text: pending.input, options: waitingEvent(job, pending, questionOptions, 0).options }
-    : null
+    ? { toolUseId: pending.toolUseId, tool: pending.name, text: pending.input, options: pendingOptions(pending, questionOptions) }
+    : null,
+  prompt
 })
 
 interface StartInput {

@@ -1,6 +1,16 @@
 export type FlowRole = { stage: string; who: string; model: string; isMain: boolean; agents: string[] }
 export type FlowStage = { n: number; title: string; isGated: boolean; roles: FlowRole[] }
-export type FlowSkill = { stages: FlowStage[]; sizes: string[][]; risk: string[]; error: string | null }
+export type FlowSize = 'S' | 'M' | 'L'
+export type FlowMapStep = {
+  n: number
+  name: string
+  sizes: FlowSize[]
+  isHighRiskOnlyForM: boolean
+  isGated: boolean
+  summary: string
+  uses: string[]
+}
+export type FlowSkill = { stages: FlowStage[]; steps: FlowMapStep[]; sizes: string[][]; risk: string[]; error: string | null }
 export type HandoffStage = { n: number | null; stage: string; next: string; firstStep: string }
 export type FlowAgent = { name: string; model: string; description: string }
 export type FlowBooster = { id: string; name: string; detail: string }
@@ -36,6 +46,32 @@ const roleOf = (cells: string[], agentNames: string[]): FlowRole => {
   return { stage, who, model, isMain: /main session/i.test(who), agents: agentNames.filter((name) => who.includes(name)) }
 }
 
+const STEP_NAME = /^(\d+)\.\s*(.*)$/
+const SIZE_TOKEN = /^[SML]$/
+
+const stepOf = (cells: string[]): FlowMapStep | null => {
+  const [step = '', sizeCell = '', gate = '', summary = '', uses = ''] = cells
+  const match = STEP_NAME.exec(step)
+  if (!match) return null
+  const tokens = sizeCell.split(/\s+/).filter(Boolean)
+  const isHighRiskOnlyForM = tokens.includes('M(high)')
+  const sizes = tokens.map((token) => (token === 'M(high)' ? 'M' : token)).filter((token): token is FlowSize => SIZE_TOKEN.test(token))
+  return {
+    n: Number(match[1]),
+    name: match[2].trim(),
+    sizes,
+    isHighRiskOnlyForM,
+    isGated: /^yes$/i.test(gate),
+    summary,
+    uses: uses.split(',').map((use) => use.trim()).filter(Boolean)
+  }
+}
+
+const stepsOf = (lines: string[]): FlowMapStep[] => {
+  const table = tableAfter(lines, /^\|\s*Step\s*\|\s*Sizes\s*\|/i) ?? []
+  return table.slice(1).flatMap((cells) => stepOf(cells) ?? [])
+}
+
 export const parseWorkflow = (text: string, agentNames: string[] = []): FlowSkill => {
   const lines = linesOf(text)
   const items = lines.flatMap((line) => {
@@ -45,13 +81,14 @@ export const parseWorkflow = (text: string, agentNames: string[] = []): FlowSkil
   const table = tableAfter(lines, /^\|\s*Stage\s*\|\s*Who\s*\|\s*Model\s*\|/i)
   const sizes = tableAfter(lines, /^\|\s*Size\s*\|/i) ?? []
   const risk = lines.filter((line) => RISK_ITEM.test(line)).map((line) => line.replace(/^-\s+/, '').replace(/\*\*/g, '').trim())
-  if (!items.length || !table) return { stages: [], sizes, risk, error: 'Stage table not found' }
+  const steps = stepsOf(lines)
+  if (!items.length || !table) return { stages: [], steps, sizes, risk, error: 'Stage table not found' }
   const roles = table.slice(1).map((cells) => roleOf(cells, agentNames))
   const stages = items.map((item) => ({
     ...item,
     roles: roles.filter((role) => Number(LEADING_NUMBER.exec(role.stage)?.[1]) === item.n)
   }))
-  return { stages, sizes, risk, error: null }
+  return { stages, steps, sizes, risk, error: null }
 }
 
 export const parseAgentFile = (text: string): FlowAgent | null => {

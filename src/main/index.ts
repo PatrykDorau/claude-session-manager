@@ -21,8 +21,8 @@ import chokidar from 'chokidar'
 import icon from '../../resources/icon.png?asset'
 import attentionPng from '../../resources/attention.png?asset'
 import { STAGES, type Session, type TaskMeta, type InboxItem } from '../renderer/src/types'
-import { appendFileSync, rmSync, readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, createReadStream, openSync, readSync, closeSync, fstatSync, statSync, symlinkSync } from 'node:fs'
-import { parseTail, countTurns, lastMessages, createDetailCache, pendingRawInput } from './transcript'
+import { appendFileSync, rmSync, readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, createReadStream, openSync, readSync, closeSync, fstatSync, statSync, symlinkSync, type Dirent } from 'node:fs'
+import { parseTail, countTurns, lastMessages, createDetailCache, pendingRawInput, pendingPrompt, promptRawInput } from './transcript'
 import { createPtyHost } from './ptyhost'
 import { staleTerminals } from './terminalsweep'
 import { createOnDemandWriter } from './ondemandwrite'
@@ -210,6 +210,10 @@ import {
   isHandoffHeld,
   isHandoffClockReset,
   handoffStopAction,
+  isAutoHandoff,
+  isCoordinatorActive,
+  requestedJob,
+  type LiveTicketSession,
   handAddressToLiveTicket,
   AUTO_HANDOFF_LIMIT,
   nextHandoffTick,
@@ -244,14 +248,20 @@ import {
   pendingOptions,
   isDispatcherLive,
   jobLogEvents,
+  type NewEvent,
   jobRow,
-  refusedAnswer,
+  answerPrompt,
+  answerSummary,
+  parseAnswer,
   refusedPrompt,
   sessionEvents,
+  sessionWaitingEvents,
+  opaquePrompt,
   startRequestOf,
   waitingEvent,
   type DispatchEvent,
-  type SessionEventInput
+  type SessionEventInput,
+  type WaitingSession
 } from './dispatcher'
 import { decideWaiting, allowedKeys, judgePrompt, judgeArgs, parseVerdict, JUDGE_TIMEOUT_MS, type Verdict } from './judge'
 import { isForbiddenRequest } from './guard'
@@ -1522,19 +1532,50 @@ const answeredToolUses = new Set<string>()
 const isStillPending = (id: string, toolUseId: string): boolean =>
   isAnswerCurrent({ status: sessionById(id)?.status ?? 'closed', toolUseId: sessionTail(id)?.pendingTool?.toolUseId ?? null }, toolUseId)
 
-const answerInbox = async (id: string, toolUseId: string, key: string): Promise<{ error: string | null }> => {
-  if (!isStillPending(id, toolUseId)) return NOT_PENDING
+const sessionPromptToolUseId = (id: string): string | null => {
+  const f = transcriptFile(id)
+  try {
+    return f ? pendingPrompt(readTailLines(f))?.toolUseId ?? null : null
+  } catch {
+    return null
+  }
+}
+
+const isPromptStillPending = (id: string, toolUseId: string): boolean =>
+  isAnswerCurrent({ status: sessionById(id)?.status ?? 'closed', toolUseId: sessionPromptToolUseId(id) }, toolUseId)
+
+const KEY_GAP_MS = 400
+
+const waitKeyGap = (): Promise<void> => {
+  const startTimer = (resolve: () => void): void => {
+    setTimeout(resolve, KEY_GAP_MS)
+  }
+  return new Promise<void>(startTimer)
+}
+
+const answerInboxKeys = async (
+  id: string,
+  toolUseId: string,
+  keystrokes: string[],
+  isPending: (id: string, toolUseId: string) => boolean = isStillPending
+): Promise<{ error: string | null }> => {
+  if (!isPending(id, toolUseId)) return NOT_PENDING
   if ((await modeOf(id)) !== 'attach') return { error: 'This session runs outside Cockpit' }
   if (!ptyHost.isOpen(id)) {
     const opened = await openFromMain(id)
     if (opened.error) return opened
   }
   if (!(await waitForQuietOutput(id, true))) return { error: 'Claude is busy in the terminal, so nothing was sent' }
-  if (!isStillPending(id, toolUseId) || answeredToolUses.has(toolUseId)) return NOT_PENDING
+  if (!isPending(id, toolUseId) || answeredToolUses.has(toolUseId)) return NOT_PENDING
   answeredToolUses.add(toolUseId)
-  ptyHost.write(id, key)
+  for (const [i, keystroke] of keystrokes.entries()) {
+    if (i > 0) await waitKeyGap()
+    ptyHost.write(id, keystroke)
+  }
   return { error: null }
 }
+
+const answerInbox = (id: string, toolUseId: string, key: string): Promise<{ error: string | null }> => answerInboxKeys(id, toolUseId, [key])
 
 const dismissInbox = (id: string): void => {
   try {
@@ -2304,7 +2345,7 @@ const flowState = (keys: string[]): FlowState => {
   const raw = readText(FLOW_SKILL)
   const agents = flowAgents()
   const names = agents.map((a) => a.name)
-  const skill = raw === null ? { stages: [], sizes: [], risk: [], error: 'SKILL.md not found' } : parseWorkflow(raw, names)
+  const skill = raw === null ? { stages: [], steps: [], sizes: [], risk: [], error: 'SKILL.md not found' } : parseWorkflow(raw, names)
   const updatedAt = raw === null ? 0 : (statSync(FLOW_SKILL, { throwIfNoEntry: false })?.mtimeMs ?? 0)
   const boosters = parseBoosters(readText(FLOW_SETTINGS) ?? '')
   return { skill, raw: raw ?? '', skillPath: FLOW_SKILL, updatedAt, tickets: keys.map(flowTicket), agents, boosters }
@@ -2402,20 +2443,25 @@ const dispatcherWaits = new Map<string, string>()
 const warnedSkips = new Set<string>()
 let dispatchEvents: DispatchEvent[] = []
 let sessionStatuses: Record<string, Session['status']> = {}
+let seenSessionPrompts = new Set<string>()
 const FEED_ID = Date.now()
 let gitlabUsername: string | null = null
 let isWatchingMrs = false
 
-const dispatcherLive = (): boolean => {
-  const id = appState.orchestrator.dispatcherSessionId
-  return isDispatcherLive(findDispatcherSession(lastSessions, id)?.status ?? null)
+const dispatcherStatus = (): Session['status'] | null =>
+  findDispatcherSession(lastSessions, appState.orchestrator.dispatcherSessionId)?.status ?? null
+
+const dispatcherLive = (): boolean => isCoordinatorActive(appState.orchestrator, dispatcherStatus())
+
+const appendDispatchEvents = (events: NewEvent[]): void => {
+  if (events.length && dispatcherLive()) dispatchEvents = appendEvents(dispatchEvents, events)
 }
 
 let isDispatcherStarting = false
 
 const openDispatcher = async (): Promise<{ error: string | null; sessionId?: string }> => {
   const known = findDispatcherSession(lastSessions, appState.orchestrator.dispatcherSessionId)
-  if (known && dispatcherLive()) return { error: null, sessionId: known.id }
+  if (known && isDispatcherLive(known.status)) return { error: null, sessionId: known.id }
   if (isDispatcherStarting) return { error: 'dispatcher is already starting' }
   const exe = resolveClaudeExe()
   if (!exe) return { error: 'claude.exe not found' }
@@ -2430,14 +2476,26 @@ const openDispatcher = async (): Promise<{ error: string | null; sessionId?: str
     sendAll('orchestrator', appState.orchestrator)
     await refreshAgents()
     await rescanAndPush()
-    return { error: null, sessionId: findDispatcherSession(lastSessions, id)?.id ?? id }
+    const sessionId = findDispatcherSession(lastSessions, id)?.id ?? id
+    if (!appState.orchestrator.isCoordinatorOn) return { error: (await stopSession(sessionId)).error }
+    return { error: null, sessionId }
   } finally {
     isDispatcherStarting = false
   }
 }
 
+const setCoordinatorOn = async (isOn: boolean): Promise<{ error: string | null }> => {
+  appState = { ...appState, orchestrator: { ...appState.orchestrator, isCoordinatorOn: isOn } }
+  saveState(statePath, appState)
+  sendAll('orchestrator', appState.orchestrator)
+  if (isOn) return { error: (await openDispatcher()).error }
+  const dispatcher = findDispatcherSession(lastSessions, appState.orchestrator.dispatcherSessionId)
+  if (!dispatcher || !isDispatcherLive(dispatcher.status)) return { error: null }
+  return stopSession(dispatcher.id)
+}
+
 const setJobs = (jobs: Job[]): void => {
-  dispatchEvents = appendEvents(dispatchEvents, jobLogEvents(appState.orchestrator.jobs, jobs, Date.now()))
+  appendDispatchEvents(jobLogEvents(appState.orchestrator.jobs, jobs, Date.now()))
   appState = { ...appState, orchestrator: { ...appState.orchestrator, jobs } }
   saveState(statePath, appState)
   sendAll('orchestrator', appState.orchestrator)
@@ -2559,9 +2617,10 @@ const handleWaiting = async (id: string, sessionId: string): Promise<void> => {
   const isDispatcherUp = dispatcherLive()
   if (!isDispatcherUp) dispatcherWaits.delete(id)
   if (!job || (pending && judgedToolUses.has(pending.toolUseId))) return
-  if (pending && !announcedToolUses.has(pending.toolUseId)) {
-    announcedToolUses.add(pending.toolUseId)
-    dispatchEvents = appendEvents(dispatchEvents, [waitingEvent(job, pending, tail.questionOptions, Date.now())])
+  const announced = pendingPrompt(lines) ?? (pending ? opaquePrompt(pending.toolUseId, pending.name) : null)
+  if (announced && isDispatcherUp && !announcedToolUses.has(announced.toolUseId)) {
+    announcedToolUses.add(announced.toolUseId)
+    appendDispatchEvents([waitingEvent(job, announced, Date.now())])
   }
   if (pending && job.autonomy === 'autonomous' && isDispatcherUp) {
     if (dispatcherWaits.get(id) === pending.toolUseId) return
@@ -2659,7 +2718,7 @@ const tickHandoff = (
   const status = view.status
   if (job.handoffPhase === 'none') {
     if (prev !== 'working' || status === 'working') return job
-    const stop = handoffStopAction(job, prev, status, handoffMtime(findHandoff(job.key)), turnStarts.get(job.id) ?? Number.POSITIVE_INFINITY)
+    const stop = handoffStopAction(job, prev, status, handoffMtime(findHandoff(job.key)), turnStarts.get(job.id) ?? Number.POSITIVE_INFINITY, dispatcherLive())
     if (stop === 'none') return job
     if (stop === 'hold') return addLog({ ...job, state: 'handoff' }, 'waiting for Clear + handoff', now)
     if (stop === 'limit')
@@ -2668,7 +2727,7 @@ const tickHandoff = (
     actions.push(sendHandoffStep(job.id, sessionId, pasteInput(handoffPrompt(job.key, new Date())), false))
     return addLog({ ...job, state: 'handoff', handoffPhase: 'handoff', autoHandoffs: job.autoHandoffs + 1 }, 'handoff point: writing handoff.md', now)
   }
-  if (job.autonomy !== 'autonomous') return addLog({ ...job, handoffPhase: 'none', state: nextJobState({ ...job, handoffPhase: 'none' }, view) }, 'handoff left to you', now)
+  if (!isAutoHandoff(job, dispatcherLive())) return addLog({ ...job, handoffPhase: 'none', state: nextJobState({ ...job, handoffPhase: 'none' }, view) }, 'handoff left to you', now)
   if (!phaseSince.has(job.id) || isHandoffClockReset(job.handoffPhase, status)) phaseSince.set(job.id, now)
   const elapsed = now - (phaseSince.get(job.id) ?? now)
   const step = nextHandoffTick(job.handoffPhase, prev ?? status, status, isClearDone(job.id, sessionId), elapsed, HANDOFF_STALL_MS)
@@ -2783,9 +2842,18 @@ const startJobs = (requests: unknown): { error: string | null } => {
   if (!Array.isArray(requests) || !requests.every(isJobRequest)) return { error: 'invalid jobs' }
   const now = Date.now()
   const ids = new Set(appState.orchestrator.jobs.map((j) => j.id))
+  const adoptedSessionIds = new Set<string>()
+  const liveSessionOf = (r: JobRequest): LiveTicketSession | null => {
+    if (r.kind !== 'ticket') return null
+    const isFreeLive = (s: Session): boolean =>
+      s.isLive && s.ticket?.toUpperCase() === r.key.toUpperCase() && !isAdopted(appState.orchestrator.jobs, s.id) && !adoptedSessionIds.has(s.id)
+    const session = lastSessions.find(isFreeLive)
+    if (session) adoptedSessionIds.add(session.id)
+    return session ? { id: session.id, repo: session.repo ?? null } : null
+  }
   const added = requests.flatMap((r) => {
-    const job = newJob(r, now, r.kind === 'watch' && isThreadOpen(r.key))
-    if (ids.has(job.id)) return []
+    if (ids.has(jobId(r.kind, r.key))) return []
+    const job = requestedJob(r, now, r.kind === 'watch' && isThreadOpen(r.key), liveSessionOf(r))
     ids.add(job.id)
     return [job]
   })
@@ -2797,7 +2865,9 @@ const startJobs = (requests: unknown): { error: string | null } => {
   for (const id of requeued.keys()) forgetJob(id)
   const requeue = (j: Job): Job => {
     const request = requeued.get(j.id)
-    return request ? requeueFromRequest(j, request, now) : j
+    if (!request) return j
+    const live = liveSessionOf(request)
+    return live ? requestedJob(request, now, false, live) : requeueFromRequest(j, request, now)
   }
   if (added.length || requeued.size) setJobs([...appState.orchestrator.jobs.map(requeue), ...added])
   pumpQueue()
@@ -3119,14 +3189,14 @@ const jobPendingPrompt = (job: Job) => {
   const file = sessionId && sessionById(sessionId)?.status === 'waiting' ? cachedTranscript(sessionId) : null
   const lines = file ? readTailLines(file) : []
   const tail = parseTail(lines)
-  return { sessionId, pending: tail.pendingTool, rawInput: pendingRawInput(lines), questionOptions: tail.questionOptions }
+  return { sessionId, pending: tail.pendingTool, rawInput: promptRawInput(lines), questionOptions: tail.questionOptions, prompt: pendingPrompt(lines) }
 }
 
 const sessionPendingPrompt = (sessionId: string) => {
   const file = sessionById(sessionId)?.status === 'waiting' ? cachedTranscript(sessionId) : null
   const lines = file ? readTailLines(file) : []
   const tail = parseTail(lines)
-  return { pending: tail.pendingTool, rawInput: pendingRawInput(lines), questionOptions: tail.questionOptions }
+  return { pending: tail.pendingTool, rawInput: promptRawInput(lines), questionOptions: tail.questionOptions, prompt: pendingPrompt(lines) }
 }
 
 const LAST_REPLY_CHARS = 600
@@ -3148,7 +3218,7 @@ const dispatchableSessions = (): (SessionEventInput & { jobId: string | null })[
 }
 
 const sessionBridgeRow = (s: SessionEventInput & { jobId: string | null }): unknown => {
-  const { pending, questionOptions } = sessionPendingPrompt(s.id)
+  const { pending, questionOptions, prompt } = sessionPendingPrompt(s.id)
   return {
     id: s.id.slice(0, 8),
     label: s.label,
@@ -3156,6 +3226,7 @@ const sessionBridgeRow = (s: SessionEventInput & { jobId: string | null }): unkn
     status: s.status,
     jobId: s.jobId,
     pending: pending ? { toolUseId: pending.toolUseId, tool: pending.name, text: pending.input, options: pendingOptions(pending, questionOptions) } : null,
+    prompt,
     lastReply: lastReplyOf(s.id)
   }
 }
@@ -3163,13 +3234,11 @@ const sessionBridgeRow = (s: SessionEventInput & { jobId: string | null }): unkn
 const answerSession = async (body: Record<string, unknown>): Promise<unknown> => {
   const target = findSessionRef(dispatchableSessions(), asString(body.session))
   if (!target) return { error: 'unknown or ambiguous session' }
-  const { pending, rawInput, questionOptions } = sessionPendingPrompt(target.id)
+  const { prompt, rawInput } = sessionPendingPrompt(target.id)
   const toolUseId = asString(body.toolUseId)
-  if (!pending || pending.toolUseId !== toolUseId) return { error: 'no such pending prompt' }
-  const key = asString(body.key)
-  const reason = refusedAnswer(pending, rawInput, questionOptions, key)
-  if (reason) return { error: reason }
-  return answerInbox(target.id, toolUseId, key)
+  const writeKeys = (keystrokes: string[]): Promise<{ error: string | null }> => answerInboxKeys(target.id, toolUseId, keystrokes, isPromptStillPending)
+  const answered = await answerPrompt({ prompt, rawInput, writeKeys }, toolUseId, parseAnswer(body))
+  return { error: answered.error }
 }
 
 const promptSession = async (body: Record<string, unknown>): Promise<unknown> => {
@@ -3191,8 +3260,8 @@ const dispatcherRefusal = (job: Job, reason: string): { error: string } => {
 const bridgeRoutes = {
   '/jobs': async (): Promise<unknown> => ({
     jobs: appState.orchestrator.jobs.map((job) => {
-      const { pending, questionOptions } = jobPendingPrompt(job)
-      return jobRow(job, pending, questionOptions)
+      const { pending, questionOptions, prompt } = jobPendingPrompt(job)
+      return jobRow(job, pending, questionOptions, prompt)
     })
   }),
   '/events': async (body: Record<string, unknown>): Promise<unknown> => ({
@@ -3204,16 +3273,15 @@ const bridgeRoutes = {
     if (asString(body.session)) return answerSession(body)
     const job = findJob(asString(body.job))
     if (!job) return { error: 'unknown job' }
-    const { sessionId, pending, rawInput, questionOptions } = jobPendingPrompt(job)
+    const { sessionId, prompt, rawInput } = jobPendingPrompt(job)
     if (!sessionId) return { error: 'job has no session' }
     const toolUseId = asString(body.toolUseId)
-    if (!pending || pending.toolUseId !== toolUseId) return { error: 'no such pending prompt' }
-    const key = asString(body.key)
-    const reason = refusedAnswer(pending, rawInput, questionOptions, key)
-    if (reason) return dispatcherRefusal(job, reason)
-    const answered = await answerInbox(sessionId, toolUseId, key)
-    if (answered.error) return answered
-    logJob(job.id, `dispatcher: ${key}`)
+    const answer = parseAnswer(body)
+    const writeKeys = (keystrokes: string[]): Promise<{ error: string | null }> => answerInboxKeys(sessionId, toolUseId, keystrokes, isPromptStillPending)
+    const answered = await answerPrompt({ prompt, rawInput, writeKeys }, toolUseId, answer)
+    if (answered.isRefusal && answered.error) return dispatcherRefusal(job, answered.error)
+    if (answered.error) return { error: answered.error }
+    logJob(job.id, `dispatcher: ${answerSummary(answer)}`)
     return { error: null }
   },
   '/prompt': async (body: Record<string, unknown>): Promise<unknown> => {
@@ -3750,7 +3818,13 @@ const reportSessionEvents = (shown: Session[]): void => {
   const skipIds = shown.filter(isJobSession).map(sessionIdOf).concat(dispatcherId ? [dispatcherId] : [])
   const result = sessionEvents(sessionStatuses, shown.map(toSessionEventInput), skipIds, Date.now())
   sessionStatuses = result.next
-  if (result.events.length) dispatchEvents = appendEvents(dispatchEvents, result.events)
+  if (!dispatcherLive()) return
+  const isWaiting = (s: Session): boolean => s.isLive && s.status === 'waiting'
+  const toWaitingSession = (s: Session): WaitingSession => ({ ...toSessionEventInput(s), prompt: sessionPendingPrompt(s.id).prompt })
+  const waiting = sessionWaitingEvents(seenSessionPrompts, shown.filter(isWaiting).map(toWaitingSession), skipIds, Date.now())
+  seenSessionPrompts = waiting.seen
+  const added = [...result.events, ...waiting.events]
+  appendDispatchEvents(added)
 }
 
 function updateAttention(sessions: Session[], shown: Session[]): void {
@@ -4587,6 +4661,7 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle('orchestrator-session-autonomy', (_e, sessionId: string, choice: AutonomyChoice) => setSessionAutonomy(sessionId, choice))
   ipcMain.handle('orchestrator-get', () => appState.orchestrator)
   ipcMain.handle('dispatcher-open', () => openDispatcher())
+  ipcMain.handle('set-coordinator-on', (_e, isOn: boolean) => setCoordinatorOn(isOn === true))
   ipcMain.handle('local-hosts', () => listLocalHosts())
   ipcMain.handle('close-chrome', async (_e, key: string | null) => ({ error: await closeChrome(typeof key === 'string' ? key : null) }))
   ipcMain.handle('ticket-server', async (_e, key: string, cwd: string | null) => serverRoute({ ticket: key, cwd: cwd ?? '' }, true))
@@ -4933,6 +5008,19 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
     if (!folder) return null
     try {
       return folderMedia(folder)
+    } catch {
+      return null
+    }
+  })
+  ipcMain.handle('task-docs', (_e, ticket: string) => {
+    const folder = lastTasks[ticket]?.folder
+    if (!folder) return null
+    try {
+      const isSmallMarkdown = (d: Dirent): boolean => d.isFile() && d.name.toLowerCase().endsWith('.md') && statSync(joinPath(folder, d.name)).size <= 200 * 1024
+      const nameOf = (d: Dirent): string => d.name
+      const toDoc = (name: string): { name: string; text: string } => ({ name, text: readFileSync(joinPath(folder, name), 'utf8') })
+      const names = readdirSync(folder, { withFileTypes: true }).filter(isSmallMarkdown).map(nameOf).sort()
+      return names.map(toDoc)
     } catch {
       return null
     }

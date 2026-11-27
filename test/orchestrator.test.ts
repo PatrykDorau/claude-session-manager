@@ -31,7 +31,11 @@ import {
   nextHandoffStep,
   nextJobState,
   resumePrompt,
+  isAutoHandoff,
+  isCoordinatorActive,
+  requestedJob,
   type Job,
+  type OrchestratorState,
   type SessionView
 } from '../src/main/orchestrator'
 import { handoffPath } from '../src/renderer/src/dashboard/context'
@@ -86,14 +90,20 @@ describe('withAutonomy', () => {
 
 describe('loadOrchestrator', () => {
   it('returns empty state for missing input', () => {
-    expect(loadOrchestrator(undefined)).toEqual({ jobs: [], dispatcherSessionId: null })
-    expect(emptyOrchestrator()).toEqual({ jobs: [], dispatcherSessionId: null })
+    expect(loadOrchestrator(undefined)).toEqual({ jobs: [], dispatcherSessionId: null, isCoordinatorOn: true })
+    expect(emptyOrchestrator()).toEqual({ jobs: [], dispatcherSessionId: null, isCoordinatorOn: true })
   })
   it('keeps only valid jobs', () => {
     expect(loadOrchestrator({ jobs: [validJob, { kind: 'bogus' }, 7] })).toEqual({
       jobs: [validJob],
-      dispatcherSessionId: null
+      dispatcherSessionId: null,
+      isCoordinatorOn: true
     })
+  })
+  it('parseOrchestrator defaults isCoordinatorOn to true for old state', () => {
+    expect(loadOrchestrator({ jobs: [], dispatcherSessionId: 'abc' }).isCoordinatorOn).toBe(true)
+    expect(loadOrchestrator({ jobs: [], isCoordinatorOn: 'x' }).isCoordinatorOn).toBe(true)
+    expect(loadOrchestrator({ jobs: [], isCoordinatorOn: false }).isCoordinatorOn).toBe(false)
   })
   it('keeps a string dispatcher session id', () => {
     expect(loadOrchestrator({ jobs: [], dispatcherSessionId: 'abc' }).dispatcherSessionId).toBe('abc')
@@ -176,6 +186,56 @@ describe('jobsToStart', () => {
     const ticket = jobWith({ id: 'ticket:SOFKRS-1', key: 'SOFKRS-1', state: 'queued', createdAt: 9 })
     expect(jobsToStart({ jobs: [ticket, address] }, 3, new Set(), mrTickets)).toEqual([address])
     expect(jobsToStart({ jobs: [{ ...address, state: 'starting' }, ticket] }, 3, new Set(), mrTickets)).toEqual([])
+  })
+
+  const w1 = jobWith({ id: 'ticket:W1', key: 'W1', state: 'working', createdAt: 1 })
+  const w2 = jobWith({ id: 'ticket:W2', key: 'W2', state: 'waiting', createdAt: 1 })
+
+  it('jobsToStart counts working and waiting ticket jobs against the limit', () => {
+    expect(jobsToStart(stateOf([w1, w2, a]), 2, new Set())).toEqual([])
+    expect(jobsToStart(stateOf([{ ...w1, state: 'handoff' }, a, b]), 2, new Set())).toEqual([a])
+  })
+
+  it('jobsToStart still starts a queued review while tickets fill the limit', () => {
+    const review = jobWith({ id: 'review:42!1', kind: 'review', key: '42!1', state: 'queued', createdAt: 3 })
+    const runningReview = jobWith({ id: 'review:42!2', kind: 'review', key: '42!2', state: 'working', createdAt: 1 })
+    expect(jobsToStart(stateOf([w1, w2, a, review]), 2, new Set())).toEqual([review])
+    expect(jobsToStart(stateOf([runningReview, a]), 1, new Set())).toEqual([a])
+  })
+})
+
+const stateOf = (jobs: Job[]): OrchestratorState => ({ jobs, dispatcherSessionId: null, isCoordinatorOn: true })
+
+describe('coordinator', () => {
+  it('handoffStopAction hands off a manual job while the coordinator is live', () => {
+    const manual = jobWith({ state: 'working', autonomy: 'manual' })
+    expect(handoffStopAction(manual, 'working', 'idle', 1000, 900, true)).toBe('auto')
+    expect(handoffStopAction(manual, 'working', 'idle', 1000, 900, false)).toBe('hold')
+    expect(handoffStopAction({ ...manual, autoHandoffs: AUTO_HANDOFF_LIMIT }, 'working', 'idle', 1000, 900, true)).toBe('limit')
+  })
+
+  it('isAutoHandoff covers autonomous jobs and manual jobs under a live coordinator', () => {
+    expect(isAutoHandoff(jobWith({ autonomy: 'autonomous' }), false)).toBe(true)
+    expect(isAutoHandoff(jobWith({ autonomy: 'manual' }), false)).toBe(false)
+    expect(isAutoHandoff(jobWith({ autonomy: 'manual' }), true)).toBe(true)
+  })
+
+  it('isCoordinatorActive is false when switched off even with a live dispatcher', () => {
+    const off = { ...stateOf([]), isCoordinatorOn: false }
+    expect(isCoordinatorActive(off, 'working')).toBe(false)
+    expect(isCoordinatorActive(stateOf([]), 'working')).toBe(true)
+    expect(isCoordinatorActive(stateOf([]), 'closed')).toBe(false)
+    expect(isCoordinatorActive(stateOf([]), null)).toBe(false)
+  })
+
+  it('/start for a ticket with a live session adopts it', () => {
+    const request = { kind: 'ticket' as const, key: 'SOFKRS-9', title: 'Nine', repo: 'repo-a', autonomy: 'autonomous' as const }
+    const adopted = requestedJob(request, 50, false, { id: 'live-1', repo: 'repo-b' })
+    expect(adopted).toMatchObject({ id: 'ticket:SOFKRS-9', state: 'working', sessionId: 'live-1', repo: 'repo-b', autonomy: 'autonomous', title: 'Nine' })
+    expect(adopted.log.at(-1)?.text).toBe('adopted')
+    expect(requestedJob(request, 50, false, null)).toEqual(newJob(request, 50, false))
+    const review = { ...request, kind: 'review' as const }
+    expect(requestedJob(review, 50, false, { id: 'live-1', repo: null })).toEqual(newJob(review, 50, false))
   })
 })
 

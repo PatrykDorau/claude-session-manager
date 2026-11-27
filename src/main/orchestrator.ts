@@ -1,5 +1,6 @@
 import type { Status } from '../renderer/src/types'
 import { handoffPath } from '../renderer/src/dashboard/context'
+import { isDispatcherLive } from './dispatcher'
 
 export type Autonomy = 'manual' | 'autonomous' | 'routine'
 export type AutonomyChoice = 'off' | 'routine' | 'autonomous'
@@ -32,6 +33,7 @@ export interface Job {
 export interface OrchestratorState {
   jobs: Job[]
   dispatcherSessionId: string | null
+  isCoordinatorOn: boolean
 }
 
 export const LOG_LIMIT = 20
@@ -41,7 +43,7 @@ const JOB_KINDS: JobKind[] = ['ticket', 'review', 'address', 'watch']
 const JOB_STATES: JobState[] = ['queued', 'starting', 'working', 'waiting', 'handoff', 'finished', 'failed']
 const HANDOFF_PHASES: HandoffPhase[] = ['none', 'handoff', 'clearing', 'resuming']
 
-export const emptyOrchestrator = (): OrchestratorState => ({ jobs: [], dispatcherSessionId: null })
+export const emptyOrchestrator = (): OrchestratorState => ({ jobs: [], dispatcherSessionId: null, isCoordinatorOn: true })
 
 export const defaultAutonomy = (issueType: string | null): Autonomy =>
   issueType === 'Bug' ? 'autonomous' : 'manual'
@@ -105,9 +107,16 @@ export const loadOrchestrator = (raw: unknown): OrchestratorState => {
   if (!isRecord(raw) || !Array.isArray(raw.jobs)) return emptyOrchestrator()
   return {
     jobs: raw.jobs.map(loadJob).filter((j): j is Job => j !== null),
-    dispatcherSessionId: typeof raw.dispatcherSessionId === 'string' ? raw.dispatcherSessionId : null
+    dispatcherSessionId: typeof raw.dispatcherSessionId === 'string' ? raw.dispatcherSessionId : null,
+    isCoordinatorOn: raw.isCoordinatorOn !== false
   }
 }
+
+export const isCoordinatorActive = (state: OrchestratorState, dispatcherStatus: Status | null): boolean =>
+  state.isCoordinatorOn && isDispatcherLive(dispatcherStatus)
+
+export const isAutoHandoff = (job: Job, isCoordinatorLive: boolean): boolean =>
+  job.autonomy === 'autonomous' || (job.autonomy === 'manual' && isCoordinatorLive)
 
 export interface SessionView {
   id: string
@@ -118,6 +127,8 @@ export interface SessionView {
 }
 
 const isTurnOver = (status: Status): boolean => status === 'idle' || status === 'checkout'
+
+const RUNNING_STATES: JobState[] = ['starting', 'working', 'waiting', 'handoff']
 
 const workKeys = (job: Job, mrTickets: Map<string, string>): string[] => {
   const ticket = job.kind === 'address' ? mrTickets.get(job.key) : undefined
@@ -130,20 +141,26 @@ export const jobsToStart = (
   liveKeys: Set<string>,
   mrTickets: Map<string, string> = new Map()
 ): Job[] => {
-  const starting = state.jobs.filter((j) => j.state === 'starting')
-  const seenKeys = new Set([...liveKeys, ...starting.flatMap((j) => workKeys(j, mrTickets))])
-  const free = Math.max(0, maxParallel - starting.length)
+  const isStarting = (j: Job): boolean => j.state === 'starting'
+  const workKeysOf = (j: Job): string[] => workKeys(j, mrTickets)
+  const isRunningTicket = (j: Job): boolean => j.kind === 'ticket' && RUNNING_STATES.includes(j.state)
+  const starting = state.jobs.filter(isStarting)
+  const seenKeys = new Set([...liveKeys, ...starting.flatMap(workKeysOf)])
+  const running = state.jobs.filter(isRunningTicket).length
+  const free = Math.max(0, maxParallel - running)
   const isFree = (job: Job): boolean => {
     const keys = workKeys(job, mrTickets)
     if (keys.some((k) => seenKeys.has(k))) return false
     for (const key of keys) seenKeys.add(key)
     return true
   }
-  return state.jobs
-    .filter((j) => j.state === 'queued' && j.kind !== 'watch')
-    .sort((a, b) => a.createdAt - b.createdAt)
-    .filter(isFree)
-    .slice(0, free)
+  const isQueued = (j: Job): boolean => j.state === 'queued' && j.kind !== 'watch'
+  const byCreatedAt = (a: Job, b: Job): number => a.createdAt - b.createdAt
+  const isTicket = (j: Job): boolean => j.kind === 'ticket'
+  const startable = state.jobs.filter(isQueued).sort(byCreatedAt).filter(isFree)
+  const slotted = startable.filter(isTicket).slice(0, free)
+  const isWithinSlots = (j: Job): boolean => !isTicket(j) || slotted.includes(j)
+  return startable.filter(isWithinSlots)
 }
 
 export const handAddressToLiveTicket = (
@@ -179,10 +196,11 @@ export const handoffStopAction = (
   prev: Status | undefined,
   now: Status,
   handoffWrittenAt: number | null,
-  turnStartedAt: number
+  turnStartedAt: number,
+  isCoordinatorLive: boolean
 ): 'none' | 'hold' | 'limit' | 'auto' => {
   if (prev === undefined || !isHandoffStop(prev, now, handoffWrittenAt, turnStartedAt)) return 'none'
-  if (job.autonomy !== 'autonomous') return 'hold'
+  if (!isAutoHandoff(job, isCoordinatorLive)) return 'hold'
   return job.autoHandoffs >= AUTO_HANDOFF_LIMIT ? 'limit' : 'auto'
 }
 
@@ -254,6 +272,19 @@ export const adoptJob = (session: { id: string; ticket: string; repo: string | n
     createdAt: now
   }
 }
+
+export interface LiveTicketSession {
+  id: string
+  repo: string | null
+}
+
+export const requestedJob = (request: JobRequest, now: number, isThreadOpen: boolean, live: LiveTicketSession | null): Job =>
+  request.kind === 'ticket' && live
+    ? {
+        ...adoptJob({ id: live.id, ticket: request.key, repo: live.repo ?? request.repo, title: request.title }, now),
+        autonomy: newJob(request, now, false).autonomy
+      }
+    : newJob(request, now, isThreadOpen)
 
 export const withAutonomy = (job: Job, autonomy: Autonomy, now: number): Job =>
   !AUTONOMIES.includes(autonomy) || job.autonomy === autonomy ? job : addLog({ ...job, autonomy }, `autonomy: ${autonomy}`, now)

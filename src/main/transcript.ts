@@ -1,4 +1,4 @@
-import type { PendingTool } from '../renderer/src/types'
+import type { PendingPrompt, PendingTool, PromptQuestion } from '../renderer/src/types'
 
 interface Head {
   sessionId: string | null
@@ -85,6 +85,51 @@ const lastMessage = (lines: string[]): any => {
 export const pendingRawInput = (lines: string[]): unknown | null => {
   const { use, isNone, isOpaque } = singlePendingUse(lastMessage(lines))
   return isNone || isOpaque ? null : use.input ?? null
+}
+
+const isToolUse = (c: any): boolean => c?.type === 'tool_use'
+
+export const promptRawInput = (lines: string[]): unknown | null => {
+  const message = lastMessage(lines)
+  const uses = message?.stop_reason === 'tool_use' && Array.isArray(message.content) ? message.content.filter(isToolUse) : []
+  const isOpaque = uses.length !== 1 || OPAQUE_TOOLS.includes(uses[0]?.name)
+  return isOpaque ? null : uses[0].input ?? null
+}
+
+const promptText = (use: any, questions: any[]): string => {
+  const name = String(use.name)
+  if (name === 'AskUserQuestion' && typeof questions[0]?.question === 'string') return questions[0].question
+  if (name === 'Bash' && typeof use.input?.command === 'string') return use.input.command
+  if (FILE_TOOLS.includes(name) && typeof use.input?.file_path === 'string') return use.input.file_path
+  return JSON.stringify(use.input ?? {})
+}
+
+const promptOption = (o: any, index: number): PromptQuestion['options'][number] => ({
+  key: String(index + 1),
+  label: typeof o?.label === 'string' ? o.label : '',
+  description: typeof o?.description === 'string' ? o.description : ''
+})
+
+const promptQuestion = (q: any): PromptQuestion => ({
+  question: typeof q?.question === 'string' ? q.question : '',
+  header: typeof q?.header === 'string' ? q.header : '',
+  isMultiSelect: !!q?.multiSelect,
+  options: Array.isArray(q?.options) ? q.options.map(promptOption) : []
+})
+
+export const pendingPrompt = (lines: string[]): PendingPrompt | null => {
+  const message = lastMessage(lines)
+  const { use, questions, isNone } = singlePendingUse(message)
+  if (isNone) return null
+  const uses = message.content.filter(isToolUse)
+  const isOpaque = uses.length > 1 || OPAQUE_TOOLS.includes(use?.name)
+  return {
+    toolUseId: String(use.id ?? ''),
+    tool: String(use.name),
+    isOpaque,
+    text: promptText(use, questions),
+    questions: isOpaque ? [] : questions.map(promptQuestion)
+  }
 }
 
 const QUESTION_END = /\?[\s*_`)"'\]]*$/

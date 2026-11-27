@@ -83,6 +83,27 @@ export interface JiraTicket {
 
 export type TerminalMode = 'attach' | 'resume' | 'vscode' | 'elsewhere'
 
+export interface PromptOption {
+  key: string
+  label: string
+  description: string
+}
+
+export interface PromptQuestion {
+  question: string
+  header: string
+  isMultiSelect: boolean
+  options: PromptOption[]
+}
+
+export interface PendingPrompt {
+  toolUseId: string
+  tool: string
+  isOpaque: boolean
+  text: string
+  questions: PromptQuestion[]
+}
+
 export interface PendingTool {
   name: string
   input: string
@@ -617,7 +638,17 @@ export type FlowRole = { stage: string; who: string; model: string; isMain: bool
 export type FlowStage = { n: number; title: string; isGated: boolean; roles: FlowRole[] }
 export type FlowAgent = { name: string; model: string; description: string }
 export type FlowBooster = { id: string; name: string; detail: string }
-export type FlowSkill = { stages: FlowStage[]; sizes: string[][]; risk: string[]; error: string | null }
+export type FlowSize = 'S' | 'M' | 'L'
+export type FlowMapStep = {
+  n: number
+  name: string
+  sizes: FlowSize[]
+  isHighRiskOnlyForM: boolean
+  isGated: boolean
+  summary: string
+  uses: string[]
+}
+export type FlowSkill = { stages: FlowStage[]; steps: FlowMapStep[]; sizes: string[][]; risk: string[]; error: string | null }
 export type FlowTicket = {
   key: string
   n: number | null

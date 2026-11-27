@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { FlowAgent, FlowRole, FlowStage, FlowState, FlowTicket } from '../types'
+import type { FlowAgent, FlowRole, FlowSize, FlowStage, FlowState, FlowMapStep, FlowTicket } from '../types'
 import type { TaskRow } from '../taskview'
 import { ago } from '../display'
 import { onVisible, whenVisible } from './visibility'
@@ -76,6 +76,75 @@ const agentModel = (name: string, role: FlowRole): string => {
 }
 const roleLabel = (s: FlowStage, r: FlowRole): string => (s.roles.length > 1 ? r.stage.replace(/^\d+\.\s*/, '') : '')
 const agentTitle = (name: string): string => agentOf(name)?.description ?? name
+
+type SizeFilter = 'All' | FlowSize
+type GateFilter = 'any' | 'yes' | 'no'
+const SIZE_FILTERS: SizeFilter[] = ['All', 'S', 'M', 'L']
+const GATE_FILTERS: GateFilter[] = ['any', 'yes', 'no']
+const FILTER_KEY = 'flowFilter'
+const readFilter = (): { size: SizeFilter; gate: GateFilter } => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FILTER_KEY) ?? '{}') as { size?: SizeFilter; gate?: GateFilter }
+    return {
+      size: SIZE_FILTERS.includes(saved.size as SizeFilter) ? (saved.size as SizeFilter) : 'All',
+      gate: GATE_FILTERS.includes(saved.gate as GateFilter) ? (saved.gate as GateFilter) : 'any'
+    }
+  } catch {
+    return { size: 'All', gate: 'any' }
+  }
+}
+const initialFilter = readFilter()
+const sizeFilter = ref<SizeFilter>(initialFilter.size)
+const gateFilter = ref<GateFilter>(initialFilter.gate)
+const writeFilter = (): void => {
+  try {
+    localStorage.setItem(FILTER_KEY, JSON.stringify({ size: sizeFilter.value, gate: gateFilter.value }))
+  } catch {
+    return
+  }
+}
+const setSizeFilter = (size: SizeFilter): void => {
+  sizeFilter.value = size
+  writeFilter()
+}
+const setGateFilter = (gate: GateFilter): void => {
+  gateFilter.value = gate
+  writeFilter()
+}
+const gateLabel = (gate: GateFilter): string => `Gate: ${gate}`
+
+const skipReason = (step: FlowMapStep): string => {
+  if (sizeFilter.value !== 'All' && !step.sizes.includes(sizeFilter.value)) return `skipped for ${sizeFilter.value}`
+  if (gateFilter.value === 'no' && step.isGated) return 'skipped when gate is no'
+  return ''
+}
+const isRunning = (step: FlowMapStep): boolean => !skipReason(step)
+const stepsAt = (n: number): FlowMapStep[] => flow.value?.skill.steps.filter((step) => step.n === n) ?? []
+const isStageDimmed = (n: number): boolean => {
+  const steps = stepsAt(n)
+  return steps.length > 0 && !steps.some(isRunning)
+}
+const sizesLabel = (step: FlowMapStep): string => (step.sizes.length === 3 ? 'S/M/L' : step.sizes.join('/'))
+const stageBadges = (n: number): string[] => [...new Set(stepsAt(n).map(sizesLabel))]
+const isStageGated = (n: number): boolean => stepsAt(n).some((step) => step.isGated)
+const isFile = (use: string): boolean => /\.\w+$/.test(use)
+
+const highlightedStage = ref<number | null>(null)
+const stepsRoot = ref<HTMLElement | null>(null)
+let highlightTimer: ReturnType<typeof setTimeout> | null = null
+const clearHighlight = (): void => {
+  highlightedStage.value = null
+}
+const focusStage = (n: number): void => {
+  if (!stepsAt(n).length) return
+  highlightedStage.value = n
+  if (highlightTimer) clearTimeout(highlightTimer)
+  highlightTimer = setTimeout(clearHighlight, 1600)
+  stepsRoot.value?.querySelector(`[data-stage="${n}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+onUnmounted(() => {
+  if (highlightTimer) clearTimeout(highlightTimer)
+})
 </script>
 
 <template>
@@ -108,16 +177,24 @@ const agentTitle = (name: string): string => agentOf(name)?.description ?? name
           <span class="blabel"><Icon name="gauge" :size="13" />Always on</span>
           <span v-for="b in flow.boosters" :key="b.id" class="booster"><b>{{ b.name }}</b>{{ b.detail }}</span>
         </div>
+        <div v-if="flow.skill.steps.length" class="filters">
+          <span class="flabel">Size</span>
+          <button v-for="f in SIZE_FILTERS" :key="f" class="fchip" :class="{ on: sizeFilter === f }" @click="setSizeFilter(f)">{{ f }}</button>
+          <span class="flabel">Gate</span>
+          <button v-for="g in GATE_FILTERS" :key="g" class="fchip" :class="{ on: gateFilter === g }" @click="setGateFilter(g)">{{ gateLabel(g) }}</button>
+        </div>
         <div class="lane">
           <template v-for="(s, i) in flow.skill.stages" :key="s.n">
             <Icon v-if="i > 0" class="arrow" name="chevronRight" :size="16" />
-            <section class="stage" :class="{ busy: ticketsAt(s.n).length }">
+            <section class="stage" :class="{ busy: ticketsAt(s.n).length, dim: isStageDimmed(s.n), linked: stepsAt(s.n).length }" @click="focusStage(s.n)">
               <div class="top">
                 <span class="num">{{ s.n }}</span>
                 <span class="sicon"><Icon :name="stageIcon(s)" :size="15" /></span>
                 <span class="grow" />
+                <span v-for="b in stageBadges(s.n)" :key="b" class="cond">{{ b }}</span>
+                <span v-if="isStageGated(s.n) && !s.isGated" class="gate" title="A step here runs only when the browser gate said yes"><Icon name="globe" :size="13" /></span>
                 <span v-if="s.isGated" class="gate" title="Runs only when the browser gate said yes"><Icon name="globe" :size="13" /></span>
-                <button v-if="ticketsAt(s.n).length" class="count" :class="{ on: openStage === s.n }" :title="`Show the tickets at stage ${s.n}`" @click="toggleStage(s.n)">{{ ticketsAt(s.n).length }}</button>
+                <button v-if="ticketsAt(s.n).length" class="count" :class="{ on: openStage === s.n }" :title="`Show the tickets at stage ${s.n}`" @click.stop="toggleStage(s.n)">{{ ticketsAt(s.n).length }}</button>
               </div>
               <h2>{{ s.title }}</h2>
               <div v-for="r in s.roles" :key="r.stage" class="role">
@@ -153,6 +230,32 @@ const agentTitle = (name: string): string => agentOf(name)?.description ?? name
             <button v-for="t in unplaced" :key="t.key" class="chip" :title="chipTitle(t)" @click="open(t.key)"><b>{{ t.key }}</b></button>
           </div>
         </div>
+        <section v-if="flow.skill.steps.length" ref="stepsRoot" class="steps">
+          <h3>Steps</h3>
+          <div
+            v-for="step in flow.skill.steps"
+            :key="`${step.n}-${step.name}`"
+            class="step"
+            :class="{ skipped: !isRunning(step), flash: highlightedStage === step.n }"
+            :data-stage="step.n"
+          >
+            <span class="num">{{ step.n }}</span>
+            <div class="sbody">
+              <div class="shead">
+                <b class="sname">{{ step.name }}</b>
+                <span class="cond">{{ sizesLabel(step) }}</span>
+                <span v-if="step.isHighRiskOnlyForM" class="cond note">M high risk</span>
+                <span v-if="step.isGated" class="gate" title="Runs only when the browser gate said yes"><Icon name="globe" :size="13" /></span>
+                <span v-if="skipReason(step)" class="skip">{{ skipReason(step) }}</span>
+              </div>
+              <p class="ssum">{{ step.summary }}</p>
+              <div v-if="step.uses.length" class="uses">
+                <span class="slabel">uses</span>
+                <span v-for="u in step.uses" :key="u" class="use" :class="{ file: isFile(u) }">{{ u }}</span>
+              </div>
+            </div>
+          </div>
+        </section>
         <div class="rules">
           <section v-if="flow.skill.sizes.length">
             <h3>Size → stages and models</h3>
@@ -306,6 +409,134 @@ const agentTitle = (name: string): string => agentOf(name)?.description ?? name
 }
 .stage.busy {
   border-color: var(--accent);
+}
+.stage.linked {
+  cursor: pointer;
+}
+.stage.dim {
+  opacity: 0.4;
+}
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.flabel {
+  margin-left: 6px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.flabel:first-child {
+  margin-left: 0;
+}
+.fchip {
+  height: 24px;
+  padding: 0 10px;
+  font: 500 11.5px var(--font-ui);
+  color: var(--text-2);
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  cursor: pointer;
+}
+.fchip:hover {
+  border-color: var(--line-3);
+}
+.fchip.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.cond {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  font: 600 10.5px var(--font-ui);
+  color: var(--text-3);
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  white-space: nowrap;
+}
+.cond.note {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+.steps {
+  margin-top: 16px;
+}
+.steps h3 {
+  margin: 0 0 8px;
+  font: 600 12.5px var(--font-ui);
+  color: var(--text-3);
+}
+.step {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  transition:
+    border-color 0.3s,
+    background 0.3s;
+}
+.step.skipped {
+  opacity: 0.4;
+}
+.step.flash {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-2));
+}
+.step .num {
+  flex: none;
+}
+.sbody {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.shead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.sname {
+  font: 600 13px var(--font-ui);
+  color: var(--text);
+}
+.skip {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-4);
+}
+.ssum {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.uses {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+.use {
+  padding: 1px 7px;
+  font-size: 11px;
+  color: var(--text-3);
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+}
+.use.file {
+  font-family: var(--font-mono);
 }
 .top {
   display: flex;

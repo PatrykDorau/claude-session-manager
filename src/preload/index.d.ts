@@ -159,6 +159,7 @@ declare global {
       getTicketReadiness: (key: string, cwd: string | null) => Promise<{ handoffAt: number | null; lastCommitAt: number | null }>
       getPromptHistory: () => Promise<import('../renderer/src/types').PromptEntry[]>
       getTaskFiles: (ticket: string) => Promise<{ name: string; kind: 'video' | 'image' }[] | null>
+      getTaskDocs: (ticket: string) => Promise<{ name: string; text: string }[] | null>
       openTaskFile: (ticket: string, name: string) => void
       setViewingSession: (id: string | null) => void
       onInboxNext: (cb: () => void) => void
@@ -266,6 +267,7 @@ declare global {
       adoptSession: (sessionId: string) => Promise<{ error: string | null }>
       setSessionAutonomy: (sessionId: string, choice: import('../main/orchestrator').AutonomyChoice) => Promise<{ error: string | null }>
       openDispatcher: () => Promise<{ error: string | null; sessionId?: string }>
+      setCoordinatorOn: (isOn: boolean) => Promise<{ error: string | null }>
       getOrchestrator: () => Promise<import('../main/orchestrator').OrchestratorState>
       onOrchestrator: (cb: (state: import('../main/orchestrator').OrchestratorState) => void) => () => void
       setAllProjects: (isAll: boolean) => void

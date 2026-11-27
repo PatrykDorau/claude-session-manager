@@ -2,12 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Session } from '../types'
 import Icon from './Icon.vue'
-import ClaudeTerminal from './ClaudeTerminal.vue'
-import DispatcherCards from './DispatcherCards.vue'
+import DispatcherPane from './DispatcherPane.vue'
 import type { InboxRow } from './inbox'
 
-defineProps<{ session: Session | null; error: string | null; isStarting: boolean; rows: InboxRow[] }>()
-const emit = defineEmits<{ close: []; open: [row: InboxRow] }>()
+defineProps<{ session: Session | null; error: string | null; isStarting: boolean; rows: InboxRow[]; isOff?: boolean }>()
+const emit = defineEmits<{ close: []; open: [row: InboxRow]; 'turn-on': [] }>()
 
 interface WindowRect {
   x: number
@@ -112,13 +111,15 @@ onBeforeUnmount(stopWatching)
       <kbd>Ctrl+Shift+D</kbd>
       <button class="iconbtn" title="Close the dispatcher (Ctrl+Shift+D)" @click="emit('close')"><Icon name="close" /></button>
     </header>
-    <DispatcherCards :rows="rows" @open="emit('open', $event)" />
-    <ClaudeTerminal v-if="session" :key="session.id" :session-id="session.id" :project-name="session.projectName" />
-    <div v-else class="empty">
-      <span v-if="error" class="warn">{{ error }}</span>
-      <span v-else-if="isStarting"><span class="spin" />Starting the dispatcher session…</span>
-      <span v-else>Waiting for the dispatcher session to show up in the session list…</span>
-    </div>
+    <DispatcherPane
+      :session="session"
+      :error="error"
+      :is-starting="isStarting"
+      :is-off="isOff"
+      :rows="rows"
+      @open="emit('open', $event)"
+      @turn-on="emit('turn-on')"
+    />
     <span class="grip" title="Drag to resize" @pointerdown="startResize" />
   </aside>
 </template>
@@ -199,34 +200,5 @@ kbd {
   color: var(--text);
   background: var(--bg-3);
   outline: none;
-}
-.empty {
-  flex: 1;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  color: var(--text-4);
-  text-align: center;
-}
-.empty > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-.warn {
-  color: var(--warn);
-}
-.spin {
-  width: 10px;
-  height: 10px;
-  border: 2px solid var(--line-2);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 </style>

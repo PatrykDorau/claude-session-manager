@@ -253,6 +253,7 @@ const api = {
   getPromptHistory: (): Promise<PromptEntry[]> => ipcRenderer.invoke('prompt-history'),
   getTaskFiles: (ticket: string): Promise<{ name: string; kind: 'video' | 'image' }[] | null> =>
     ipcRenderer.invoke('task-files', ticket),
+  getTaskDocs: (ticket: string): Promise<{ name: string; text: string }[] | null> => ipcRenderer.invoke('task-docs', ticket),
   openTaskFile: (ticket: string, name: string): void => ipcRenderer.send('open-task-file', ticket, name),
   setViewingSession: (id: string | null): void => ipcRenderer.send('viewing-session', id),
   onInboxNext: (cb: () => void): void => {
@@ -418,6 +419,7 @@ const api = {
   setSessionAutonomy: (sessionId: string, choice: import('../main/orchestrator').AutonomyChoice): Promise<{ error: string | null }> =>
     ipcRenderer.invoke('orchestrator-session-autonomy', sessionId, choice),
   openDispatcher: (): Promise<{ error: string | null; sessionId?: string }> => ipcRenderer.invoke('dispatcher-open'),
+  setCoordinatorOn: (isOn: boolean): Promise<{ error: string | null }> => ipcRenderer.invoke('set-coordinator-on', isOn),
   getOrchestrator: (): Promise<import('../main/orchestrator').OrchestratorState> => ipcRenderer.invoke('orchestrator-get'),
   onOrchestrator: (cb: (state: import('../main/orchestrator').OrchestratorState) => void): (() => void) => {
     const handler = (_e: unknown, state: import('../main/orchestrator').OrchestratorState): void => cb(state)

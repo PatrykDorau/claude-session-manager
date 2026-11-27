@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { parseTranscriptHead, parseTail, countTurns, lastMessages, createDetailCache, pendingRawInput } from '../src/main/transcript'
+import { parseTranscriptHead, parseTail, countTurns, lastMessages, createDetailCache, pendingRawInput, pendingPrompt } from '../src/main/transcript'
 
 describe('parseTranscriptHead', () => {
   it('keeps the first custom title so an explain session stays named after a restart', () => {
@@ -283,5 +283,46 @@ describe('pendingRawInput', () => {
     const two = use('q', 'AskUserQuestion', { questions: [{ question: 'A?' }, { question: 'B?' }] })
     expect(pendingRawInput([toolMessage([two])])).toBeNull()
     expect(pendingRawInput([])).toBeNull()
+  })
+})
+
+describe('pendingPrompt', () => {
+  const toolMessage = (blocks: unknown[]): string =>
+    JSON.stringify({ type: 'assistant', message: { stop_reason: 'tool_use', content: blocks } })
+  const use = (id: string, name: string, input: unknown): unknown => ({ type: 'tool_use', id, name, input })
+
+  it('returns two questions with their headers, multiSelect flag and keyed options', () => {
+    const ask = use('q1', 'AskUserQuestion', {
+      questions: [
+        { question: 'Which db?', header: 'DB', multiSelect: false, options: [{ label: 'PG', description: 'postgres' }, { label: 'SQLite', description: 'file' }] },
+        { question: 'Which features?', header: 'Features', multiSelect: true, options: [{ label: 'A', description: 'a' }] }
+      ]
+    })
+    const prompt = pendingPrompt([toolMessage([ask])])
+    expect(prompt?.isOpaque).toBe(false)
+    expect(prompt?.toolUseId).toBe('q1')
+    expect(prompt?.tool).toBe('AskUserQuestion')
+    expect(prompt?.text).toBe('Which db?')
+    expect(prompt?.questions.length).toBe(2)
+    expect(prompt?.questions[0].header).toBe('DB')
+    expect(prompt?.questions[1].isMultiSelect).toBe(true)
+    expect(prompt?.questions[0].options[1]).toEqual({ key: '2', label: 'SQLite', description: 'file' })
+  })
+  it('keeps a 500-character Bash command whole', () => {
+    const prompt = pendingPrompt([toolMessage([use('t1', 'Bash', { command: 'x'.repeat(500) })])])
+    expect(prompt?.text.length).toBe(500)
+    expect(prompt?.isOpaque).toBe(false)
+  })
+  it('marks Agent and two tool uses as opaque', () => {
+    const agent = pendingPrompt([toolMessage([use('a1', 'Agent', { prompt: 'x' })])])
+    expect(agent?.isOpaque).toBe(true)
+    expect(agent?.questions).toEqual([])
+    const many = pendingPrompt([toolMessage([use('b1', 'Bash', { command: 'a' }), use('b2', 'Bash', { command: 'b' })])])
+    expect(many?.isOpaque).toBe(true)
+    expect(many?.questions).toEqual([])
+  })
+  it('returns null when the last entry is a user line', () => {
+    const result = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1' }] } })
+    expect(pendingPrompt([toolMessage([use('t1', 'Bash', { command: 'ls' })]), result])).toBeNull()
   })
 })

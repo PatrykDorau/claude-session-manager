@@ -67,6 +67,45 @@ describe('parseWorkflow', () => {
   })
 })
 
+const flowMap = [
+  '',
+  '## Flow map',
+  '| Step | Sizes | Gate | Summary | Uses |',
+  '|---|---|---|---|---|',
+  '| 1. Definition of Done | S M L | — | Writes the dimensions. | spec, `handoff.md` |',
+  '| 3. Plan | L | — | Writes the plan. | writing-plans, spec |',
+  '| 3. Baseline | S M L | yes | Saves the state. | browser-verify baseline |',
+  '| 5. Analyze the fix | M(high) L | yes | Hunts for side effects. | side-effect-analyst, `fix.webm` |',
+  '| 6. QA test cases | S M L | — | Writes test cases. |  |'
+].join('\n')
+
+describe('flow map', () => {
+  it('parses sizes including M(high)', () => {
+    const { steps } = parseWorkflow(skill + flowMap)
+    expect(steps.map((s) => s.sizes)).toEqual([['S', 'M', 'L'], ['L'], ['S', 'M', 'L'], ['M', 'L'], ['S', 'M', 'L']])
+    expect(steps.map((s) => s.isHighRiskOnlyForM)).toEqual([false, false, false, true, false])
+  })
+  it('reads the gate column', () => {
+    const { steps } = parseWorkflow(skill + flowMap)
+    expect(steps.map((s) => s.isGated)).toEqual([false, false, true, true, false])
+  })
+  it('splits uses on commas and keeps file names readable', () => {
+    const { steps } = parseWorkflow(skill + flowMap)
+    expect(steps[0].uses).toEqual(['spec', 'handoff.md'])
+    expect(steps[3].uses).toEqual(['side-effect-analyst', 'fix.webm'])
+    expect(steps[4].uses).toEqual([])
+  })
+  it('takes the number and name from the step cell and keeps the summary', () => {
+    const { steps } = parseWorkflow(skill + flowMap)
+    expect(steps[3]).toMatchObject({ n: 5, name: 'Analyze the fix', summary: 'Hunts for side effects.' })
+    expect(steps.filter((s) => s.n === 3).map((s) => s.name)).toEqual(['Plan', 'Baseline'])
+  })
+  it('returns no steps without the table', () => {
+    expect(parseWorkflow(skill).steps).toEqual([])
+    expect(parseWorkflow(skill.replace('| Stage | Who | Model |', '| Etap | Kto | Model |')).steps).toEqual([])
+  })
+})
+
 describe('roles and gates', () => {
   const agents = ['browser-recorder', 'task-implementer', 'side-effect-analyst', 'qa-writer', 'self-reviewer']
   it('splits who into the main session and named agents', () => {

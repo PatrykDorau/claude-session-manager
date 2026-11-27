@@ -20,7 +20,7 @@ import CatalogView from './CatalogView.vue'
 import InsightsView from './InsightsView.vue'
 import TimesheetView from './TimesheetView.vue'
 import FlowView from './FlowView.vue'
-import OrchestratorView from './OrchestratorView.vue'
+import CoordinatorView from './CoordinatorView.vue'
 import { mrOfSession } from './commandpanel'
 import StartJobsDialog from './StartJobsDialog.vue'
 import type { Job, OrchestratorState } from '../../../main/orchestrator'
@@ -129,7 +129,8 @@ const openMr = (key: string, sessionId: string | null = null, isFromMrList = fal
 
 const focusSession = (target: { ticket: string | null; sessionId: string }): void => {
   if (dispatcherId.value && target.sessionId.startsWith(dispatcherId.value)) {
-    isDispatcherOpen.value = true
+    if (page.value === 'today') coordinatorFocus.value += 1
+    else isDispatcherOpen.value = true
     return
   }
   if (target.ticket) {
@@ -198,12 +199,37 @@ const dispatcherCards = computed(() => dispatcherRows(inboxRows.value, dispatche
 const isCardWaiting = (r: InboxRow): boolean => r.status === 'waiting'
 const dispatcherCount = computed(() => ({ total: dispatcherCards.value.length, isWaiting: dispatcherCards.value.some(isCardWaiting) }))
 const panelSessionList = computed(() => sessions.value.filter(isPanelSession))
+const isCoordinatorOn = ref(true)
+const switchCoordinator = async (isOn: boolean): Promise<void> => {
+  isDispatcherStarting.value = isOn
+  try {
+    dispatcherError.value = (await window.api.setCoordinatorOn(isOn)).error
+  } finally {
+    isDispatcherStarting.value = false
+  }
+}
+const turnCoordinatorOn = (): Promise<void> => switchCoordinator(true)
+const coordinatorFocus = ref(0)
+const closeOverlayOnToday = (): void => {
+  if (page.value === 'today') isDispatcherOpen.value = false
+}
+watch(page, closeOverlayOnToday)
 const toggleDispatcher = async (): Promise<void> => {
+  if (page.value === 'today') {
+    isDispatcherOpen.value = false
+    coordinatorFocus.value += 1
+    if (isCoordinatorOn.value && !dispatcherSession.value) await startDispatcher()
+    return
+  }
   if (isDispatcherOpen.value) {
     isDispatcherOpen.value = false
     return
   }
   isDispatcherOpen.value = true
+  if (!isCoordinatorOn.value) return
+  await startDispatcher()
+}
+const startDispatcher = async (): Promise<void> => {
   isDispatcherStarting.value = true
   try {
     const result = await window.api.openDispatcher()
@@ -260,6 +286,7 @@ const isStartJobsOpen = ref(false)
 const applyOrchestrator = (state: OrchestratorState): void => {
   orchestratorJobs.value = state.jobs
   dispatcherId.value = state.dispatcherSessionId
+  isCoordinatorOn.value = state.isCoordinatorOn
 }
 let stopOrchestrator: (() => void) | null = null
 const counts = computed<Record<DashboardPage, number>>(() => ({
@@ -488,18 +515,28 @@ onBeforeUnmount(() => {
       <p>Pick a session on the left to see the agents it dispatched, what each one is doing and its full run.</p>
     </div>
     <KeepAlive :max="11">
-      <OrchestratorView
+      <CoordinatorView
         v-if="page === 'today'"
         key="command-panel"
         :tickets="myTasks.tickets"
         :mrs="myMrs.items"
         :my-name="myMrs.myName ?? null"
         :sessions="panelSessionList"
+        :jobs="orchestratorJobs"
+        :is-coordinator-on="isCoordinatorOn"
+        :dispatcher-session="dispatcherSession"
+        :dispatcher-id="dispatcherId"
+        :dispatcher-error="dispatcherError"
+        :is-dispatcher-starting="isDispatcherStarting"
+        :dispatcher-cards="dispatcherCards"
+        :focus-request="coordinatorFocus"
         @open="openJob"
         @open-task="openSessionTask"
         @full-screen="setPanelFullScreen"
         @dispatcher="toggleDispatcher"
         @open-mr="openMr"
+        @open-row="openInboxRow"
+        @coordinator="switchCoordinator"
       />
       <MrView
         v-else-if="isMrPage && selectedMr"
@@ -547,8 +584,10 @@ onBeforeUnmount(() => {
       :error="dispatcherError"
       :is-starting="isDispatcherStarting"
       :rows="dispatcherCards"
+      :is-off="!isCoordinatorOn"
       @close="isDispatcherOpen = false"
       @open="openInboxRow"
+      @turn-on="turnCoordinatorOn"
     />
     <ServerRequests />
     <StatusBar

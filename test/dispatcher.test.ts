@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   EVENT_LIMIT,
   appendEvents,
@@ -9,18 +9,23 @@ import {
   isDispatcherLive,
   jobLogEvents,
   jobRow,
+  answerPrompt,
+  parseAnswer,
   refusedAnswer,
   refusedPrompt,
+  refusedPromptAnswer,
   findSessionRef,
   pendingOptions,
   sessionEvents,
+  sessionWaitingEvents,
   startRequestOf,
   waitingEvent,
   type DispatchEvent,
   type SessionEventInput
 } from '../src/main/dispatcher'
 import type { Job } from '../src/main/orchestrator'
-import type { PendingTool } from '../src/renderer/src/types'
+import { parseTail, pendingPrompt, pendingRawInput, promptRawInput } from '../src/main/transcript'
+import type { PendingPrompt, PendingTool, PromptQuestion } from '../src/renderer/src/types'
 
 const makeJob = (overrides: Partial<Job> = {}): Job => ({
   id: 'j1',
@@ -51,7 +56,8 @@ const makeEvent = (seq: number): DispatchEvent => ({
   text: `t${seq}`,
   toolUseId: null,
   tool: null,
-  options: []
+  options: [],
+  prompt: null
 })
 
 const makePending = (name: string): PendingTool => ({ name, input: 'input', toolUseId: 'tu1' })
@@ -138,23 +144,101 @@ describe('jobLogEvents', () => {
   })
 })
 
+const waitingPrompt = (overrides: Partial<PendingPrompt> = {}): PendingPrompt => ({
+  toolUseId: 'tu1',
+  tool: 'AskUserQuestion',
+  isOpaque: false,
+  text: 'input',
+  questions: [],
+  ...overrides
+})
+
 describe('waitingEvent', () => {
   it('pairs question labels with option keys', () => {
-    const event = waitingEvent(makeJob({ state: 'waiting' }), makePending('AskUserQuestion'), ['Subagent-Driven', 'Inline'], 5)
+    const questions: PromptQuestion[] = [
+      {
+        question: 'input',
+        header: 'h',
+        isMultiSelect: false,
+        options: [
+          { key: '1', label: 'Subagent-Driven', description: 'd1' },
+          { key: '2', label: 'Inline', description: 'd2' }
+        ]
+      }
+    ]
+    const prompt = waitingPrompt({ questions })
+    const event = waitingEvent(makeJob({ state: 'waiting' }), prompt, 5)
     expect(event.options).toEqual([
       { key: '1', label: 'Subagent-Driven' },
       { key: '2', label: 'Inline' }
     ])
     expect(event.type).toBe('waiting')
     expect(event.text).toBe('input')
+    expect(event.prompt).toBe(prompt)
   })
 
   it('offers Yes and No for permission prompts', () => {
-    const event = waitingEvent(makeJob({ state: 'waiting' }), makePending('Bash'), [], 5)
+    const event = waitingEvent(makeJob({ state: 'waiting' }), waitingPrompt({ tool: 'Bash' }), 5)
     expect(event.options).toEqual([
       { key: '1', label: 'Yes' },
       { key: '3', label: 'No' }
     ])
+  })
+
+  it('uses the opaque text for an opaque prompt', () => {
+    const event = waitingEvent(makeJob({ state: 'waiting' }), waitingPrompt({ isOpaque: true, text: '{"raw":1}' }), 5)
+    expect(event.text).toBe('opaque: open the session')
+  })
+
+  it('carries the full question text', () => {
+    const text = 'q'.repeat(400)
+    const event = waitingEvent(makeJob({ state: 'waiting' }), waitingPrompt({ text }), 5)
+    expect(event.text.length).toBe(400)
+  })
+})
+
+describe('sessionWaitingEvents', () => {
+  const waiting = (prompt: PendingPrompt | null, id = 'a') => ({ id, label: `L-${id}`, title: `T-${id}`, prompt })
+
+  it('emits once for a session first seen while waiting', () => {
+    const first = sessionWaitingEvents(new Set(), [waiting(waitingPrompt({ text: 'Which?' }))], [], 7)
+    expect(first.events).toEqual([
+      expect.objectContaining({ at: 7, type: 'waiting', jobId: 'a', key: 'L-a', kind: 'session', state: 'waiting', text: 'Which?', toolUseId: 'tu1', tool: 'AskUserQuestion' })
+    ])
+    expect(sessionWaitingEvents(first.seen, [waiting(waitingPrompt({ text: 'Which?' }))], [], 8).events).toEqual([])
+  })
+
+  it('emits again for a new toolUseId', () => {
+    const first = sessionWaitingEvents(new Set(), [waiting(waitingPrompt())], [], 1)
+    const second = sessionWaitingEvents(first.seen, [waiting(waitingPrompt({ toolUseId: 'tu2' }))], [], 2)
+    expect(second.events).toHaveLength(1)
+    expect(second.events[0].toolUseId).toBe('tu2')
+  })
+
+  it('marks an opaque prompt', () => {
+    const { events } = sessionWaitingEvents(new Set(), [waiting(waitingPrompt({ isOpaque: true, tool: 'ExitPlanMode', text: '{}' }))], [], 1)
+    expect(events[0].tool).toBe('ExitPlanMode')
+    expect(events[0].text).toBe('opaque: open the session')
+  })
+
+  it('skips skipIds', () => {
+    expect(sessionWaitingEvents(new Set(), [waiting(waitingPrompt())], ['a'], 1).events).toEqual([])
+  })
+
+  it('emits an opaque event once for a waiting session with no readable prompt, and again after it stops waiting', () => {
+    const first = sessionWaitingEvents(new Set(), [waiting(null)], [], 1)
+    expect(first.events).toHaveLength(1)
+    expect(first.events[0].text).toBe('opaque: open the session')
+    const again = sessionWaitingEvents(first.seen, [waiting(null)], [], 2)
+    expect(again.events).toEqual([])
+    const gap = sessionWaitingEvents(again.seen, [], [], 3)
+    expect(sessionWaitingEvents(gap.seen, [waiting(null)], [], 4).events).toHaveLength(1)
+  })
+
+  it('does not collide on empty toolUseIds of different sessions', () => {
+    const empty = waitingPrompt({ toolUseId: '' })
+    const { events } = sessionWaitingEvents(new Set(), [waiting(empty, 'a'), waiting(empty, 'b')], [], 1)
+    expect(events).toHaveLength(2)
   })
 })
 
@@ -194,6 +278,150 @@ describe('refusedAnswer', () => {
     expect(refusedAnswer(makePending('AskUserQuestion'), ask('Dodać komentarz w Jirze?'), ['Tak', 'Nie'], '1')).not.toBeNull()
     expect(refusedAnswer(makePending('AskUserQuestion'), ask('Publish the review?'), ['Tak', 'Nie'], '1')).not.toBeNull()
     expect(refusedAnswer(makePending('AskUserQuestion'), ask('Czy plan jest dobry?'), ['Tak', 'Nie'], '1')).toBeNull()
+  })
+})
+
+const makeQuestion = (question: string, labels: string[], isMultiSelect = false): PromptQuestion => {
+  const toOption = (label: string, index: number): PromptQuestion['options'][number] => ({ key: String(index + 1), label, description: '' })
+  return { question, header: '', isMultiSelect, options: labels.map(toOption) }
+}
+
+const makePrompt = (questions: PromptQuestion[], overrides: Partial<PendingPrompt> = {}): PendingPrompt => ({
+  toolUseId: 'tu1',
+  tool: 'AskUserQuestion',
+  isOpaque: false,
+  text: questions[0]?.question ?? '',
+  questions,
+  ...overrides
+})
+
+const rawInputOf = (prompt: PendingPrompt): unknown => {
+  const toRawOption = (o: { label: string }): { label: string } => ({ label: o.label })
+  const toRawQuestion = (q: PromptQuestion): unknown => ({ question: q.question, header: q.header, multiSelect: q.isMultiSelect, options: q.options.map(toRawOption) })
+  return { questions: prompt.questions.map(toRawQuestion) }
+}
+
+describe('parseAnswer', () => {
+  it('maps --keys to choices per question', () => {
+    expect(parseAnswer({ keys: '1|2,3' })).toEqual({ choices: [['1'], ['2', '3']], text: null })
+  })
+
+  it('maps a single --key to one choice', () => {
+    expect(parseAnswer({ key: '2' })).toEqual({ choices: [['2']], text: null })
+  })
+
+  it('reads --text', () => {
+    expect(parseAnswer({ keys: '1', text: 'use the cache' })).toEqual({ choices: [['1']], text: 'use the cache' })
+    expect(parseAnswer({ text: 'only text' })).toEqual({ choices: [], text: 'only text' })
+  })
+})
+
+describe('refusedPromptAnswer', () => {
+  const twoQuestions = makePrompt([makeQuestion('Which approach?', ['A', 'B']), makeQuestion('Which parts?', ['X', 'Y', 'Z'], true)])
+
+  it('allows keys within each question', () => {
+    expect(refusedPromptAnswer(twoQuestions, rawInputOf(twoQuestions), { choices: [['1'], ['2', '3']], text: null })).toBeNull()
+  })
+
+  it('refuses a key outside its own question', () => {
+    expect(refusedPromptAnswer(twoQuestions, rawInputOf(twoQuestions), { choices: [['3'], ['1']], text: null })).toBe('key not allowed')
+  })
+
+  it('refuses text that asks to commit', () => {
+    const prompt = makePrompt([makeQuestion('Which approach?', ['A', 'B'])])
+    expect(refusedPromptAnswer(prompt, rawInputOf(prompt), { choices: [], text: 'commit and push it' })).toBe('forbidden text')
+  })
+
+  it('refuses text with control characters', () => {
+    const prompt = makePrompt([makeQuestion('Which approach?', ['A', 'B'])])
+    expect(refusedPromptAnswer(prompt, rawInputOf(prompt), { choices: [], text: 'ok\r1' })).toBe('text has control characters')
+  })
+
+  it('refuses the stage-8 MR confirmation at any level', () => {
+    const prompt = makePrompt([makeQuestion('Czy plan jest dobry?', ['Tak', 'Nie']), makeQuestion('Next step?', ['Publish the review', 'Wait'])])
+    expect(refusedPromptAnswer(prompt, rawInputOf(prompt), { choices: [['1'], ['2']], text: null })).toBe('forbidden request')
+    expect(refusedPromptAnswer(prompt, rawInputOf(prompt), { choices: [['1']], text: 'wait' })).toBe('forbidden request')
+  })
+
+  it('refuses the task-workflow stage-8 wording in Polish and English', () => {
+    const polish = makePrompt([makeQuestion('Zrobić commit, push i utworzyć draft MR z tym opisem?', ['Tak', 'Nie'])])
+    const english = makePrompt([makeQuestion('Commit, push and create the MR?', ['Yes', 'No'])])
+    expect(refusedPromptAnswer(polish, rawInputOf(polish), { choices: [['1']], text: null })).toBe('forbidden request')
+    expect(refusedPromptAnswer(english, rawInputOf(english), { choices: [['1']], text: null })).toBe('forbidden request')
+  })
+
+  it('refuses text with C1 control characters', () => {
+    const prompt = makePrompt([makeQuestion('Which approach?', ['A', 'B'])])
+    expect(refusedPromptAnswer(prompt, rawInputOf(prompt), { choices: [], text: 'ok\u009b1' })).toBe('text has control characters')
+  })
+
+  it('refuses an opaque prompt', () => {
+    const prompt = makePrompt([], { isOpaque: true })
+    expect(refusedPromptAnswer(prompt, { questions: [] }, { choices: [['1']], text: null })).toBe('only the user can answer this prompt')
+  })
+
+  it('takes exactly one key for a permission prompt', () => {
+    const prompt = makePrompt([], { tool: 'Bash', text: 'npm test' })
+    expect(refusedPromptAnswer(prompt, { command: 'npm test' }, { choices: [['1']], text: null })).toBeNull()
+    expect(refusedPromptAnswer(prompt, { command: 'npm test' }, { choices: [['2']], text: null })).toBe('always-allow is not permitted')
+    expect(refusedPromptAnswer(prompt, { command: 'npm test' }, { choices: [['1'], ['3']], text: null })).toBe('a permission takes one key')
+    expect(refusedPromptAnswer(prompt, { command: 'npm test' }, { choices: [], text: 'yes' })).toBe('a permission takes one key')
+  })
+})
+
+describe('answerPrompt', () => {
+  const prompt = makePrompt([makeQuestion('Which approach?', ['A', 'B'])])
+  const okKeys = (): Promise<{ error: string | null }> => Promise.resolve({ error: null })
+
+  it('/answer returns no such pending prompt for a stale toolUseId and writes nothing', async () => {
+    const writeKeys = vi.fn(okKeys)
+    const result = await answerPrompt({ prompt, rawInput: rawInputOf(prompt), writeKeys }, 'stale', { choices: [['1']], text: null })
+    expect(result).toEqual({ error: 'no such pending prompt', isRefusal: false })
+    expect(writeKeys).not.toHaveBeenCalled()
+  })
+
+  it('returns no such pending prompt without a prompt and writes nothing', async () => {
+    const writeKeys = vi.fn(okKeys)
+    const result = await answerPrompt({ prompt: null, rawInput: null, writeKeys }, 'tu1', { choices: [['1']], text: null })
+    expect(result).toEqual({ error: 'no such pending prompt', isRefusal: false })
+    expect(writeKeys).not.toHaveBeenCalled()
+  })
+
+  it('refuses an empty choice for a multiSelect-only prompt and writes nothing', async () => {
+    const multiSelect = makePrompt([makeQuestion('Which parts?', ['X', 'Y'], true)])
+    const writeKeys = vi.fn(okKeys)
+    const result = await answerPrompt({ prompt: multiSelect, rawInput: rawInputOf(multiSelect), writeKeys }, 'tu1', { choices: [[]], text: null })
+    expect(result).toEqual({ error: 'every question needs an answer', isRefusal: false })
+    expect(writeKeys).not.toHaveBeenCalled()
+  })
+
+  it('refuses before writing anything', async () => {
+    const writeKeys = vi.fn(okKeys)
+    const result = await answerPrompt({ prompt, rawInput: rawInputOf(prompt), writeKeys }, 'tu1', { choices: [], text: 'commit it' })
+    expect(result).toEqual({ error: 'forbidden text', isRefusal: true })
+    expect(writeKeys).not.toHaveBeenCalled()
+  })
+
+  it('returns the keystroke error without writing', async () => {
+    const multi = makePrompt([makeQuestion('Q1?', ['A', 'B']), makeQuestion('Q2?', ['C', 'D'])])
+    const writeKeys = vi.fn(okKeys)
+    const result = await answerPrompt({ prompt: multi, rawInput: rawInputOf(multi), writeKeys }, 'tu1', { choices: [['1']], text: null })
+    expect(result).toEqual({ error: 'every question needs an answer', isRefusal: false })
+    expect(writeKeys).not.toHaveBeenCalled()
+  })
+
+  it('writes the keystrokes of a valid answer', async () => {
+    const writeKeys = vi.fn(okKeys)
+    const result = await answerPrompt({ prompt, rawInput: rawInputOf(prompt), writeKeys }, 'tu1', { choices: [], text: 'other idea' })
+    expect(result).toEqual({ error: null, isRefusal: false })
+    expect(writeKeys).toHaveBeenCalledWith(['3', 'other idea', '\r'])
+  })
+
+  it('writes the single key of a permission prompt', async () => {
+    const permission = makePrompt([], { tool: 'Bash', text: 'npm test' })
+    const writeKeys = vi.fn(okKeys)
+    await answerPrompt({ prompt: permission, rawInput: { command: 'npm test' }, writeKeys }, 'tu1', { choices: [['1']], text: null })
+    expect(writeKeys).toHaveBeenCalledWith(['1'])
   })
 })
 
@@ -254,7 +482,9 @@ describe('jobRow', () => {
   })
 
   it('describes the pending prompt with its options', () => {
-    const row = jobRow(makeJob({ state: 'waiting' }), makePending('Bash'), [])
+    const prompt = makePrompt([], { tool: 'Bash' })
+    const row = jobRow(makeJob({ state: 'waiting' }), makePending('Bash'), [], prompt)
+    expect(row.prompt).toBe(prompt)
     expect(row.pending).toEqual({
       toolUseId: 'tu1',
       tool: 'Bash',
@@ -344,8 +574,8 @@ describe('sessionEvents', () => {
   it('emits waiting and checkout transitions of known sessions', () => {
     const { events } = sessionEvents({ a: 'working', b: 'working' }, [input('a', 'waiting'), input('b', 'checkout')], [], 5)
     expect(events).toEqual([
-      { at: 5, type: 'session', jobId: 'a', key: 'L-a', kind: 'session', state: 'waiting', text: 'T-a', toolUseId: null, tool: null, options: [] },
-      { at: 5, type: 'session', jobId: 'b', key: 'L-b', kind: 'session', state: 'checkout', text: 'T-b', toolUseId: null, tool: null, options: [] }
+      { at: 5, type: 'session', jobId: 'a', key: 'L-a', kind: 'session', state: 'waiting', text: 'T-a', toolUseId: null, tool: null, options: [], prompt: null },
+      { at: 5, type: 'session', jobId: 'b', key: 'L-b', kind: 'session', state: 'checkout', text: 'T-b', toolUseId: null, tool: null, options: [], prompt: null }
     ])
   })
 
@@ -406,5 +636,63 @@ describe('dispatcherStartError', () => {
 
   it('falls back when output is empty', () => {
     expect(dispatcherStartError('  \n')).toBe('claude did not start')
+  })
+})
+
+describe('answerPrompt from transcript lines', () => {
+  const askLine = (id: string, questions: unknown[]): string =>
+    JSON.stringify({
+      type: 'assistant',
+      message: { id: `m-${id}`, stop_reason: 'tool_use', content: [{ type: 'tool_use', id, name: 'AskUserQuestion', input: { questions } }] }
+    })
+  const option = (label: string): { label: string; description: string } => ({ label, description: '' })
+  const okKeys = (): Promise<{ error: string | null }> => Promise.resolve({ error: null })
+  const answerFromLines = async (lines: string[], toolUseId: string, choices: string[][]) => {
+    const writeKeys = vi.fn(okKeys)
+    const result = await answerPrompt({ prompt: pendingPrompt(lines), rawInput: promptRawInput(lines), writeKeys }, toolUseId, { choices, text: null })
+    return { result, writeKeys }
+  }
+
+  it('answers a two-question prompt while the judge still sees no pending tool', async () => {
+    const lines = [
+      askLine('q2', [
+        { question: 'Which approach?', header: 'Approach', multiSelect: false, options: [option('A'), option('B')] },
+        { question: 'Which tests?', header: 'Tests', multiSelect: false, options: [option('Unit'), option('E2E')] }
+      ])
+    ]
+    expect(parseTail(lines).pendingTool).toBeNull()
+    expect(pendingRawInput(lines)).toBeNull()
+    const { result, writeKeys } = await answerFromLines(lines, 'q2', [['2'], ['1']])
+    expect(result).toEqual({ error: null, isRefusal: false })
+    expect(writeKeys).toHaveBeenCalledWith(['2', '1', '\r'])
+  })
+
+  it('answers a multiSelect prompt', async () => {
+    const lines = [askLine('qm', [{ question: 'Which parts?', header: 'Parts', multiSelect: true, options: [option('X'), option('Y'), option('Z')] }])]
+    expect(parseTail(lines).pendingTool).toBeNull()
+    const { result, writeKeys } = await answerFromLines(lines, 'qm', [['1', '3']])
+    expect(result).toEqual({ error: null, isRefusal: false })
+    expect(writeKeys).toHaveBeenCalledWith(['1', '3', '\t', '\r'])
+  })
+
+  it('refuses a two-question prompt whose second question confirms the commit and MR', async () => {
+    const lines = [
+      askLine('q8', [
+        { question: 'Czy weryfikacja przeszła?', header: 'Verify', multiSelect: false, options: [option('Tak'), option('Nie')] },
+        { question: 'Zrobić commit i utworzyć MR?', header: 'Stage 8', multiSelect: false, options: [option('Tak'), option('Nie')] }
+      ])
+    ]
+    const { result, writeKeys } = await answerFromLines(lines, 'q8', [['1'], ['2']])
+    expect(result).toEqual({ error: 'forbidden request', isRefusal: true })
+    expect(writeKeys).not.toHaveBeenCalled()
+  })
+
+  it('still refuses an Agent call from transcript lines', async () => {
+    const lines = [
+      JSON.stringify({ type: 'assistant', message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'a1', name: 'Agent', input: { prompt: 'x' } }] } })
+    ]
+    expect(promptRawInput(lines)).toBeNull()
+    const { result } = await answerFromLines(lines, 'a1', [['1']])
+    expect(result.isRefusal).toBe(true)
   })
 })
