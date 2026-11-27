@@ -12,6 +12,7 @@ import { splitStarred, starredBlock, sortByStatus } from './order'
 import TaskTile from './TaskTile.vue'
 import SessionWorkList from './SessionWorkList.vue'
 import ReleaseList from './ReleaseList.vue'
+import InternalReleaseList from './InternalReleaseList.vue'
 import { sessionWorkRows, WITH_SESSION_FLAG } from './sessionwork'
 import type { Session } from '../types'
 
@@ -50,6 +51,11 @@ const isReadyForTesting = ref(readFlag('dash.readyForTesting'))
 const setReadyForTesting = (next: boolean): void => {
   isReadyForTesting.value = next
   writeSize('dash.readyForTesting', next)
+}
+const isInternalRelease = ref(readFlag('dash.internalRelease'))
+const setInternalRelease = (next: boolean): void => {
+  isInternalRelease.value = next
+  writeSize('dash.internalRelease', next)
 }
 const workRows = computed(() => sessionWorkRows(props.rows, props.mrs ?? [], props.sessions ?? [], props.myName ?? null))
 const { now, finished, toggleFinish } = useWorkday()
@@ -124,8 +130,10 @@ const toggleOutside = (key: string): void => {
       <label title="Sort by session status: needs you, working, idle, then tickets without a session"><input :checked="isStatusSort" type="checkbox" @change="setStatusSort(($event.target as HTMLInputElement).checked)" />By status</label>
       <label title="One list of tickets, your merge requests and other people's merge requests that have a running Claude session"><input :checked="isWithSession" type="checkbox" @change="setWithSession(($event.target as HTMLInputElement).checked)" />With session</label>
       <label title="Merged tickets waiting for internal release: pipeline, deploys and test cases"><input :checked="isReadyForTesting" type="checkbox" @change="setReadyForTesting(($event.target as HTMLInputElement).checked)" />Ready for testing</label>
+      <label title="Your tickets waiting for internal release: pipeline, MR and moving them to Internal release"><input :checked="isInternalRelease" type="checkbox" @change="setInternalRelease(($event.target as HTMLInputElement).checked)" />Internal release</label>
     </div>
     <ReleaseList v-if="isReadyForTesting" :rows="rows" @select="emit('select', $event)" />
+    <InternalReleaseList v-else-if="isInternalRelease" :rows="rows" @select="emit('select', $event)" />
     <SessionWorkList v-else-if="isWithSession" :rows="workRows" :selected-key="selectedKey" @select-ticket="emit('select', $event)" @select-mr="emit('open-mr', $event)" />
     <template v-else>
     <div v-if="jiraError" class="note">
