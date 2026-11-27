@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onActivated, onDeactivated } from 'vue'
-import type { MenuItem, MrDiscussion, MrReviewAction, MrRow } from '../types'
+import type { MenuItem, MrDiscussion, MrNote, MrReviewAction, MrRow } from '../types'
 import { isBotThread, isMyThread, lastThreadReply, markRepliesSeen, newReplyIds, seenReplies, sortThreads } from './mrreplies'
 import { readFlag, writeSize } from './dashboard'
 import { PIPELINE_COLOR, type MrState } from './mrstate'
@@ -9,6 +9,8 @@ import { filterThreads, threadCounts, noteLink, type ThreadFilter } from './mrfi
 import MenuButton from './MenuButton.vue'
 import { mergeHint } from './mrs'
 import { renderGitlabHtml, renderMarkdown, toUploadWebUrl, isVideoUrl, parseVersionLink } from './mrhtml'
+import { blobKey, parseBlobLinks, type BlobRef } from './mrblobs'
+import MrBlobPreview from './MrBlobPreview.vue'
 import Icon from './Icon.vue'
 import MrHeaderControls from './MrHeaderControls.vue'
 import { ago } from '../display'
@@ -54,6 +56,11 @@ const {
   saveDraftEdit
 } = props.state
 
+const toNotes = (d: MrDiscussion): MrNote[] => d.notes
+const toNoteBlobs = (n: MrNote): [number, BlobRef[]] => [n.id, parseBlobLinks(n.body, origin)]
+const toNoteBlobMap = (): Record<number, BlobRef[]> =>
+  Object.fromEntries(threads.value.flatMap(toNotes).map(toNoteBlobs))
+const noteBlobs = computed<Record<number, BlobRef[]>>(toNoteBlobMap)
 const headerOpenItems = computed<MenuItem[]>(
   () => props.openItems ?? [{ label: 'GitLab', hint: props.row.url, icon: 'external', run: () => window.open(props.row.url, '_blank') }]
 )
@@ -302,7 +309,7 @@ const saveDesc = async (): Promise<void> => {
 
 <template>
   <div v-if="isHeaderShown" class="ovhead">
-    <MrHeaderControls :row="row" :state="state" :is-gone="isGone" :is-address-pending="isAddressPending ?? false" :open-items="headerOpenItems" @address-comments="addressComments" />
+    <MrHeaderControls part="title" :row="row" :state="state" :is-gone="isGone" :is-address-pending="isAddressPending ?? false" :open-items="headerOpenItems" @address-comments="addressComments" />
   </div>
   <div class="ov">
     <div class="ovmain">
@@ -455,6 +462,9 @@ const saveDesc = async (): Promise<void> => {
                   </div>
                 </template>
                 <div v-else :key="`n${n.id}-${mediaTick}`" class="md" @error.capture="onMediaError" @click.capture="onMediaClick" v-html="noteHtml[n.id]" />
+                <template v-if="editKey !== `n:${n.id}`">
+                  <MrBlobPreview v-for="b in noteBlobs[n.id] ?? []" :key="blobKey(b)" :blob="b" />
+                </template>
               </div>
             </div>
             <div v-for="p in draftsForThread(drafts, d.id)" :key="`p${p.id}`" class="note pending">

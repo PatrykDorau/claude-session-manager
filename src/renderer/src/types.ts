@@ -219,6 +219,18 @@ export interface WorktreeRow {
   isDirty: boolean
 }
 
+export type WorktreeMrState = 'merged' | 'opened' | 'closed' | 'none'
+
+export type WorktreeEntry = Omit<WorktreeRow, 'isDirty'>
+
+export interface WorktreeStatus {
+  uncommitted: number | null
+  unpushed: number | null
+  mrState: WorktreeMrState | null
+  jiraStatus: string | null
+  isFinished: boolean
+}
+
 export interface VscodeProfile {
   profileDir: string
   name: string
@@ -672,3 +684,4 @@ export interface ReleaseCheck { mr: ReleaseMr; pipeline: { id: number; status: s
 export type ReleaseStage = 'ready' | 'waiting' | 'unfinished'
 export interface ReleaseRow { key: string; summary: string; status: string; stage: ReleaseStage; blockers: string[]; checks: ReleaseCheck[]; hasTestCases: boolean }
 export interface ReleaseResult { key: string; error: string | null; done: string[] }
+export interface InternalReleaseRow { key: string; summary: string; status: string; checks: ReleaseCheck[]; transition: string | null }

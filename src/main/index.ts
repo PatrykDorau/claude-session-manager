@@ -136,15 +136,18 @@ import {
   type SessionFile
 } from './closing'
 import { worktreeRows, parseCount, isLinkedWorktreeGitFile, branchToDelete, nodeModulesAction, removeWorktreeFolder } from './worktrees'
-import { serverAction, userStoppedMessage } from './serverguard'
+import { parseWorktreeList, ticketFromBranch, gitlabProjectPath, mrStateOf, parseJiraStatus, isWorktreeFinished, createLimiter } from './worktreeoverview'
+import type { WorktreeEntry, WorktreeStatus } from '../renderer/src/types'
+import { serverAction, createStartRequests, userStartAnswer, waitingAgentReply } from './serverguard'
 import { taskContext, startPrompt, parseBgId, ticketPrefix, repoRoots, startArgs, claudeExeCandidates, attachCommand, repoForProject, reviewArgs, addressArgs, addressFollowUp, scoreArgs, insightsTestArgs, warmUpTask, mediaFiles } from './tasks'
-import { searchIssues, fetchDescription, postComment, fetchTransitions, doTransition, fetchTicketDetail, fetchPriority, releaseTransition, unassignIssue } from './jira'
+import { searchIssues, fetchDescription, postComment, fetchTransitions, doTransition, fetchTicketDetail, fetchPriority, releaseTransition, unassignIssue, fetchStatus } from './jira'
 import { checkRelease, isReleasable, releaseTicket, findTestCases, type ReleaseDeps } from './release'
+import { internalReleaseRow, internalReleaseTicket, internalReleaseBlocker, type InternalReleaseDeps } from './internalrelease'
 import { isSafeRef, worktreeForBranch, parseStatusPaths, safeRelPath, parseStatus, isNoisePath, parseNameStatus, countChanges, parseGrep, searchArgs, parseNumstat, parseRawBlobs, type CodeMatch, type LineCounts } from './ide'
 import { parseExplainDoc, explainArgs, explainName } from './explaindoc'
 import { buildCatalog, readCatalogItem, isInsideDir } from './catalog'
 import { parseReviewDoc, reviewArgs as reviewPartsArgs, reviewName } from './reviewdoc'
-import { fetchMrsToReview, enrichMrs, forgetApprovals, fetchDiffStats, fetchMrSha, isInProjects, reviewState, approvalState, carryEnrichment, pruneApproved, sortMrs, seenShas } from './gitlab'
+import { fetchMrsToReview, enrichMrs, forgetApprovals, fetchDiffStats, fetchMrSha, isInProjects, reviewState, approvalState, carryEnrichment, pruneApproved, sortMrs, seenShas, fetchBranchMrs } from './gitlab'
 import type { JiraTicket, MrFile, MrItem, MyMrs } from '../renderer/src/types'
 import {
   loadState,
@@ -194,7 +197,7 @@ import {
   type MergeOptions
 } from './mractions'
 import { anchorPosition, withDraftTitle, commentableState, reviewConfirm, explanationFiles } from './mrreview'
-import type { MrCommentable, MrLineAnchor, MrLinePosition, MrReviewAction, ReleaseResult, ReleaseRow } from '../renderer/src/types'
+import type { MrCommentable, MrLineAnchor, MrLinePosition, MrReviewAction, ReleaseResult, ReleaseRow, InternalReleaseRow } from '../renderer/src/types'
 import { clearInheritedSessionMarker } from './env'
 import { nearestEdge, dockBounds, pickDisplay } from './dock'
 import { registerAppBar, unregisterAppBar } from './appbar'
@@ -253,7 +256,7 @@ import {
 import { decideWaiting, allowedKeys, judgePrompt, judgeArgs, parseVerdict, JUDGE_TIMEOUT_MS, type Verdict } from './judge'
 import { isForbiddenRequest } from './guard'
 import { parseBots, newHumanNotes, watchAction, watchStep, newCommentsPrompt, parseMrKey, ownMrsToWatch } from './mrwatch'
-import { fetchMyUsername, fetchMrState, fetchMrDiscussions } from './gitlab'
+import { fetchMyUsername, fetchMrState, fetchMrDiscussions, fetchBlobText } from './gitlab'
 import { handoffPrompt } from '../renderer/src/dashboard/context'
 
 let mainWindow: BrowserWindow
@@ -734,9 +737,11 @@ const worktreeContext = async (
   return { root, branch, target: branchToDelete(branch, parentBranch, worktreeName(path)) }
 }
 
+const isSessionLive = (s: Session): boolean => s.isLive
+
 const checkWorktree = async (
   path: string
-): Promise<{ branch: string; isDirty: boolean; unpushed: number }> => {
+): Promise<{ branch: string; isDirty: boolean; unpushed: number; liveSessions: number }> => {
   const ctx = await worktreeContext(path)
   const status = await runGit(path, ['status', '--porcelain'])
   const excluded = ctx?.branch && ctx.branch !== 'HEAD' ? [`--exclude=${ctx.branch}`] : []
@@ -746,7 +751,8 @@ const checkWorktree = async (
   return {
     branch: ctx?.target ?? '',
     isDirty: !status.isOk || status.out.trim().length > 0,
-    unpushed
+    unpushed,
+    liveSessions: sessionsAt(path).filter(isSessionLive).length
   }
 }
 
@@ -795,6 +801,77 @@ const openWorktree = (path: string): void => {
   if (!newest) return
   if (newest.isLive) void focusOrOpen(newest)
   else resumeOrNotify(newest)
+}
+
+const knownRepoRoots = (): string[] => {
+  const roots = new Map<string, string>()
+  const toRootPath = (r: { path: string }): string => r.path
+  for (const p of [...repoRoots(lastSessions).map(toRootPath), ...Object.values(appState.repoByPrefix)])
+    if (!roots.has(normalizePath(p))) roots.set(normalizePath(p), p)
+  return [...roots.values()]
+}
+
+const listWorktrees = async (): Promise<WorktreeEntry[]> => {
+  const listRepoWorktrees = async (root: string): Promise<WorktreeEntry[]> => {
+    const res = await runGit(root, ['worktree', 'list', '--porcelain'])
+    if (!res.isOk) return []
+    const repo = worktreeName(/^worktree (.+)$/m.exec(res.out)?.[1] ?? root)
+    const toEntry = (w: { path: string; branch: string | null }): WorktreeEntry => {
+      const sessions = sessionsAt(w.path)
+      return {
+        path: w.path,
+        repo,
+        name: worktreeName(w.path),
+        branch: w.branch,
+        sessionCount: sessions.length,
+        isLive: sessions.some(isSessionLive)
+      }
+    }
+    return parseWorktreeList(res.out).map(toEntry)
+  }
+  const lists = await Promise.all(knownRepoRoots().map(listRepoWorktrees))
+  const seen = new Set<string>()
+  const isFirstSeen = (w: WorktreeEntry): boolean => {
+    const key = normalizePath(w.path)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  }
+  const byRepoAndName = (a: WorktreeEntry, b: WorktreeEntry): number => a.repo.localeCompare(b.repo) || a.name.localeCompare(b.name)
+  return lists.flat().filter(isFirstSeen).sort(byRepoAndName)
+}
+
+const statusLimit = createLimiter(3)
+
+const isNonBlankLine = (line: string): boolean => !!line.trim()
+
+const readWorktreeStatus = async (path: string): Promise<WorktreeStatus> => {
+  const ctx = await worktreeContext(path)
+  const branch = ctx?.branch && ctx.branch !== 'HEAD' ? ctx.branch : null
+  const [status, revs, remote] = await Promise.all([
+    runGit(path, ['status', '--porcelain']),
+    runGit(path, ['rev-list', '--count', 'HEAD', '--not', '--remotes', ...(branch ? [`--exclude=${branch}`] : []), '--branches']),
+    ctx ? runGit(ctx.root, ['remote', 'get-url', 'origin']) : Promise.resolve(null)
+  ])
+  const porcelain = status.isOk ? status.out : null
+  const unpushed = revs.isOk ? parseCount(revs.out) : null
+  const project = remote?.isOk ? gitlabProjectPath(remote.out) : null
+  const ticket = ticketFromBranch(branch)
+  const gitlabToken = appState.settings.gitlabToken.trim()
+  const jiraToken = appState.settings.jiraToken.trim()
+  const [mrs, issue] = await Promise.all([
+    project && branch && gitlabToken ? fetchBranchMrs(appState.settings.gitlabBase, gitlabToken, project, branch) : null,
+    ticket && jiraToken ? fetchStatus(appState.settings.jiraBase, jiraToken, ticket) : null
+  ])
+  const mrState = mrStateOf(mrs)
+  const jira = parseJiraStatus(issue)
+  return {
+    uncommitted: porcelain === null ? null : porcelain.split(/\r?\n/).filter(isNonBlankLine).length,
+    unpushed,
+    mrState,
+    jiraStatus: jira?.name ?? null,
+    isFinished: isWorktreeFinished({ mrState, unpushed, porcelain, jiraCategory: jira?.category ?? null })
+  }
 }
 
 function trackRestore(sessions: Session[], isAnyWindowOpen: boolean): void {
@@ -1223,7 +1300,7 @@ const startTask = async (
       void warmUpTask({
         waitFolder: () => waitForCheckout(worktree),
         link,
-        startServer: async () => (await bridgeRoutes['/server']({ ticket: key, cwd: worktree })) as { url?: string; error?: string },
+        startServer: async () => (await serverRoute({ ticket: key, cwd: worktree }, true)) as { url?: string; error?: string },
         waitServer: (url) => waitForPortOpen(url, 180000),
         openChrome: (url) => bridgeRoutes['/chrome']({ ticket: key, cwd: worktree, url }),
         log: (message) => console.error(`[warm-up] ${key}: ${message}`)
@@ -2938,6 +3015,49 @@ const startServerFor = async (key: string, cwd: string, body: Record<string, unk
   return { key, url: started?.url, port: started?.port, cwd: folder, label: started?.label, isNew: true }
 }
 
+const pushStartRequests = (keys: string[]): void => sendToDashboard('server-requests', keys)
+const startRequests = createStartRequests(pushStartRequests)
+
+const notifyStartRequest = (key: string): void => {
+  if (!Notification.isSupported()) return
+  const n = new Notification({
+    title: clip(`Agent wants the ${key} dev server`, 120),
+    body: 'You stopped it earlier. Click to open Cockpit and choose Start or Keep stopped.',
+    icon,
+    silent: true
+  })
+  shownNotifications.add(n)
+  n.on('close', () => shownNotifications.delete(n))
+  n.on('click', () => {
+    shownNotifications.delete(n)
+    openDashboard()
+  })
+  n.show()
+}
+
+const askToStart = async (key: string, body: Record<string, unknown>): Promise<unknown> => {
+  if (!startRequests.keys().includes(key)) notifyStartRequest(key)
+  const decision = await startRequests.ask(key)
+  const reply = waitingAgentReply(key, decision, servers.get(key) ?? null)
+  return reply === 'route' ? serverRoute(body, false) : reply
+}
+
+const allowStart = (key: string): void => {
+  clearUserStopped(key)
+  startRequests.answer(key, 'start')
+}
+
+const answerUserStart = <T extends object>(key: string, isUserAction: boolean, result: T): T => {
+  const answer = isUserAction ? userStartAnswer(result) : null
+  if (answer) startRequests.answer(key, answer)
+  return result
+}
+
+const answerStartRequest = (key: string, isStart: boolean): void => {
+  if (isStart) allowStart(key)
+  else startRequests.answer(key, 'keep')
+}
+
 const clearUserStopped = (key: string): void => {
   if (!appState.userStoppedServers.includes(key)) return
   const isOtherKey = (k: string): boolean => k !== key
@@ -2959,14 +3079,14 @@ const serverRoute = async (body: Record<string, unknown>, isUserAction: boolean)
     isUserStopped: appState.userStoppedServers.includes(key),
     isUserAction
   })
-  if (action === 'blocked') return { error: userStoppedMessage(key) }
+  if (action === 'blocked') return askToStart(key, body)
   if (isUserAction) clearUserStopped(key)
   if (action === 'restart') stopServer(key)
-  else if (running) return { key, url: running.url, port: running.port, cwd: running.cwd, label: running.label, isNew: false }
+  else if (running) return answerUserStart(key, isUserAction, { key, url: running.url, port: running.port, cwd: running.cwd, label: running.label, isNew: false })
   const started = startServerFor(key, cwd, body)
   serverStarts.set(key, started)
   try {
-    return await started
+    return answerUserStart(key, isUserAction, (await started) as { error?: string | null })
   } finally {
     if (serverStarts.get(key) === started) serverStarts.delete(key)
   }
@@ -4310,11 +4430,15 @@ if (!app.requestSingleInstanceLock()) {
     launcherWindow?.close()
     openView(view)
   })
-  const onServerStart = (_e: unknown, key: string, cwd: string, spec: ServerSpec, port: number | null, cols: number, rows: number): ReturnType<typeof startServer> => {
+  const onServerStart = async (_e: unknown, key: string, cwd: string, spec: ServerSpec, port: number | null, cols: number, rows: number): ReturnType<typeof startServer> => {
     clearUserStopped(key)
-    return startServer(key, cwd, spec, port, cols, rows)
+    return answerUserStart(key, true, await startServer(key, cwd, spec, port, cols, rows))
   }
   ipcMain.handle('server-start', onServerStart)
+  ipcMain.on('server-request-answer', (_e, key: string, isStart: boolean) => answerStartRequest(key, isStart === true))
+  ipcMain.on('get-server-requests', (e) => {
+    e.returnValue = startRequests.keys()
+  })
   ipcMain.handle('ide-files', (_e, cwd: string) => ideFiles(cwd))
   ipcMain.handle('ide-search', (_e, cwd: string, query: string, scope: string, isWord: boolean) => ideSearch(cwd, query, scope, isWord))
   ipcMain.handle('ide-status', (_e, cwd: string) => ideStatus(cwd))
@@ -4457,6 +4581,11 @@ if (!app.requestSingleInstanceLock()) {
     const found = mrForAction(key)
     if (!found) return { state: null, overview: null, approvals: null, discussions: null, drafts: null, commits: null, diffRefs: null, problem: 'This merge request is no longer in your list' }
     return fetchMrStatus(appState.settings.gitlabBase, found.token, found.mr.projectId, found.mr.iid, parseBots(appState.settings.orchestratorBots))
+  })
+  ipcMain.handle('mr-blob', async (_e, projectPath: string, ref: string, path: string) => {
+    const token = appState.settings.gitlabToken.trim()
+    if (!token || typeof projectPath !== 'string' || typeof ref !== 'string' || typeof path !== 'string') return null
+    return fetchBlobText(appState.settings.gitlabBase, token, projectPath, ref, path)
   })
   const offerReleaseStatus = async (ticket: string | null): Promise<string | null> => {
     const token = appState.settings.jiraToken.trim()
@@ -4641,6 +4770,49 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
     void refreshMyTasks()
     return [...skipped, ...done]
   })
+  ipcMain.handle('internal-release-check', async (_e, tickets: { key: string; summary: string; status: string }[]): Promise<InternalReleaseRow[]> => {
+    const gitlabToken = appState.settings.gitlabToken.trim()
+    const jiraToken = appState.settings.jiraToken.trim()
+    if (!gitlabToken) return []
+    const rows: InternalReleaseRow[] = []
+    for (const ticket of tickets ?? []) {
+      const { checks } = await checkRelease(appState.settings.gitlabBase, gitlabToken, ticket, opisDir())
+      const transitions = jiraToken ? await fetchTransitions(appState.settings.jiraBase, jiraToken, ticket.key) : null
+      rows.push(internalReleaseRow(ticket, checks, transitions))
+    }
+    return rows
+  })
+  ipcMain.handle('internal-release-run', async (_e, requestedKeys: string[]): Promise<ReleaseResult[]> => {
+    const keys = Array.isArray(requestedKeys) ? requestedKeys : []
+    const jiraToken = appState.settings.jiraToken.trim()
+    const gitlabToken = appState.settings.gitlabToken.trim()
+    const toError = (key: string, error: string): ReleaseResult => ({ key, error, done: [] })
+    const toMissingTokenError = (key: string): ReleaseResult => toError(key, 'Add a Jira and GitLab token in Settings first')
+    if (!jiraToken || !gitlabToken) return keys.map(toMissingTokenError)
+    const base = appState.settings.jiraBase
+    const skipped: ReleaseResult[] = []
+    const ready: string[] = []
+    for (const key of keys) {
+      const issue = await fetchIssue(base, jiraToken, key)
+      const status = issue?.status ?? null
+      const { checks } = issue ? await checkRelease(appState.settings.gitlabBase, gitlabToken, { key, summary: issue.summary ?? '', status: issue.status }, opisDir()) : { checks: [] }
+      const blocker = internalReleaseBlocker(key, status, checks)
+      if (blocker) skipped.push(toError(key, blocker))
+      else ready.push(key)
+    }
+    if (!ready.length) return skipped
+    const detail = `${ready.join('\n')}\n\nMoves each to Internal release and removes you as assignee. No comment is posted.`
+    if (!(await confirmMr(`Move ${ready.length} ticket(s) to Internal release?`, 'Move to Internal release', detail))) return []
+    const readStatus = async (key: string): Promise<string | null> => (await fetchIssue(base, jiraToken, key))?.status ?? null
+    const readTransitions = (key: string): ReturnType<typeof fetchTransitions> => fetchTransitions(base, jiraToken, key)
+    const runTransition = (key: string, id: string): Promise<boolean> => doTransition(base, jiraToken, key, id)
+    const removeAssignee = (key: string): Promise<boolean> => unassignIssue(base, jiraToken, key)
+    const deps: InternalReleaseDeps = { status: readStatus, transitions: readTransitions, transition: runTransition, unassign: removeAssignee }
+    const results: ReleaseResult[] = []
+    for (const key of ready) results.push(await internalReleaseTicket(key, deps))
+    void refreshMyTasks()
+    return [...skipped, ...results]
+  })
   ipcMain.handle('mr-review', async (_e, key: string, action: MrReviewAction) => {
     const found = mrForAction(key)
     if (!found || !action?.kind) return { error: 'This merge request is no longer in your list', isCancelled: false }
@@ -4776,6 +4948,11 @@ ${text.length > 600 ? `${text.slice(0, 600)}…` : text}` : line
     deleteWorktree(path, branch)
   )
   ipcMain.on('worktree-open', (_e, path: string) => openWorktree(path))
+  ipcMain.handle('worktree-list', () => listWorktrees())
+  ipcMain.handle('worktree-status', (_e, path: string) => {
+    const readStatus = (): Promise<WorktreeStatus> => readWorktreeStatus(path)
+    return statusLimit(readStatus)
+  })
   ipcMain.handle(
     'start-task',
     (_e, key: string, title: string, repo: string, mode: 'vscode' | 'background') =>

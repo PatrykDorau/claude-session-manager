@@ -152,6 +152,13 @@ const apiFetch = async (base: string, token: string, path: string): Promise<{ js
 const apiGet = async (base: string, token: string, path: string): Promise<unknown | null> =>
   (await apiFetch(base, token, path)).json
 
+export const fetchBranchMrs = (base: string, token: string, projectPath: string, branch: string): Promise<unknown | null> =>
+  apiGet(
+    base,
+    token,
+    `/projects/${encodeURIComponent(projectPath)}/merge_requests?source_branch=${encodeURIComponent(branch)}&state=all`
+  )
+
 const fetchReviewMrs = async (
   base: string,
   token: string
@@ -337,6 +344,31 @@ export const fetchMrSha = async (base: string, token: string, projectId: number,
 
 export const fetchMrDiscussions = async (base: string, token: string, projectId: number, iid: number): Promise<unknown | null> =>
   apiGet(base, token, `/projects/${projectId}/merge_requests/${iid}/discussions?per_page=100`)
+
+const MAX_BLOB_CHARS = 1_000_000
+const blobCache = new Map<string, string>()
+
+export const blobFilePath = (projectPath: string, filePath: string, ref: string): string =>
+  `/projects/${encodeURIComponent(projectPath)}/repository/files/${encodeURIComponent(filePath)}/raw?ref=${encodeURIComponent(ref)}`
+
+export const fetchBlobText = async (base: string, token: string, projectPath: string, ref: string, filePath: string): Promise<string | null> => {
+  const key = `${projectPath}@${ref}:${filePath}`
+  const cached = blobCache.get(key)
+  if (cached !== undefined) return cached
+  try {
+    const res = await fetch(`${new URL(base).origin}/api/v4${blobFilePath(projectPath, filePath, ref)}`, {
+      headers: { 'PRIVATE-TOKEN': token },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    })
+    if (!res.ok) return null
+    const text = await res.text()
+    if (text.length > MAX_BLOB_CHARS) return null
+    if (/^[0-9a-f]{40}$/i.test(ref)) blobCache.set(key, text)
+    return text
+  } catch {
+    return null
+  }
+}
 
 export const fetchMyUsername = async (base: string, token: string): Promise<string | null> =>
   asText(((await apiGet(base, token, '/user')) as { username?: unknown } | null)?.username) || null

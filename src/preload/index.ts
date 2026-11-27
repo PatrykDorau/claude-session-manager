@@ -32,7 +32,9 @@ import type {
   TaskMeta,
   UsageResult,
   VscodeProfile,
-  WorktreeRow
+  WorktreeRow,
+  WorktreeEntry,
+  WorktreeStatus
 } from '../renderer/src/types'
 import type { DayResult } from '../main/timesheet'
 
@@ -72,13 +74,15 @@ const api = {
   onWorktrees: (cb: (rows: WorktreeRow[]) => void): void => {
     ipcRenderer.on('worktrees', (_e, rows) => cb(rows))
   },
-  checkWorktree: (path: string): Promise<{ branch: string; isDirty: boolean; unpushed: number }> =>
+  checkWorktree: (path: string): Promise<{ branch: string; isDirty: boolean; unpushed: number; liveSessions: number }> =>
     ipcRenderer.invoke('worktree-check', path),
   deleteWorktree: (path: string, branch: string): Promise<{ error: string | null; notice: string | null }> =>
     ipcRenderer.invoke('worktree-delete', path, branch),
   openWorktree: (path: string): void => {
     ipcRenderer.send('worktree-open', path)
   },
+  listWorktrees: (): Promise<WorktreeEntry[]> => ipcRenderer.invoke('worktree-list'),
+  worktreeStatus: (path: string): Promise<WorktreeStatus> => ipcRenderer.invoke('worktree-status', path),
   onMyTasks: (cb: (result: MyTasks) => void): void => {
     ipcRenderer.on('my-tasks', (_e, result) => cb(result))
   },
@@ -346,6 +350,12 @@ const api = {
     ipcRenderer.on('server-data', onData)
     return () => ipcRenderer.removeListener('server-data', onData)
   },
+  getServerRequests: (): string[] => ipcRenderer.sendSync('get-server-requests'),
+  onServerRequests: (cb: (keys: string[]) => void): void => {
+    const onRequests = (_e: unknown, keys: string[]): void => cb(keys)
+    ipcRenderer.on('server-requests', onRequests)
+  },
+  answerServerRequest: (key: string, isStart: boolean): void => ipcRenderer.send('server-request-answer', key, isStart),
   getMyMrs: (): MyMrs => ipcRenderer.sendSync('get-my-mrs'),
   onMyMrs: (cb: (mrs: MyMrs) => void): void => {
     ipcRenderer.on('my-mrs', (_e, mrs) => cb(mrs))
@@ -353,6 +363,7 @@ const api = {
   getMrFiles: (key: string): Promise<MrFile[] | null> => ipcRenderer.invoke('mr-files', key),
   getMrStatus: (key: string): Promise<MrStatus> => ipcRenderer.invoke('mr-status', key),
   getMrRepo: (key: string): Promise<string | null> => ipcRenderer.invoke('mr-repo', key),
+  getMrBlob: (projectPath: string, ref: string, path: string): Promise<string | null> => ipcRenderer.invoke('mr-blob', projectPath, ref, path),
   refreshLists: (): Promise<boolean> => ipcRenderer.invoke('refresh-lists'),
   getLocalHosts: (): Promise<LocalHost[]> => ipcRenderer.invoke('local-hosts'),
   getCatalog: (): Promise<CatalogGroup[]> => ipcRenderer.invoke('catalog-list'),
@@ -389,6 +400,9 @@ const api = {
   getTicketMr: (ticket: string): Promise<import('../renderer/src/types').TicketMr | null> => ipcRenderer.invoke('ticket-mr', ticket),
   checkRelease: (tickets: { key: string; summary: string; status: string }[]): Promise<import('../renderer/src/types').ReleaseRow[]> => ipcRenderer.invoke('release-check', tickets),
   runRelease: (keys: string[]): Promise<import('../renderer/src/types').ReleaseResult[]> => ipcRenderer.invoke('release-run', keys),
+  checkInternalRelease: (tickets: { key: string; summary: string; status: string }[]): Promise<import('../renderer/src/types').InternalReleaseRow[]> =>
+    ipcRenderer.invoke('internal-release-check', tickets),
+  runInternalRelease: (keys: string[]): Promise<import('../renderer/src/types').ReleaseResult[]> => ipcRenderer.invoke('internal-release-run', keys),
   mrReview: (key: string, action: import('../renderer/src/types').MrReviewAction): Promise<{ error: string | null; isCancelled: boolean }> =>
     ipcRenderer.invoke('mr-review', key, action),
   mrCommentable: (key: string, folder: string | null, isReadOnly: boolean, path: string | null): Promise<import('../renderer/src/types').MrCommentable> =>

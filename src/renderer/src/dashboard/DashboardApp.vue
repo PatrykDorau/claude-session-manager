@@ -15,6 +15,7 @@ import SettingsPanel from '../components/SettingsPanel.vue'
 import AgentList from './AgentList.vue'
 import AgentView from './AgentView.vue'
 import HostsView from './HostsView.vue'
+import ServerRequests from './ServerRequests.vue'
 import CatalogView from './CatalogView.vue'
 import InsightsView from './InsightsView.vue'
 import TimesheetView from './TimesheetView.vue'
@@ -112,9 +113,11 @@ const openTicket = (key: string): void => {
   page.value = 'tickets'
   selectedKey.value = key
 }
-const openMr = (key: string, sessionId: string | null = null): void => {
+const openMr = (key: string, sessionId: string | null = null, isFromMrList = false): void => {
   if (!key) return
-  const route = routeMr(myMrs.value.items.find((m) => m.key === key) ?? null, myMrs.value.myName ?? null, rows.value.map((r) => r.key))
+  const isOpenedMr = (m: MrRow): boolean => m.key === key
+  const toTicketKey = (r: { key: string }): string => r.key
+  const route = routeMr(myMrs.value.items.find(isOpenedMr) ?? null, myMrs.value.myName ?? null, rows.value.map(toTicketKey), isFromMrList)
   if (route.page === 'tickets') {
     openTicket(route.key)
     tabRequest.value = { key: route.key, tab: sessionId ? 'work' : 'mr', sessionId, at: Date.now() }
@@ -334,10 +337,7 @@ const selectPage = (next: DashboardPage): void => {
 const selectTicket = (key: string): void => {
   selectedKey.value = key
 }
-const selectMr = (key: string): void => {
-  page.value = 'mrs'
-  selectedMrKey.value = key
-}
+const selectMr = (key: string): void => openMr(key, null, true)
 const focusedTerminalSurface = (): ActivitySurface => {
   const term = document.activeElement?.closest<HTMLElement>('[data-activity-ticket]')
   return term ? { kind: 'session', ticket: term.dataset.activityTicket || null } : null
@@ -550,6 +550,7 @@ onBeforeUnmount(() => {
       @close="isDispatcherOpen = false"
       @open="openInboxRow"
     />
+    <ServerRequests />
     <StatusBar
       v-show="!isPanelFullScreen"
       :sessions="sessions"

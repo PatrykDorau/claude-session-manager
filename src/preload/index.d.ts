@@ -21,7 +21,9 @@ import type {
   TaskMeta,
   UsageResult,
   VscodeProfile,
-  WorktreeRow
+  WorktreeRow,
+  WorktreeEntry,
+  WorktreeStatus
 } from '../renderer/src/types'
 import type { DayResult } from '../main/timesheet'
 
@@ -41,9 +43,11 @@ declare global {
       onCloseCandidates: (cb: (list: CloseCandidate[]) => void) => void
       closeSessions: (ids: string[]) => Promise<string[]>
       onWorktrees: (cb: (rows: WorktreeRow[]) => void) => void
-      checkWorktree: (path: string) => Promise<{ branch: string; isDirty: boolean; unpushed: number }>
+      checkWorktree: (path: string) => Promise<{ branch: string; isDirty: boolean; unpushed: number; liveSessions: number }>
       deleteWorktree: (path: string, branch: string) => Promise<{ error: string | null; notice: string | null }>
       openWorktree: (path: string) => void
+      listWorktrees: () => Promise<WorktreeEntry[]>
+      worktreeStatus: (path: string) => Promise<WorktreeStatus>
       onMyTasks: (cb: (result: MyTasks) => void) => void
       getMyTasks: () => MyTasks
       startTask: (
@@ -211,16 +215,22 @@ declare global {
       transitionTicket: (key: string, id: string) => Promise<{ error: string | null }>
       onServers: (cb: (list: DevServer[]) => void) => void
       onServerData: (cb: (key: string, chunk: string) => void) => () => void
+      getServerRequests: () => string[]
+      onServerRequests: (cb: (keys: string[]) => void) => void
+      answerServerRequest: (key: string, isStart: boolean) => void
       getMyMrs: () => MyMrs
       onMyMrs: (cb: (mrs: MyMrs) => void) => void
       getMrFiles: (key: string) => Promise<MrFile[] | null>
       getMrStatus: (key: string) => Promise<import('../renderer/src/types').MrStatus>
       getMrRepo: (key: string) => Promise<string | null>
+      getMrBlob: (projectPath: string, ref: string, path: string) => Promise<string | null>
       signInGitlab: () => Promise<boolean>
       getMrExplanations: (key: string) => Promise<Record<string, string>>
       getTicketMr: (ticket: string) => Promise<import('../renderer/src/types').TicketMr | null>
       checkRelease: (tickets: { key: string; summary: string; status: string }[]) => Promise<import('../renderer/src/types').ReleaseRow[]>
       runRelease: (keys: string[]) => Promise<import('../renderer/src/types').ReleaseResult[]>
+      checkInternalRelease: (tickets: { key: string; summary: string; status: string }[]) => Promise<import('../renderer/src/types').InternalReleaseRow[]>
+      runInternalRelease: (keys: string[]) => Promise<import('../renderer/src/types').ReleaseResult[]>
       mrReview: (key: string, action: import('../renderer/src/types').MrReviewAction) => Promise<{ error: string | null; isCancelled: boolean }>
       mrCommentable: (key: string, folder: string | null, isReadOnly: boolean, path: string | null) => Promise<import('../renderer/src/types').MrCommentable>
       refreshLists: () => Promise<boolean>
