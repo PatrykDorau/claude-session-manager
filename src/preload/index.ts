@@ -395,6 +395,7 @@ const api = {
     ipcRenderer.invoke('mr-commentable', key, folder, isReadOnly, path),
   startReview: (key: string): Promise<{ error: string | null; sessionId?: string }> => ipcRenderer.invoke('start-review', key),
   startAddress: (key: string): Promise<{ error: string | null; sessionId?: string }> => ipcRenderer.invoke('mr-start-address', key),
+  markMrSeen: (key: string): void => ipcRenderer.send('mr-seen', key),
   startJobs: (jobs: import('../main/orchestrator').JobRequest[]): Promise<{ error: string | null }> => ipcRenderer.invoke('orchestrator-start', jobs),
   setJobAutonomy: (id: string, autonomy: import('../main/orchestrator').Autonomy): Promise<void> =>
     ipcRenderer.invoke('orchestrator-set-autonomy', id, autonomy),

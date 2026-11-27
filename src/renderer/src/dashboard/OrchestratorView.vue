@@ -18,6 +18,7 @@ import {
   TICK_MS,
   assignIdentities,
   baselineSeen,
+  clearLayouts,
   crCandidates,
   followLayout,
   groupSections,
@@ -88,6 +89,7 @@ const emit = defineEmits<{
   'open-task': [session: Session]
   'full-screen': [isOn: boolean]
   dispatcher: []
+  'open-mr': [key: string]
 }>()
 
 const jobs = ref<Job[]>([])
@@ -106,6 +108,10 @@ const pinReplies = (ids: string[]): void => {
   const isUnpinned = (id: string): boolean => !pins.value.includes(id)
   const fresh = ids.filter(isUnpinned)
   if (fresh.length) savePins([...pins.value, ...fresh])
+}
+const openReplyMr = (key: string): void => {
+  isReplyOpen.value = false
+  emit('open-mr', key)
 }
 
 const syncPins = (): void => {
@@ -126,6 +132,15 @@ const setColumns = (count: 1 | 2 | 3): void => {
   if (view.value === 'activity') return
   columns.value = { ...columns.value, [view.value]: count }
   writeColumns(view.value, count)
+}
+const layoutEpoch = ref(0)
+const resetLayout = async (): Promise<void> => {
+  if (view.value === 'activity') return
+  const target = view.value
+  setColumns(3)
+  await nextTick()
+  clearLayouts(target)
+  layoutEpoch.value += 1
 }
 let isLayoutFollowed = false
 const followLayouts = (): void => {
@@ -755,6 +770,14 @@ onBeforeUnmount(leavePanel)
         </button>
       </span>
       <button
+        v-if="view !== 'activity'"
+        class="head-btn ghost"
+        title="Lay the tiles out again: 3 columns, 2 rows per screen"
+        @click="resetLayout"
+      >
+        Reset layout
+      </button>
+      <button
         v-if="view === 'live'"
         class="head-btn ghost"
         :class="{ on: isLiveRecent }"
@@ -963,6 +986,7 @@ onBeforeUnmount(leavePanel)
         <div v-show="view === 'pinned'" class="grid">
           <PanelGrid
             ref="pinnedGrid"
+            :key="`pinned-${layoutEpoch}`"
             view="pinned"
             :sessions="grid"
             :all-sessions="sessions"
@@ -1007,7 +1031,7 @@ onBeforeUnmount(leavePanel)
             </button>
             <PanelGrid
               v-if="!collapsedZones.has(z.key)"
-              :key="zoneLayoutOf(z.key)"
+              :key="`${zoneLayoutOf(z.key)}-${layoutEpoch}`"
               :ref="bindZoneGrid(z.key)"
               :view="zoneLayoutOf(z.key)"
               :sessions="z.tiles"
@@ -1086,6 +1110,7 @@ onBeforeUnmount(leavePanel)
       :identity-of="identityFor"
       @close="isReplyOpen = false"
       @started="pinReplies"
+      @open-mr="openReplyMr"
     />
   </main>
 </template>

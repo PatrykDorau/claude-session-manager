@@ -11,9 +11,13 @@ import {
   jobRow,
   refusedAnswer,
   refusedPrompt,
+  findSessionRef,
+  pendingOptions,
+  sessionEvents,
   startRequestOf,
   waitingEvent,
-  type DispatchEvent
+  type DispatchEvent,
+  type SessionEventInput
 } from '../src/main/dispatcher'
 import type { Job } from '../src/main/orchestrator'
 import type { PendingTool } from '../src/renderer/src/types'
@@ -325,6 +329,68 @@ describe('findDispatcherSession', () => {
   it('returns undefined for null or no match', () => {
     expect(findDispatcherSession(sessions, null)).toBeUndefined()
     expect(findDispatcherSession(sessions, 'nope')).toBeUndefined()
+  })
+})
+
+describe('sessionEvents', () => {
+  const input = (id: string, status: SessionEventInput['status'], isLive = true): SessionEventInput => ({
+    id,
+    status,
+    isLive,
+    label: `L-${id}`,
+    title: `T-${id}`
+  })
+
+  it('emits waiting and checkout transitions of known sessions', () => {
+    const { events } = sessionEvents({ a: 'working', b: 'working' }, [input('a', 'waiting'), input('b', 'checkout')], [], 5)
+    expect(events).toEqual([
+      { at: 5, type: 'session', jobId: 'a', key: 'L-a', kind: 'session', state: 'waiting', text: 'T-a', toolUseId: null, tool: null, options: [] },
+      { at: 5, type: 'session', jobId: 'b', key: 'L-b', kind: 'session', state: 'checkout', text: 'T-b', toolUseId: null, tool: null, options: [] }
+    ])
+  })
+
+  it('skips unknown sessions, unchanged status, skipIds and closed sessions', () => {
+    expect(sessionEvents({}, [input('a', 'waiting')], [], 0).events).toEqual([])
+    expect(sessionEvents({ a: 'waiting' }, [input('a', 'waiting')], [], 0).events).toEqual([])
+    expect(sessionEvents({ a: 'working' }, [input('a', 'waiting')], ['a'], 0).events).toEqual([])
+    expect(sessionEvents({ a: 'working' }, [input('a', 'waiting', false)], [], 0).events).toEqual([])
+    expect(sessionEvents({ a: 'waiting' }, [input('a', 'working')], [], 0).events).toEqual([])
+  })
+
+  it('next holds the status of every live session', () => {
+    expect(sessionEvents({ a: 'working' }, [input('a', 'idle'), input('b', 'waiting'), input('c', 'idle', false)], [], 0).next).toEqual({
+      a: 'idle',
+      b: 'waiting'
+    })
+  })
+})
+
+describe('findSessionRef', () => {
+  const rows = [
+    { id: 'aaaaaaaa-1111', label: 'SOF-1' },
+    { id: 'bbbbbbbb-2222', label: 'SOF-2' },
+    { id: 'cccccccc-3333', label: 'SOF-2' }
+  ]
+  it('matches an id prefix of at least 8 characters', () => {
+    expect(findSessionRef(rows, 'aaaaaaaa')).toBe(rows[0])
+    expect(findSessionRef(rows, 'aaaa')).toBeNull()
+  })
+  it('matches a label that is unique, ignoring case', () => {
+    expect(findSessionRef(rows, 'sof-1')).toBe(rows[0])
+    expect(findSessionRef(rows, 'SOF-2')).toBeNull()
+    expect(findSessionRef(rows, '')).toBeNull()
+  })
+})
+
+describe('pendingOptions', () => {
+  it('lists question options and yes/no for a permission', () => {
+    const question: PendingTool = { name: 'AskUserQuestion', input: 'Q', toolUseId: 't' }
+    expect(pendingOptions(question, ['A', 'B'])).toEqual([
+      { key: '1', label: 'A' },
+      { key: '2', label: 'B' }
+    ])
+    const permission: PendingTool = { name: 'Bash', input: 'ls', toolUseId: 't' }
+    expect(pendingOptions(permission, []).map((o) => o.label)).toEqual(['Yes', 'No'])
   })
 })
 

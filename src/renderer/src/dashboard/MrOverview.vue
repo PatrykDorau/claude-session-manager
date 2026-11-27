@@ -92,6 +92,16 @@ watch([threads, () => props.isShown], markSeenWhenShown, { immediate: true })
 const newIds = computed(() => newReplyIds(threads.value, seenBefore.value))
 const isNewNote = (n: { id: number }): boolean => newIds.value.has(n.id)
 const isNewThread = (t: MrDiscussion): boolean => t.notes.some(isNewNote)
+const foldedNewIds = ref<Set<string>>(new Set())
+const isThreadFolded = (t: MrDiscussion): boolean =>
+  t.isResolved && (isNewThread(t) ? foldedNewIds.value.has(t.id) : !expandedResolved.value.has(t.id))
+const toggleFold = (t: MrDiscussion): void => {
+  if (!isNewThread(t)) return toggleResolved(t.id)
+  const next = new Set(foldedNewIds.value)
+  if (next.has(t.id)) next.delete(t.id)
+  else next.add(t.id)
+  foldedNewIds.value = next
+}
 const threadIdOf = (t: MrDiscussion): string => t.id
 const newThreadIds = computed(() => threads.value.filter(isNewThread).map(threadIdOf))
 const shownThreads = computed(() =>
@@ -409,10 +419,10 @@ const saveDesc = async (): Promise<void> => {
             <span class="md inline" v-html="noteHtml[d.notes[0].id]" />
             <span class="when">{{ ago(Date.parse(d.notes[0].createdAt)) }}</span>
           </div>
-          <button v-else-if="d.isResolved && !expandedResolved.has(d.id) && !isNewThread(d)" class="collapsed" :class="{ mine: isMyThread(d) }" @click="toggleResolved(d.id)">
+          <button v-else-if="isThreadFolded(d)" class="collapsed" :class="{ mine: isMyThread(d) }" @click="toggleFold(d)">
             <Icon name="check" :size="13" />
             <span class="cwhere">{{ d.where ?? 'Thread' }}</span>
-            <span class="cwho">{{ d.notes[0].author }}: {{ d.notes[0].body.split(String.fromCharCode(10))[0] }}</span>
+            <span class="cwho"><b class="cauthor">{{ d.notes[0].author }}</b>: {{ d.notes[0].body.split(String.fromCharCode(10))[0] }}</span>
             <span class="ccount">{{ d.notes.length }} {{ d.notes.length === 1 ? 'comment' : 'comments' }}</span>
             <Icon name="chevronRight" :size="13" />
           </button>
@@ -485,7 +495,7 @@ const saveDesc = async (): Promise<void> => {
               </template>
               <div v-else class="footrow">
                 <button class="replybtn" @click="(replyTo = d.id), (reply = ''), (isReplyResolving = true)">Reply…</button>
-                <button v-if="d.isResolved" class="linkbtn" @click="toggleResolved(d.id)">Collapse</button>
+                <button v-if="d.isResolved" class="linkbtn" @click="toggleFold(d)">Collapse</button>
                 <button
                   v-if="d.isResolvable"
                   class="btn sm"
@@ -909,6 +919,10 @@ const saveDesc = async (): Promise<void> => {
 }
 .collapsed .icon:first-child {
   color: var(--ok);
+}
+.cauthor {
+  font-weight: 600;
+  color: var(--accent);
 }
 .cwhere {
   flex: none;

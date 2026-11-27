@@ -129,9 +129,22 @@ const session = computed(
 watch(() => session.value?.id ?? null, (id) => emitViewing('viewing', id), { immediate: true })
 onActivated(() => emitViewing('viewing', session.value?.id ?? null))
 onDeactivated(() => emitViewing('viewing', null))
-const markMr = (): void => window.api.markActivity(props.row.ticket)
+const isViewActive = ref(true)
+const markSeen = (): void => {
+  if (isViewActive.value && props.row.review === 'new-changes') window.api.markMrSeen(props.row.key)
+}
+const markMr = (): void => {
+  isViewActive.value = true
+  window.api.markActivity(props.row.ticket)
+  markSeen()
+}
+const leaveMr = (): void => {
+  isViewActive.value = false
+}
 onMounted(markMr)
 onActivated(markMr)
+onDeactivated(leaveMr)
+watch(() => props.row.review, markSeen)
 const markTerminal = (): void => window.api.markActivity(session.value?.ticket ?? props.row.ticket ?? null)
 const showFile = (path: string, folder: string | null, isReadOnly: boolean): void => {
   markMr()

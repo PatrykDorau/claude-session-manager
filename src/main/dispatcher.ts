@@ -12,11 +12,11 @@ export interface DispatchOption {
 export interface DispatchEvent {
   seq: number
   at: number
-  type: 'job' | 'waiting'
+  type: 'job' | 'waiting' | 'session'
   jobId: string
   key: string
-  kind: JobKind
-  state: JobState
+  kind: JobKind | 'session'
+  state: JobState | Status
   text: string
   toolUseId: string | null
   tool: string | null
@@ -63,9 +63,26 @@ export const jobLogEvents = (prev: Job[], next: Job[], at: number): NewEvent[] =
       }))
   })
 
-export const waitingEvent = (job: Job, pending: PendingTool, questionOptions: string[], at: number): NewEvent => {
-  const keys = allowedKeys(pending, questionOptions)
+export const pendingOptions = (pending: PendingTool, questionOptions: string[]): DispatchOption[] => {
   const labels = pending.name === 'AskUserQuestion' ? questionOptions : ['Yes', 'No']
+  const toOption = (key: string, index: number): DispatchOption => ({ key, label: labels[index] })
+  return allowedKeys(pending, questionOptions).map(toOption)
+}
+
+const MIN_ID_REF = 8
+
+export const findSessionRef = <T extends { id: string; label: string }>(rows: T[], ref: string): T | null => {
+  const wanted = ref.trim().toLowerCase()
+  if (!wanted) return null
+  const isIdMatch = (row: T): boolean => wanted.length >= MIN_ID_REF && row.id.toLowerCase().startsWith(wanted)
+  const isLabelMatch = (row: T): boolean => row.label.toLowerCase() === wanted
+  const byId = rows.filter(isIdMatch)
+  if (byId.length === 1) return byId[0]
+  const byLabel = rows.filter(isLabelMatch)
+  return byLabel.length === 1 ? byLabel[0] : null
+}
+
+export const waitingEvent = (job: Job, pending: PendingTool, questionOptions: string[], at: number): NewEvent => {
   return {
     at,
     type: 'waiting',
@@ -76,11 +93,47 @@ export const waitingEvent = (job: Job, pending: PendingTool, questionOptions: st
     text: pending.input,
     toolUseId: pending.toolUseId,
     tool: pending.name,
-    options: keys.map((key, index) => ({ key, label: labels[index] }))
+    options: pendingOptions(pending, questionOptions)
   }
 }
 
-export const refusedAnswer = (pending: PendingTool, rawInput: unknown, questionOptions: string[], key: string): string | null => {
+export interface SessionEventInput {
+  id: string
+  status: Status
+  isLive: boolean
+  label: string
+  title: string
+}
+
+const REPORTED_STATUSES: Status[] = ['waiting', 'checkout']
+
+export const sessionEvents = (
+  prev: Record<string, Status>,
+  sessions: SessionEventInput[],
+  skipIds: string[],
+  at: number
+): { events: NewEvent[]; next: Record<string, Status> } => {
+  const isLive = (s: SessionEventInput): boolean => s.isLive
+  const live = sessions.filter(isLive)
+  const isReported = (s: SessionEventInput): boolean =>
+    !skipIds.includes(s.id) && !!prev[s.id] && prev[s.id] !== s.status && REPORTED_STATUSES.includes(s.status)
+  const toEvent = (s: SessionEventInput): NewEvent => ({
+    at,
+    type: 'session',
+    jobId: s.id,
+    key: s.label,
+    kind: 'session',
+    state: s.status,
+    text: s.title,
+    toolUseId: null,
+    tool: null,
+    options: []
+  })
+  const toEntry = (s: SessionEventInput): [string, Status] => [s.id, s.status]
+  return { events: live.filter(isReported).map(toEvent), next: Object.fromEntries(live.map(toEntry)) }
+}
+
+export const refusedAnswer =(pending: PendingTool, rawInput: unknown, questionOptions: string[], key: string): string | null => {
   if (!JUDGEABLE_TOOLS.includes(pending.name) || !isPlainObject(rawInput)) return 'only the user can answer this prompt'
   if (isForbiddenRequest(pending.name, rawInput)) return 'forbidden request'
   if (pending.name === 'AskUserQuestion' && isForbiddenDispatcherQuestion(rawInput)) return 'forbidden request'

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mrKey, parseTodos, parseReviewMrs, mergeMrs, mentionPath, countOpenThreads, threadCounts, countApprovals, isApprovedBy, approvalState, carryEnrichment, pruneApproved, isInProjects, reviewState, sortMrs, parseDiffStats, parseMrSha, lastReplyToMe } from '../src/main/gitlab'
+import { mrKey, parseTodos, parseReviewMrs, mergeMrs, mentionPath, countOpenThreads, threadCounts, countApprovals, isApprovedBy, approvalState, carryEnrichment, pruneApproved, isInProjects, reviewState, sortMrs, parseDiffStats, parseMrSha, lastReplyToMe, seenShas } from '../src/main/gitlab'
 import type { MrItem, MrRow } from '../src/renderer/src/types'
 
 const mrTodo = {
@@ -342,5 +342,19 @@ describe('lastReplyToMe', () => {
   it('returns null without me or discussions', () => {
     expect(lastReplyToMe(null, 'Me', [])).toBeNull()
     expect(lastReplyToMe([{ notes: [note(1, 'Anna')] }], null, [])).toBeNull()
+  })
+})
+
+describe('seenShas', () => {
+  const maps = { reviewedMrs: { a: 'old' }, approvedMrs: { b: 'old' } }
+  it('moves the reviewed sha to the head when new changes were reviewed', () => {
+    expect(seenShas({ key: 'a', sha: 'new', isApprovedByMe: false }, maps)).toEqual({ reviewedMrs: { a: 'new' }, approvedMrs: { b: 'old' } })
+  })
+  it('moves the approved sha to the head when new changes were approved', () => {
+    expect(seenShas({ key: 'b', sha: 'new', isApprovedByMe: true }, maps)).toEqual({ reviewedMrs: { a: 'old' }, approvedMrs: { b: 'new' } })
+  })
+  it('returns null when there are no new changes', () => {
+    expect(seenShas({ key: 'a', sha: 'old', isApprovedByMe: false }, maps)).toBeNull()
+    expect(seenShas({ key: 'c', sha: 'x', isApprovedByMe: false }, maps)).toBeNull()
   })
 })

@@ -71,12 +71,39 @@ const idOf = (s: Session): string => (props.tileIdOf ? props.tileIdOf(s) : s.id)
 const tabsFor = (s: Session): Session[] => (props.tabsOf ? props.tabsOf(s) : [])
 const isCalling = (s: Session): boolean => (props.isCallingOf ? props.isCallingOf(s) : needsYou(s))
 
+const CELL_HEIGHT = 60
+const CHROME_PX = 140
+const ZONE_HEAD_PX = 36
+const scrollParentOf = (el: HTMLElement | null): HTMLElement | null => {
+  for (let node = el?.parentElement ?? null; node; node = node.parentElement) {
+    if (getComputedStyle(node).overflowY === 'auto') return node
+  }
+  return null
+}
+const panelHeight = (): number => scrollParentOf(rootEl.value)?.clientHeight ?? window.innerHeight - CHROME_PX
+const halfScreenTile = (): Partial<TileLayout> => ({
+  w: DEFAULT_TILE.w,
+  h: Math.max(DEFAULT_TILE.h, Math.floor((panelHeight() - ZONE_HEAD_PX) / 2 / CELL_HEIGHT))
+})
+
+const defaultedIds = new Set<string>()
 const tileOf = (id: string): Partial<TileLayout> => {
   const known = placed.get(id)
   if (known) return known
-  const tile = followLayout(readLayout(props.view), props.allSessions)[id] ?? DEFAULT_TILE
+  const saved = followLayout(readLayout(props.view), props.allSessions)[id]
+  if (!saved) defaultedIds.add(id)
+  const tile = saved ?? halfScreenTile()
   placed.set(id, tile)
   return tile
+}
+const fitDefaultedTiles = (): void => {
+  const h = halfScreenTile().h
+  for (const id of defaultedIds) {
+    const el = itemOf(id)
+    if (el && grid) grid.update(el, { h })
+    placed.set(id, { ...placed.get(id), h })
+  }
+  defaultedIds.clear()
 }
 
 const bindCell = (id: string): ((cell: Element | ComponentPublicInstance | null) => void) => {
@@ -212,8 +239,8 @@ const startGrid = (): void => {
   grid = GridStack.init(
     {
       column: props.columns,
-      mode: 'top',
-      cellHeight: 60,
+      mode: 'list',
+      cellHeight: CELL_HEIGHT,
       handle: '.bar .row1',
       resizable: { handles: 'se' },
       margin: 4
@@ -224,6 +251,7 @@ const startGrid = (): void => {
   grid?.on('added', saveLayout)
   grid?.on('dragstop', onDragStop)
   grid?.on('resizestop', onResizeStop)
+  fitDefaultedTiles()
 }
 const clearReveal = (): void => {
   if (revealTimer) clearTimeout(revealTimer)

@@ -97,7 +97,19 @@ export const approvalState = (sha: string, isApprovedByMe: boolean, approvedSha:
   return approvedSha === undefined || approvedSha === sha ? 'approved' : 'new-changes'
 }
 
-const REVIEW_ORDER: Record<MrReviewState, number> = { 'new-changes': 0, 'not-reviewed': 1, reviewed: 2, approved: 3 }
+interface SeenMaps {
+  reviewedMrs: Record<string, string>
+  approvedMrs: Record<string, string>
+}
+
+export const seenShas = (mr: { key: string; sha: string; isApprovedByMe: boolean }, maps: SeenMaps): SeenMaps | null => {
+  const approved = approvalState(mr.sha, mr.isApprovedByMe, maps.approvedMrs[mr.key])
+  if (approved === 'new-changes') return { ...maps, approvedMrs: { ...maps.approvedMrs, [mr.key]: mr.sha } }
+  if (approved || reviewState(mr.sha, maps.reviewedMrs[mr.key]) !== 'new-changes') return null
+  return { ...maps, reviewedMrs: { ...maps.reviewedMrs, [mr.key]: mr.sha } }
+}
+
+const REVIEW_ORDER:Record<MrReviewState, number> = { 'new-changes': 0, 'not-reviewed': 1, reviewed: 2, approved: 3 }
 
 export const sortMrs = (rows: MrRow[]): MrRow[] =>
   [...rows].sort((a, b) => REVIEW_ORDER[a.review] - REVIEW_ORDER[b.review] || b.updatedAt.localeCompare(a.updatedAt))

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildInboxRows, buildLiveRows, nextInboxId, type InboxRow } from '../src/renderer/src/dashboard/inbox'
+import { buildInboxRows, buildLiveRows, dispatcherRows, nextInboxId, type InboxRow } from '../src/renderer/src/dashboard/inbox'
 import type { MrRow, Session } from '../src/renderer/src/types'
 
 const session = (over: Partial<Session>): Session =>
@@ -74,5 +74,19 @@ describe('nextInboxId', () => {
     expect(nextInboxId(rows, 'a')).toBe('b')
     expect(nextInboxId(rows, 'c')).toBe('a')
     expect(nextInboxId([], 'a')).toBeNull()
+  })
+})
+
+describe('dispatcherRows', () => {
+  const rows = buildInboxRows(
+    [session({ id: 'abc123', lastActive: 1 }), session({ id: 'x', status: 'checkout', lastActive: 2 }), session({ id: 'y', lastActive: 3 })],
+    {},
+    []
+  )
+  it('drops the dispatcher session and keeps waiting rows first', () => {
+    expect(dispatcherRows(rows, 'abc').map((r) => r.sessionId)).toEqual(['y', 'x'])
+  })
+  it('keeps every row without a dispatcher id', () => {
+    expect(dispatcherRows(rows, null).map((r) => r.sessionId)).toEqual(['abc123', 'y', 'x'])
   })
 })

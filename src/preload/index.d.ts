@@ -249,6 +249,7 @@ declare global {
       postMrComment: (key: string, body: string) => Promise<{ error: string | null; isCancelled: boolean }>
       startReview: (key: string) => Promise<{ error: string | null; sessionId?: string }>
       startAddress: (key: string) => Promise<{ error: string | null; sessionId?: string }>
+      markMrSeen: (key: string) => void
       startJobs: (jobs: import('../main/orchestrator').JobRequest[]) => Promise<{ error: string | null }>
       setJobAutonomy: (id: string, autonomy: import('../main/orchestrator').Autonomy) => Promise<void>
       removeJob: (id: string) => Promise<void>

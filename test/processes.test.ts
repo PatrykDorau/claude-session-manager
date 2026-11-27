@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { extractResumeIds, extractAttachIds, extractAttachPids, extractResumePids, probeCommand, mergedListHas, branchTickets } from '../src/main/processes'
+import { extractResumeIds, extractAttachIds, extractAttachPids, extractResumePids, probeCommand, mergedListHas, branchTickets, isRunningAgent } from '../src/main/processes'
 
 describe('extractResumeIds', () => {
   it('ignores the headless background handoff fork', () => {
@@ -108,5 +108,15 @@ describe('extractResumePids', () => {
       { pid: 12, commandLine: `claude attach 3367d315` }
     ]
     expect(extractResumePids(rows, id)).toEqual([10])
+  })
+})
+
+describe('isRunningAgent', () => {
+  it('drops a stopped background session that has no process', () => {
+    expect(isRunningAgent({ sessionId: 'a', kind: 'background', state: 'blocked' })).toBe(false)
+  })
+  it('keeps a background session with a process and every interactive one', () => {
+    expect(isRunningAgent({ sessionId: 'a', kind: 'background', pid: 5 })).toBe(true)
+    expect(isRunningAgent({ sessionId: 'b', kind: 'interactive' })).toBe(true)
   })
 })

@@ -51,6 +51,7 @@ import {
   extractAttachPids,
   runningResumePids,
   listAgents,
+  type AgentInfo,
   gitDirty,
   probeCommand,
   branchMergedOrGone,
@@ -136,14 +137,14 @@ import {
 } from './closing'
 import { worktreeRows, parseCount, isLinkedWorktreeGitFile, branchToDelete, nodeModulesAction } from './worktrees'
 import { serverAction, userStoppedMessage } from './serverguard'
-import { taskContext, startPrompt, parseBgId, ticketPrefix, repoRoots, startArgs, claudeExeCandidates, attachCommand, repoForProject, reviewArgs, addressArgs, scoreArgs, insightsTestArgs, warmUpTask, mediaFiles } from './tasks'
+import { taskContext, startPrompt, parseBgId, ticketPrefix, repoRoots, startArgs, claudeExeCandidates, attachCommand, repoForProject, reviewArgs, addressArgs, addressFollowUp, scoreArgs, insightsTestArgs, warmUpTask, mediaFiles } from './tasks'
 import { searchIssues, fetchDescription, postComment, fetchTransitions, doTransition, fetchTicketDetail, fetchPriority, releaseTransition, unassignIssue } from './jira'
 import { checkRelease, isReleasable, releaseTicket, findTestCases, type ReleaseDeps } from './release'
 import { isSafeRef, worktreeForBranch, parseStatusPaths, safeRelPath, parseStatus, isNoisePath, parseNameStatus, countChanges, parseGrep, searchArgs, parseNumstat, parseRawBlobs, type CodeMatch, type LineCounts } from './ide'
 import { parseExplainDoc, explainArgs, explainName } from './explaindoc'
 import { buildCatalog, readCatalogItem, isInsideDir } from './catalog'
 import { parseReviewDoc, reviewArgs as reviewPartsArgs, reviewName } from './reviewdoc'
-import { fetchMrsToReview, enrichMrs, forgetApprovals, fetchDiffStats, fetchMrSha, isInProjects, reviewState, approvalState, carryEnrichment, pruneApproved, sortMrs } from './gitlab'
+import { fetchMrsToReview, enrichMrs, forgetApprovals, fetchDiffStats, fetchMrSha, isInProjects, reviewState, approvalState, carryEnrichment, pruneApproved, sortMrs, seenShas } from './gitlab'
 import type { JiraTicket, MrFile, MrItem, MyMrs } from '../renderer/src/types'
 import {
   loadState,
@@ -236,14 +237,18 @@ import {
   dispatcherStartError,
   eventsSince,
   findDispatcherSession,
+  findSessionRef,
+  pendingOptions,
   isDispatcherLive,
   jobLogEvents,
   jobRow,
   refusedAnswer,
   refusedPrompt,
+  sessionEvents,
   startRequestOf,
   waitingEvent,
-  type DispatchEvent
+  type DispatchEvent,
+  type SessionEventInput
 } from './dispatcher'
 import { decideWaiting, allowedKeys, judgePrompt, judgeArgs, parseVerdict, JUDGE_TIMEOUT_MS, type Verdict } from './judge'
 import { isForbiddenRequest } from './guard'
@@ -358,6 +363,7 @@ let dirtyMap: Record<string, boolean> = {}
 let changeMap: Record<string, number> = {}
 let lastUsage: UsageResult | null = null
 let bgAgents = new Map<string, { status: string; name: string | null }>()
+let agentNames = new Map<string, string>()
 let clearedIds = new Map<string, string>()
 let isAutoHandoffRunning = false
 let continuations: Continuations = { links: new Map(), seen: new Map(), active: new Map() }
@@ -501,7 +507,7 @@ function decorate(sessions: Session[]): Session[] {
       worktree: !!repo,
       repo: repo ?? null,
       watched: appState.watched.includes(s.id),
-      name: resolveById(appState.names, s.id) ?? bgAgents.get(s.id)?.name ?? s.name ?? null,
+      name: resolveById(appState.names, s.id) ?? bgAgents.get(s.id)?.name ?? agentNames.get(s.id) ?? s.name ?? null,
       dirty: dirtyMap[key] ?? false,
       changes: changeMap[key] ?? 0,
       bg: bgAgents.has(s.id),
@@ -533,7 +539,12 @@ async function refreshRunning(): Promise<void> {
 async function refreshAgents(): Promise<void> {
   const found = await listAgents()
   if (!found) return
-  const list = found.map((a) => ({ ...a, sessionId: clearedIds.get(a.sessionId) ?? a.sessionId }))
+  const all = found.map((a) => ({ ...a, sessionId: clearedIds.get(a.sessionId) ?? a.sessionId }))
+  const isRunning = (a: AgentInfo): boolean => a.isRunning
+  const list = all.filter(isRunning)
+  const isNamed = (a: AgentInfo): boolean => !!a.name
+  const toNameEntry = (a: AgentInfo): [string, string] => [a.sessionId, a.name as string]
+  agentNames = new Map(all.filter(isNamed).map(toNameEntry))
   liveAgentIds = new Set(list.map((a) => a.sessionId))
   agentStatus = new Map(list.map((a) => [a.sessionId, a.status]))
   bgAgents = new Map(
@@ -960,6 +971,20 @@ const myMrs = (): MyMrs => ({
 })
 
 const pushMyMrs = (): void => sendAll('my-mrs', myMrs())
+
+const isMrKey =
+  (key: string) =>
+  (m: MrItem): boolean =>
+    m.key === key
+
+const markMrSeen = (key: string): void => {
+  const mr = mrItems.find(isMrKey(key))
+  const seen = mr ? seenShas(mr, { reviewedMrs: appState.reviewedMrs, approvedMrs: appState.approvedMrs }) : null
+  if (!seen) return
+  appState = { ...appState, ...seen }
+  saveState(statePath, appState)
+  pushMyMrs()
+}
 
 const refreshMyMrs = async (): Promise<void> => {
   const token = appState.settings.gitlabToken.trim()
@@ -2224,6 +2249,18 @@ const startAddress = async (key: string, isOrchestrated = false): Promise<{ erro
   let isStarted = false
   try {
     const ticket = mr.ticket ?? `MR-${mr.iid}`
+    const isAddressSession = (s: Session): boolean => s.name === `${ticket}-cr`
+    const byRecent = (a: Session, b: Session): number => b.lastActive - a.lastActive
+    const previous = lastSessions.filter(isAddressSession).sort(byRecent)[0]
+    if (previous) {
+      const sent = await sendPrompt(previous.id, addressFollowUp(mr.iid, mr.url))
+      if (sent.error) return sent
+      isStarted = true
+      appState = { ...appState, mrSessions: { ...appState.mrSessions, [key]: previous.id } }
+      saveState(statePath, appState)
+      pushMyMrs()
+      return { error: null, sessionId: previous.id }
+    }
     const folder = (await branchFolder(repo, mr.sourceBranch)) ?? (await addBranchWorktree(repo, ticket, mr.sourceBranch))
     const mcpConfig = folder ? prepareTaskBrowser(ticket.toUpperCase(), folder) : null
     const handoff = findHandoff(ticket)
@@ -2263,6 +2300,7 @@ const announcedToolUses = new Set<string>()
 const dispatcherWaits = new Map<string, string>()
 const warnedSkips = new Set<string>()
 let dispatchEvents: DispatchEvent[] = []
+let sessionStatuses: Record<string, Session['status']> = {}
 const FEED_ID = Date.now()
 let gitlabUsername: string | null = null
 let isWatchingMrs = false
@@ -2940,6 +2978,67 @@ const jobPendingPrompt = (job: Job) => {
   return { sessionId, pending: tail.pendingTool, rawInput: pendingRawInput(lines), questionOptions: tail.questionOptions }
 }
 
+const sessionPendingPrompt = (sessionId: string) => {
+  const file = sessionById(sessionId)?.status === 'waiting' ? cachedTranscript(sessionId) : null
+  const lines = file ? readTailLines(file) : []
+  const tail = parseTail(lines)
+  return { pending: tail.pendingTool, rawInput: pendingRawInput(lines), questionOptions: tail.questionOptions }
+}
+
+const LAST_REPLY_CHARS = 600
+const isAssistantMessage = (m: { role: string }): boolean => m.role === 'assistant'
+const lastReplyOf = (id: string): string => {
+  const text = [...sessionDetail(id).messages].reverse().find(isAssistantMessage)?.text.trim() ?? ''
+  return text.length > LAST_REPLY_CHARS ? `${text.slice(0, LAST_REPLY_CHARS - 1)}…` : text
+}
+
+const dispatchableSessions = (): (SessionEventInput & { jobId: string | null })[] => {
+  const dispatcherId = findDispatcherSession(lastSessions, appState.orchestrator.dispatcherSessionId)?.id
+  const isDispatchable = (s: Session): boolean => s.isLive && s.id !== dispatcherId
+  const jobIdOf = (s: Session): string | null => {
+    const isSessionJob = (job: Job): boolean => !!job.sessionId && s.id.startsWith(job.sessionId)
+    return appState.orchestrator.jobs.find(isSessionJob)?.id ?? null
+  }
+  const toDispatchable = (s: Session): SessionEventInput & { jobId: string | null } => ({ ...toSessionEventInput(s), jobId: jobIdOf(s) })
+  return lastSessions.filter(isDispatchable).map(toDispatchable)
+}
+
+const sessionBridgeRow = (s: SessionEventInput & { jobId: string | null }): unknown => {
+  const { pending, questionOptions } = sessionPendingPrompt(s.id)
+  return {
+    id: s.id.slice(0, 8),
+    label: s.label,
+    title: s.title,
+    status: s.status,
+    jobId: s.jobId,
+    pending: pending ? { toolUseId: pending.toolUseId, tool: pending.name, text: pending.input, options: pendingOptions(pending, questionOptions) } : null,
+    lastReply: lastReplyOf(s.id)
+  }
+}
+
+const answerSession = async (body: Record<string, unknown>): Promise<unknown> => {
+  const target = findSessionRef(dispatchableSessions(), asString(body.session))
+  if (!target) return { error: 'unknown or ambiguous session' }
+  const { pending, rawInput, questionOptions } = sessionPendingPrompt(target.id)
+  const toolUseId = asString(body.toolUseId)
+  if (!pending || pending.toolUseId !== toolUseId) return { error: 'no such pending prompt' }
+  const key = asString(body.key)
+  const reason = refusedAnswer(pending, rawInput, questionOptions, key)
+  if (reason) return { error: reason }
+  return answerInbox(target.id, toolUseId, key)
+}
+
+const promptSession = async (body: Record<string, unknown>): Promise<unknown> => {
+  const target = findSessionRef(dispatchableSessions(), asString(body.session))
+  if (!target) return { error: 'unknown or ambiguous session' }
+  const text = asString(body.text)
+  if (!text) return { error: 'empty prompt' }
+  const reason = refusedPrompt(text, sessionById(target.id)?.status ?? null)
+  if (reason) return { error: reason }
+  const isStillIdle = (): boolean => sessionById(target.id)?.status === 'idle' && !sessionTail(target.id)?.pendingTool
+  return sendPrompt(target.id, text, isStillIdle)
+}
+
 const dispatcherRefusal = (job: Job, reason: string): { error: string } => {
   logJob(job.id, `dispatcher refused: ${reason}`)
   return { error: reason }
@@ -2956,7 +3055,9 @@ const bridgeRoutes = {
     ...eventsSince(dispatchEvents, typeof body.since === 'number' ? body.since : 0),
     feedId: FEED_ID
   }),
+  '/sessions': async (): Promise<unknown> => ({ sessions: dispatchableSessions().map(sessionBridgeRow) }),
   '/answer': async (body: Record<string, unknown>): Promise<unknown> => {
+    if (asString(body.session)) return answerSession(body)
     const job = findJob(asString(body.job))
     if (!job) return { error: 'unknown job' }
     const { sessionId, pending, rawInput, questionOptions } = jobPendingPrompt(job)
@@ -2972,6 +3073,7 @@ const bridgeRoutes = {
     return { error: null }
   },
   '/prompt': async (body: Record<string, unknown>): Promise<unknown> => {
+    if (asString(body.session)) return promptSession(body)
     const job = findJob(asString(body.job))
     if (!job) return { error: 'unknown job' }
     const text = asString(body.text)
@@ -2987,10 +3089,18 @@ const bridgeRoutes = {
     return { error: null }
   },
   '/start': async (body: Record<string, unknown>): Promise<unknown> => {
+    const asked = asString(body.ticket).toUpperCase()
+    const isAsked = (t: JiraTicket): boolean => t.key === asked
+    const titleEntry = (t: JiraTicket): [string, string] => [t.key, t.summary ?? '']
+    const isKnown = !asked || !!appState.jira[asked] || myTasks.tickets.some(isAsked)
+    if (!isKnown) await fetchTickets([asked])
     const request = startRequestOf(
       { ticket: asString(body.ticket), review: asString(body.review), watch: asString(body.watch), autonomy: asString(body.autonomy) },
       {
-        jiraTitles: Object.fromEntries(Object.entries(appState.jira).map(([k, v]) => [k, v.summary ?? ''])),
+        jiraTitles: {
+          ...Object.fromEntries(myTasks.tickets.map(titleEntry)),
+          ...Object.fromEntries(Object.entries(appState.jira).map(([k, v]) => [k, v.summary ?? '']))
+        },
         mrs: mrItems,
         repoFor: (key) => appState.repoByPrefix[ticketPrefix(key)] ?? repoRoots(lastSessions)[0]?.path ?? null
       }
@@ -3365,7 +3475,9 @@ const sleepTick = async (): Promise<void> => {
   isSleepTickRunning = true
   try {
     const afterHours = appState.settings.sleepAfterHours
-    const due = sessionsToSleep(lastSessions.map(toSleepCandidate), Date.now(), afterHours)
+    const dispatcherId = findDispatcherSession(lastSessions, appState.orchestrator.dispatcherSessionId)?.id
+    const isNotDispatcher = (id: string): boolean => id !== dispatcherId
+    const due = sessionsToSleep(lastSessions.map(toSleepCandidate), Date.now(), afterHours).filter(isNotDispatcher)
     for (const id of due) {
       if (closingIds.has(id)) continue
       try {
@@ -3471,6 +3583,32 @@ function notifyContext(s: Session): void {
   n.show()
 }
 
+const toSessionEventInput = (s: Session): SessionEventInput => ({
+  id: s.id,
+  status: s.status,
+  isLive: s.isLive,
+  label: s.ticket ?? s.name ?? s.projectName,
+  title: (s.ticket ? lastTasks[s.ticket]?.title : null) ?? s.firstPrompt ?? ''
+})
+
+const jobSessionId = (job: Job): string | null => job.sessionId
+const isPresent = (id: string | null): id is string => !!id
+const isPrefixOf =
+  (full: string) =>
+  (prefix: string): boolean =>
+    full.startsWith(prefix)
+const sessionIdOf = (s: Session): string => s.id
+
+const reportSessionEvents = (shown: Session[]): void => {
+  const jobSessionIds = appState.orchestrator.jobs.map(jobSessionId).filter(isPresent)
+  const isJobSession = (s: Session): boolean => jobSessionIds.some(isPrefixOf(s.id))
+  const dispatcherId = findDispatcherSession(lastSessions, appState.orchestrator.dispatcherSessionId)?.id
+  const skipIds = shown.filter(isJobSession).map(sessionIdOf).concat(dispatcherId ? [dispatcherId] : [])
+  const result = sessionEvents(sessionStatuses, shown.map(toSessionEventInput), skipIds, Date.now())
+  sessionStatuses = result.next
+  if (result.events.length) dispatchEvents = appendEvents(dispatchEvents, result.events)
+}
+
 function updateAttention(sessions: Session[], shown: Session[]): void {
   if (!mainWindow) return
   const waitingIds = new Set<string>()
@@ -3483,6 +3621,7 @@ function updateAttention(sessions: Session[], shown: Session[]): void {
     }
   }
   for (const id of [...notifiedWaiting]) if (!waitingIds.has(id)) notifiedWaiting.delete(id)
+  reportSessionEvents(shown)
   if (isProcessScanReady) {
     const check = finishedTransitions(lastTurnStatus, shown)
     lastTurnStatus = check.next
@@ -4292,6 +4431,7 @@ if (!app.requestSingleInstanceLock()) {
     return { repo, folder: await branchFolder(repo, mr.sourceBranch) }
   })
   ipcMain.handle('mr-start-address', (_e, key: string) => startAddress(key))
+  ipcMain.on('mr-seen', (_e, key: string) => markMrSeen(key))
   ipcMain.handle('orchestrator-start', (_e, jobs: unknown) => startJobs(jobs))
   ipcMain.handle('orchestrator-set-autonomy', (_e, id: string, autonomy: Autonomy) => setJobAutonomy(id, autonomy))
   ipcMain.handle('orchestrator-remove', (_e, id: string) => removeJob(id))

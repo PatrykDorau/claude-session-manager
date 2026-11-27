@@ -25,7 +25,7 @@ import StartJobsDialog from './StartJobsDialog.vue'
 import type { Job, OrchestratorState } from '../../../main/orchestrator'
 import { attentionCount } from './orchestrator'
 import InboxPopup from './InboxPopup.vue'
-import { buildInboxRows, buildLiveRows, nextInboxId, type InboxRow, type LiveOrder } from './inbox'
+import { buildInboxRows, buildLiveRows, dispatcherRows, nextInboxId, type InboxRow, type LiveOrder } from './inbox'
 import StatusBar from './StatusBar.vue'
 import PromptSearch from './PromptSearch.vue'
 import { treeCounts, filterGroups } from './agenttree'
@@ -125,6 +125,10 @@ const openMr = (key: string, sessionId: string | null = null): void => {
 }
 
 const focusSession = (target: { ticket: string | null; sessionId: string }): void => {
+  if (dispatcherId.value && target.sessionId.startsWith(dispatcherId.value)) {
+    isDispatcherOpen.value = true
+    return
+  }
   if (target.ticket) {
     openTicket(target.ticket)
     tabRequest.value = { key: target.ticket, tab: 'work', sessionId: target.sessionId, at: Date.now() }
@@ -187,6 +191,9 @@ const dispatcherError = ref<string | null>(null)
 const isDispatcherSession = (s: Session): boolean => !!dispatcherId.value && s.id.startsWith(dispatcherId.value)
 const dispatcherSession = computed(() => sessions.value.find(isDispatcherSession) ?? null)
 const isPanelSession = (s: Session): boolean => !isDispatcherSession(s)
+const dispatcherCards = computed(() => dispatcherRows(inboxRows.value, dispatcherId.value))
+const isCardWaiting = (r: InboxRow): boolean => r.status === 'waiting'
+const dispatcherCount = computed(() => ({ total: dispatcherCards.value.length, isWaiting: dispatcherCards.value.some(isCardWaiting) }))
 const panelSessionList = computed(() => sessions.value.filter(isPanelSession))
 const toggleDispatcher = async (): Promise<void> => {
   if (isDispatcherOpen.value) {
@@ -327,7 +334,10 @@ const selectPage = (next: DashboardPage): void => {
 const selectTicket = (key: string): void => {
   selectedKey.value = key
 }
-const selectMr = (key: string): void => openMr(key)
+const selectMr = (key: string): void => {
+  page.value = 'mrs'
+  selectedMrKey.value = key
+}
 const focusedTerminalSurface = (): ActivitySurface => {
   const term = document.activeElement?.closest<HTMLElement>('[data-activity-ticket]')
   return term ? { kind: 'session', ticket: term.dataset.activityTicket || null } : null
@@ -489,6 +499,7 @@ onBeforeUnmount(() => {
         @open-task="openSessionTask"
         @full-screen="setPanelFullScreen"
         @dispatcher="toggleDispatcher"
+        @open-mr="openMr"
       />
       <MrView
         v-else-if="isMrPage && selectedMr"
@@ -535,7 +546,9 @@ onBeforeUnmount(() => {
       :session="dispatcherSession"
       :error="dispatcherError"
       :is-starting="isDispatcherStarting"
+      :rows="dispatcherCards"
       @close="isDispatcherOpen = false"
+      @open="openInboxRow"
     />
     <StatusBar
       v-show="!isPanelFullScreen"
@@ -545,6 +558,7 @@ onBeforeUnmount(() => {
       :my-mrs="myMrs"
       :is-panel-page="page === 'today'"
       :is-dispatcher-open="isDispatcherOpen"
+      :dispatcher-count="dispatcherCount"
       @open="openPage"
       @dispatcher="toggleDispatcher"
     />

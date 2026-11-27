@@ -91,6 +91,18 @@ export const writeLayout = (view: LayoutKey, layout: ViewLayout): void => {
   }
 }
 
+export const clearLayouts = (view: PanelViewKey): void => {
+  const pinnedKey = layoutKey('pinned')
+  const isOfView = (key: string): boolean =>
+    view === 'pinned' ? key === pinnedKey : key.startsWith('orch.layout.') && key !== pinnedKey
+  const removeKey = (key: string): void => localStorage.removeItem(key)
+  try {
+    Object.keys(localStorage).filter(isOfView).forEach(removeKey)
+  } catch {
+    return
+  }
+}
+
 export const readColumns = (view: PanelViewKey): 1 | 2 | 3 => {
   try {
     const columns = Number(localStorage.getItem(columnsKey(view)))

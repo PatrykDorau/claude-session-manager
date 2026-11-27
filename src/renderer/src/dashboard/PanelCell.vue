@@ -21,6 +21,15 @@ import IdentityMark from './IdentityMark.vue'
 const props = defineProps<{ session: Session; title: string; jiraStatus: string | null; job: Job | null; look: CellLook; identity: Identity; isPinned: boolean; isAutoResume?: boolean; waitingSince: number | null; isAcknowledged: boolean; isTurnUnseen: boolean; now: number }>()
 const emit = defineEmits<{ 'open-task': [session: Session]; unpin: [id: string]; pin: [session: Session]; expand: [session: Session]; look: [session: Session, look: CellLook]; focused: [session: Session]; left: [session: Session] }>()
 
+const sessionError = ref<string | null>(null)
+const cellLabel = (): string => props.session.ticket ?? props.session.name ?? props.session.id.slice(0, 8)
+const sleepSession = async (): Promise<void> => {
+  if (!window.confirm(`Put the session ${cellLabel()} to sleep? The Claude process stops and the session stays on the list.`)) return
+  sessionError.value = (await window.api.sleepSession(props.session.id)).error
+}
+const stopSession = async (): Promise<void> => {
+  sessionError.value = (await window.api.closeSession(props.session.id)).error
+}
 const isPaletteOpen = ref(false)
 const pickColor = (color: string | null): void => {
   isPaletteOpen.value = false
@@ -138,6 +147,12 @@ const setAutonomy = async (autonomy: AutonomyChoice): Promise<void> => {
         >
           <Icon name="dashboard" :size="12" />
         </button>
+        <button v-if="session.isLive" class="x" title="Put the session to sleep" @click="sleepSession">
+          <Icon name="moon" :size="12" />
+        </button>
+        <button v-if="session.isLive" class="x danger" title="Stop the session" @click="stopSession">
+          <Icon name="stop" :size="12" />
+        </button>
       </div>
       <div class="row2">
       <span v-if="jiraStatus" class="jira">{{ jiraStatus }}</span>
@@ -163,6 +178,7 @@ const setAutonomy = async (autonomy: AutonomyChoice): Promise<void> => {
           </template>
         </span>
       </span>
+      <span v-if="sessionError" class="err">{{ sessionError }}</span>
       <span class="grow" />
       <ContextChip :session="session" :mode="mode" />
       </div>
