@@ -166,7 +166,7 @@ interface ThreadNote {
   system?: boolean
   resolvable?: boolean
   resolved?: boolean
-  author?: { name?: string }
+  author?: { name?: string; username?: string }
 }
 
 export const threadCounts = (
@@ -176,7 +176,7 @@ export const threadCounts = (
   const counts = { openThreads: 0, waitingThreads: 0, othersNotes: 0 }
   if (!Array.isArray(json)) return counts
   const isWritten = (n: ThreadNote | undefined): boolean => n?.system !== true
-  const isOthers = (n: ThreadNote | undefined): boolean => n?.author?.name !== me
+  const isOthers = (n: ThreadNote | undefined): boolean => n?.author?.name !== me && n?.author?.username !== 'dao-gitlab'
   for (const d of json as { notes?: unknown }[]) {
     const notes = (Array.isArray(d?.notes) ? d.notes : []) as ThreadNote[]
     const written = notes.filter(isWritten)

@@ -255,6 +255,10 @@ describe('threadCounts', () => {
     ]
     expect(threadCounts(json, 'Me').othersNotes).toBe(2)
   })
+  it('does not count notes of the dao-gitlab bot as notes of others', () => {
+    const json = [{ notes: [note('PR Agent', { resolvable: false, author: { name: 'PR Agent', username: 'dao-gitlab' } })] }]
+    expect(threadCounts(json, 'Me').othersNotes).toBe(0)
+  })
   it('returns zeros for a bad answer', () => {
     expect(threadCounts(null, 'Me')).toEqual({ openThreads: 0, waitingThreads: 0, othersNotes: 0 })
   })
