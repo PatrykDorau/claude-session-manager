@@ -49,6 +49,11 @@ export const findContinuations = (
   return { links: collapsed, seen, active }
 }
 
+export const linksToKnown = (links: Map<string, string>, isKnown: (id: string) => boolean): Map<string, string> => {
+  const isTargetKnown = ([, to]: [string, string]): boolean => isKnown(to)
+  return new Map([...links].filter(isTargetKnown))
+}
+
 export const launchIdsOf = (id: string, active: Map<string, string>): string[] => [
   ...(active.has(id) ? [] : [id]),
   ...[...active].filter(([, to]) => to === id).map(([from]) => from)

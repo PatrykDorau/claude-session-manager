@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { findContinuations, carryOver, launchIdsOf } from '../src/main/continuation'
+import { findContinuations, carryOver, launchIdsOf, linksToKnown } from '../src/main/continuation'
 
 const A = 'aaaaaaaa-0000-4000-8000-000000000001'
 const B = 'bbbbbbbb-0000-4000-8000-000000000002'
@@ -7,6 +7,18 @@ const C = 'cccccccc-0000-4000-8000-000000000003'
 const file = (sessionId: string, pid = 7, procStart = 1): { pid: number; procStart: number; sessionId: string } => ({ pid, procStart, sessionId })
 const proc = (commandLine: string, pid = 7, startedAt = 1): { pid: number; commandLine: string; startedAt: number } => ({ pid, commandLine, startedAt })
 const empty = { links: new Map<string, string>(), seen: new Map<string, { first: string; last: string }>(), active: new Map<string, string>() }
+
+describe('linksToKnown', () => {
+  it('keeps a resumed session on its own id until the fork has a transcript', () => {
+    const isKnown = (id: string): boolean => id === A
+    expect([...linksToKnown(new Map([[A, B]]), isKnown)]).toEqual([])
+  })
+
+  it('follows the fork once its transcript exists', () => {
+    const isKnown = (id: string): boolean => id === A || id === B
+    expect([...linksToKnown(new Map([[A, B]]), isKnown)]).toEqual([[A, B]])
+  })
+})
 
 describe('findContinuations', () => {
   it('links the resumed id to the id the process now runs', () => {

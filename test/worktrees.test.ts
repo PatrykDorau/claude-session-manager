@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest'
-import { worktreeRows, parseCount, isLinkedWorktreeGitFile, branchToDelete, nodeModulesAction } from '../src/main/worktrees'
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, existsSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import {
+  worktreeRows,
+  parseCount,
+  isLinkedWorktreeGitFile,
+  branchToDelete,
+  nodeModulesAction,
+  removeWorktreeFolder
+} from '../src/main/worktrees'
 import type { Session } from '../src/renderer/src/types'
 
 function s(over: Partial<Session>): Session {
@@ -97,5 +107,22 @@ describe('nodeModulesAction', () => {
   })
   it('does nothing when the repo itself has no install', () => {
     expect(nodeModulesAction(null, false)).toBe('none')
+  })
+})
+
+describe('removeWorktreeFolder', () => {
+  it('removes the worktree but keeps what its node_modules junction points to', () => {
+    const base = mkdtempSync(join(tmpdir(), 'wt-'))
+    const target = join(base, 'repo-node_modules')
+    const worktree = join(base, 'wt')
+    mkdirSync(target)
+    writeFileSync(join(target, 'keep.txt'), 'keep')
+    mkdirSync(worktree)
+    writeFileSync(join(worktree, 'file.txt'), 'x')
+    symlinkSync(target, join(worktree, 'node_modules'), 'junction')
+    expect(removeWorktreeFolder(worktree)).toBe(true)
+    expect(existsSync(worktree)).toBe(false)
+    expect(existsSync(join(target, 'keep.txt'))).toBe(true)
+    rmSync(base, { recursive: true, force: true })
   })
 })

@@ -1,3 +1,4 @@
+import { rmSync } from 'fs'
 import { normalizePath } from './lock'
 import { parseWorktreeRepo } from './worktree'
 import type { Session, WorktreeRow } from '../renderer/src/types'
@@ -32,6 +33,15 @@ export const nodeModulesAction = (entries: string[] | null, isRepoInstalled: boo
   if (!isRepoInstalled) return 'none'
   if (entries === null) return 'link'
   return entries.every((name) => name.startsWith('.')) ? 'relink' : 'none'
+}
+
+export const removeWorktreeFolder = (path: string): boolean => {
+  try {
+    rmSync(path, { recursive: true, force: true })
+    return true
+  } catch {
+    return false
+  }
 }
 
 export const parseCount = (out: string): number => {

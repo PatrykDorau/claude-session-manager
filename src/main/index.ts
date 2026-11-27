@@ -78,7 +78,7 @@ import { formatDiagnostics } from './diagnostics'
 import { contextAlerts, idleAlerts } from './contextalert'
 import { parseHandoffSize, type HandoffSize } from './handoffsize'
 import { isHandoffDue, autoHandoffArgs, autoHandoffPrompt } from './autohandoff'
-import { findContinuations, carryOver, launchIdsOf, type Continuations } from './continuation'
+import { findContinuations, carryOver, launchIdsOf, linksToKnown, type Continuations } from './continuation'
 import { parseWorkflow, parseHandoffStage, parseAgentFile, parseBoosters } from './flow'
 import { collectDigests, ensureGuide, dayStamp, parseInsights, applyProposal, isInsightsDue, dismissedList, withDismissed, latestDay, reportDay, migrateFactoryDir, aggregateDay, expiredDayFiles, recentDayFiles, isEmptyInsights, storedInsights, appliedList, withProposalStates, type InsightsProposal, type DayMetrics, type Incident } from './insights'
 import type { InsightsReport, FlowAgent, FlowState, FlowTicket } from '../renderer/src/types'
@@ -134,7 +134,7 @@ import {
   isSessionProcess,
   type SessionFile
 } from './closing'
-import { worktreeRows, parseCount, isLinkedWorktreeGitFile, branchToDelete, nodeModulesAction } from './worktrees'
+import { worktreeRows, parseCount, isLinkedWorktreeGitFile, branchToDelete, nodeModulesAction, removeWorktreeFolder } from './worktrees'
 import { serverAction, userStoppedMessage } from './serverguard'
 import { taskContext, startPrompt, parseBgId, ticketPrefix, repoRoots, startArgs, claudeExeCandidates, attachCommand, repoForProject, reviewArgs, addressArgs, scoreArgs, insightsTestArgs, warmUpTask, mediaFiles } from './tasks'
 import { searchIssues, fetchDescription, postComment, fetchTransitions, doTransition, fetchTicketDetail, fetchPriority, releaseTransition } from './jira'
@@ -500,10 +500,11 @@ function decorate(sessions: Session[]): Session[] {
 async function refreshRunning(): Promise<void> {
   const procs = await claudeProcesses()
   continuations = findContinuations(procs, sessionFiles(), continuations)
-  const nextFollow = throughCleared(continuations.links)
+  const isKnownSession = (id: string): boolean => !!sessionById(id)
+  const nextFollow = linksToKnown(throughCleared(continuations.links), isKnownSession)
   const fresh = [...nextFollow].filter(([from, to]) => followLinks.get(from) !== to)
   followLinks = nextFollow
-  activeLinks = throughCleared(continuations.active)
+  activeLinks = linksToKnown(throughCleared(continuations.active), isKnownSession)
   if (fresh.length) {
     for (const [from, to] of fresh) if (ptyHost.isOpen(from) && !ptyHost.isOpen(to)) rekeyTerminal(from, to)
     appState = fresh.reduce((state, [from, to]) => carryOver(state, from, to), appState)
@@ -738,9 +739,10 @@ const deleteWorktree = async (
     const names = live.filter((s) => failed.includes(s.id)).map((s) => s.name ?? s.ticket ?? s.id)
     return { error: `could not close ${names.join(', ')}`, notice: null }
   }
-  const removed = await runGit(ctx.root, ['worktree', 'remove', '--force', '--force', path])
-  const isUnregistered = removed.isOk || !existsSync(joinPath(path, '.git'))
-  if (!isUnregistered) return { error: removed.err || 'git worktree remove failed', notice: null }
+  const isFolderRemoved = removeWorktreeFolder(path)
+  const pruned = await runGit(ctx.root, ['worktree', 'prune'])
+  const isUnregistered = !existsSync(joinPath(path, '.git'))
+  if (!isUnregistered) return { error: pruned.err || 'the worktree folder is in use, close what uses it and retry', notice: null }
   appState = {
     ...appState,
     restore: forgetSessions(
@@ -752,7 +754,7 @@ const deleteWorktree = async (
   const deleted = ctx.target ? await runGit(ctx.root, ['branch', '-D', ctx.target]) : null
   void rescanAndPush()
   const notices = [
-    ...(removed.isOk ? [] : [`folder ${path} could not be fully removed (a file is in use), delete it by hand`]),
+    ...(isFolderRemoved ? [] : [`folder ${path} could not be fully removed (a file is in use), delete it by hand`]),
     ...(deleted && !deleted.isOk ? [`branch ${ctx.target} kept: ${deleted.err}`] : [])
   ]
   return { error: null, notice: notices.length ? notices.join('; ') : null }
