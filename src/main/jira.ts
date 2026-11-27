@@ -208,6 +208,18 @@ export const fetchPriority = async (browseBase: string, token: string, key: stri
   }
 }
 
+export const fetchStatus = async (browseBase: string, token: string, key: string): Promise<unknown | null> => {
+  try {
+    const res = await fetch(`${new URL(browseBase).origin}/rest/api/2/issue/${encodeURIComponent(key)}?fields=status`, {
+      headers: jiraHeaders(token),
+      signal: AbortSignal.timeout(15000)
+    })
+    return res.ok ? await res.json() : null
+  } catch {
+    return null
+  }
+}
+
 const RELEASE_STATUS = /waiting\s+for\s+internal\s+release/i
 
 export const releaseTransition = (list: JiraTransition[]): JiraTransition | null =>

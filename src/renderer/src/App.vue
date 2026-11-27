@@ -316,14 +316,13 @@ function minimize(): void {
             <span class="cfcount">{{ closeCandidates.length }}</span>
           </button>
           <button
-            v-if="worktrees.length"
             class="closefin"
             title="Open or delete worktrees"
             @click.stop="isWorktreesOpen = true"
           >
             <svg viewBox="0 0 16 16"><path d="M5 3v10M5 8c4 0 6-1 6-5M11 3v0" /><circle cx="11" cy="3" r="1.5" /></svg>
             <span class="cflabel">Worktrees</span>
-            <span class="cfcount">{{ worktrees.length }}</span>
+            <span v-if="worktrees.length" class="cfcount">{{ worktrees.length }}</span>
           </button>
         </div>
         <ul v-show="tasksOpen">
@@ -382,7 +381,7 @@ function minimize(): void {
       :candidates="closeDialog"
       @close="closeDialog = null"
     />
-    <WorktreesDialog v-if="isWorktreesOpen" :rows="worktrees" @close="isWorktreesOpen = false" />
+    <WorktreesDialog v-if="isWorktreesOpen" @close="isWorktreesOpen = false" />
   </div>
 </template>
 
