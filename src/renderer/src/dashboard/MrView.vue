@@ -14,6 +14,7 @@ import CodeView from './CodeView.vue'
 import Splitter from './Splitter.vue'
 import ContextChip from './ContextChip.vue'
 import ClaudeStrip from './ClaudeStrip.vue'
+import { claudePaneMode, type ClaudePaneMode } from './claudepane'
 import SessionMenu from './SessionMenu.vue'
 import { clampSize, readSize, writeSize, readFlag } from './dashboard'
 import QuickActions from './QuickActions.vue'
@@ -44,8 +45,18 @@ const resizeCode = (delta: number): void => {
 }
 const saveCodeWidth = (): void => writeSize('dash.mrCodeWidth', codeWidth.value)
 const docWidth = ref(readSize('dash.mrDocWidth', 820))
-const isClaudeShown = computed(() => tab.value !== 'server' && !isClaudeCollapsed.value)
+const isSideClaudeOpen = ref(readFlag('dash.sideClaudeOpen'))
+const toClaudeMode = (): ClaudePaneMode => claudePaneMode(tab.value, { isWorkOpen: true, isMrCollapsed: isClaudeCollapsed.value, isSideOpen: isSideClaudeOpen.value })
+const claudeMode = computed(toClaudeMode)
+const toggleClaudePane = (): void => {
+  if (tab.value !== 'server') return toggleCollapsed()
+  isSideClaudeOpen.value = !isSideClaudeOpen.value
+  writeSize('dash.sideClaudeOpen', isSideClaudeOpen.value)
+}
+const toIsClaudeShown = (): boolean => claudeMode.value === 'pane'
+const isClaudeShown = computed(toIsClaudeShown)
 const isSplit = computed(() => isClaudeShown.value)
+const sideWidth = ref(readSize('dash.sideWidth', 820))
 const stripLabel = computed(() => session.value?.name ?? session.value?.projectName ?? null)
 const stripColor = computed(() => (session.value ? (session.value.isLive ? 'var(--ok)' : '#666d78') : null))
 const resizeLeft = (delta: number): void => {
@@ -54,10 +65,12 @@ const resizeLeft = (delta: number): void => {
     return
   }
   const total = panes.value?.clientWidth ?? 1400
-  docWidth.value = clampSize(docWidth.value + delta, 420, total - 360)
+  if (tab.value === 'server') sideWidth.value = clampSize(sideWidth.value + delta, 420, total - 360)
+  else docWidth.value = clampSize(docWidth.value + delta, 420, total - 360)
 }
 const saveLeftWidth = (): void => {
   if (tab.value === 'changes') saveCodeWidth()
+  else if (tab.value === 'server') writeSize('dash.sideWidth', sideWidth.value)
   else writeSize('dash.mrDocWidth', docWidth.value)
 }
 const files = ref<MrFile[] | null | undefined>(undefined)
@@ -305,7 +318,7 @@ onBeforeUnmount(() => {
       <MrDraftsBar :state="state" :is-gone="isGone" @open-draft="openDraft" />
     </header>
 
-    <div v-show="tab !== 'server'" ref="panes" class="panes">
+    <div ref="panes" class="panes">
       <section v-show="tab === 'changes'" class="pane code" :style="isSplit ? { flex: 'none', width: `${codeWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
         <CodeView
           ref="codeView"
@@ -328,11 +341,15 @@ onBeforeUnmount(() => {
       <section v-show="tab === 'overview'" class="pane doc" :style="isSplit ? { flex: 'none', width: `${docWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
         <MrOverview :row="row" :state="state" :is-gone="isGone" :is-shown="tab === 'overview'" @open-line="openLine" @address-comments="addressComments" />
       </section>
+      <section v-show="tab === 'server'" class="pane" :style="isSplit ? { flex: 'none', width: `${sideWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
+        <ServerPanel v-if="serverCwd" :key="serverCwd" :ticket-key="serverKey" :cwd="serverCwd" :servers="servers ?? []" />
+        <p v-else class="muted pad">Looking for the folder with {{ row.sourceBranch }}…</p>
+      </section>
       <Splitter v-if="isSplit" @resize="resizeLeft" @done="saveLeftWidth" />
     <section v-show="isClaudeShown" class="pane claude">
       <div class="chead">
         <span class="grow" />
-        <button class="collapse" title="Hide Claude" @click="toggleCollapsed">▸</button>
+        <button class="collapse" title="Hide Claude" @click="toggleClaudePane">▸</button>
       </div>
       <div v-if="paneSessions.length > 1" class="stabs">
         <button
@@ -371,13 +388,8 @@ onBeforeUnmount(() => {
       </div>
       <QuickActions :session-id="session?.id ?? null" :mode="mode" :take-over="takeOverHere" :extra="isMine ? [] : REVIEW_ACTIONS" :values="actionValues" :stage="isMine ? (taskStage ?? 'mr') : null" />
     </section>
-      <ClaudeStrip v-if="tab !== 'server' && isClaudeCollapsed" :label="stripLabel" :color="stripColor" @expand="toggleCollapsed" />
+      <ClaudeStrip v-if="claudeMode === 'strip'" :label="stripLabel" :color="stripColor" @expand="toggleClaudePane" />
     </div>
-
-    <section v-show="tab === 'server'" class="pane">
-      <ServerPanel v-if="serverCwd" :key="serverCwd" :ticket-key="serverKey" :cwd="serverCwd" :servers="servers ?? []" />
-      <p v-else class="muted pad">Looking for the folder with {{ row.sourceBranch }}…</p>
-    </section>
   </div>
 </template>
 

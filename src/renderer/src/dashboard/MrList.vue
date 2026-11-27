@@ -12,7 +12,7 @@ import { useManualOrder } from './useOrder'
 import { splitStarred, starredBlock, sortByStatus } from './order'
 import SessionBadge from './SessionBadge.vue'
 import SessionWorkList from './SessionWorkList.vue'
-import { sessionWorkRows, WITH_SESSION_FLAG } from './sessionwork'
+import { mrListTarget, sessionWorkRows, WITH_SESSION_FLAG } from './sessionwork'
 import type { TaskRow } from '../taskview'
 import { isReplyUnseen, seenReplies } from './mrreplies'
 
@@ -35,6 +35,11 @@ const setWithSession = (next: boolean): void => {
   writeSize(WITH_SESSION_FLAG, next)
 }
 const workRows = computed(() => sessionWorkRows(props.tasks ?? [], props.rows, props.sessions ?? [], props.myName ?? null))
+const openWorkTicket = (key: string): void => {
+  const target = mrListTarget(workRows.value, key)
+  if (target.kind === 'mr') emit('select', target.key)
+  else emit('open-ticket', target.key)
+}
 
 const ERROR_HINT = {
   'no-token': 'Add a GitLab token in Settings to see your merge requests.',
@@ -173,7 +178,7 @@ const updatedAgo = (row: MrRow): string => {
         {{ isAllProjects ? 'My projects' : 'All projects' }}
       </button>
     </div>
-    <SessionWorkList v-if="isWithSession" :rows="workRows" :selected-key="selectedKey" @select-ticket="emit('open-ticket', $event)" @select-mr="emit('select', $event)" />
+    <SessionWorkList v-if="isWithSession" :rows="workRows" :selected-key="selectedKey" @select-ticket="openWorkTicket" @select-mr="emit('select', $event)" />
     <template v-else>
 
     <div v-if="error" class="note">

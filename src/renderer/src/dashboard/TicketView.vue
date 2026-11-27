@@ -18,6 +18,8 @@ import TicketPanel from './TicketPanel.vue'
 import CodeView from './CodeView.vue'
 import MrOverview from './MrOverview.vue'
 import MrDraftsBar from './MrDraftsBar.vue'
+import MrHeaderControls from './MrHeaderControls.vue'
+import { claudePaneMode, type ClaudePaneMode } from './claudepane'
 import MrStateHost from './MrStateHost.vue'
 import ClaudeStrip from './ClaudeStrip.vue'
 import { threadCounts } from './mrfilter'
@@ -69,6 +71,10 @@ const showClaude = (): void => {
   if (tab.value === 'mr') {
     isMrClaudeCollapsed.value = false
     writeSize('dash.mrClaudeCollapsed', false)
+    return
+  }
+  if (isSideTab.value) {
+    if (!isSideClaudeOpen.value) toggleSideClaude()
     return
   }
   tab.value = 'work'
@@ -409,6 +415,25 @@ const toggleMrClaude = (): void => {
   writeSize('dash.mrClaudeCollapsed', isMrClaudeCollapsed.value)
 }
 const isMrSplit = computed(() => tab.value === 'mr' && !isMrClaudeCollapsed.value && !!ownMr.value && !!mrState.value)
+const toIsSideTab = (): boolean => tab.value === 'server' || tab.value === 'ticket'
+const isSideTab = computed(toIsSideTab)
+const isSideClaudeOpen = ref(readFlag('dash.sideClaudeOpen'))
+const toggleSideClaude = (): void => {
+  isSideClaudeOpen.value = !isSideClaudeOpen.value
+  writeSize('dash.sideClaudeOpen', isSideClaudeOpen.value)
+}
+const toggleTabClaude = (): void => (isSideTab.value ? toggleSideClaude() : toggleMrClaude())
+const toClaudeMode = (): ClaudePaneMode =>
+  claudePaneMode(tab.value, { isWorkOpen: isClaudeOpen.value, isMrCollapsed: isMrClaudeCollapsed.value, isSideOpen: isSideClaudeOpen.value })
+const claudeMode = computed(toClaudeMode)
+const toIsSideSplit = (): boolean => isSideTab.value && claudeMode.value === 'pane'
+const isSideSplit = computed(toIsSideSplit)
+const sideWidth = ref(readSize('dash.sideWidth', 820))
+const resizeSide = (delta: number): void => {
+  const total = panes.value?.clientWidth ?? 1400
+  sideWidth.value = clampSize(sideWidth.value + delta, 420, total - 360)
+}
+const saveSideWidth = (): void => writeSize('dash.sideWidth', sideWidth.value)
 const mrDocWidth = ref(readSize('dash.mrDocWidth', 820))
 const mrCodeWidth = ref(readSize('dash.mrCodeWidth', 760))
 const mrLeftWidth = computed(() => (mrSub.value === 'changes' ? mrCodeWidth.value : mrDocWidth.value))
@@ -621,7 +646,8 @@ onBeforeUnmount(() => {
         <button class="btn" :class="{ primary: !row.sessions.length, on: isStartOpen }" @click="isStartOpen = !isStartOpen">
           <Icon name="plus" :size="15" />{{ row.sessions.length ? 'New session' : 'Start session' }}
         </button>
-        <MenuButton label="Open in" icon="external" :items="openItems" />
+        <MrHeaderControls v-if="tab === 'mr' && ownMr && mrState" part="actions" :row="ownMr" :state="mrState" :is-gone="false" :is-address-pending="isAddressPending" :open-items="openItems" @address-comments="addressComments" />
+        <MenuButton v-else label="Open in" icon="external" :items="openItems" />
         <MenuButton label="More actions" icon="more" is-icon title="More actions" :items="moreItems" />
       </div>
       <div v-if="addressError" class="warn">{{ addressError }}</div>
@@ -651,7 +677,7 @@ onBeforeUnmount(() => {
       </template>
     </header>
 
-    <div v-show="tab === 'work' || tab === 'mr'" ref="panes" class="panes">
+    <div ref="panes" class="panes">
       <section v-if="ownMr && mrState" v-show="tab === 'mr'" class="pane" :style="isMrSplit ? { flex: 'none', width: `${mrLeftWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
         <nav class="subtabs">
           <button :class="{ on: mrSub === 'overview' }" @click="mrSub = 'overview'"><Icon name="fileText" :size="14" />Overview<span v-if="mrOpenCount" class="count">{{ mrOpenCount }}</span></button>
@@ -683,6 +709,19 @@ onBeforeUnmount(() => {
         </template>
       </section>
       <Splitter v-if="isMrSplit" @resize="resizeMrLeft" @done="saveMrLeftWidth" />
+      <section v-show="tab === 'server'" class="pane" :style="isSideSplit ? { flex: 'none', width: `${sideWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
+        <ServerPanel :ticket-key="row.key" :cwd="session?.projectPath ?? null" :servers="servers" />
+      </section>
+      <section v-show="tab === 'ticket'" class="pane" :style="isSideSplit ? { flex: 'none', width: `${sideWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
+        <TicketPanel
+          :ticket-key="row.key"
+          :status="row.status"
+          :is-from-jira="row.isFromJira"
+          :mr-url="mrUrl"
+          @test-cases="isTestCasesOpen = true"
+        />
+      </section>
+      <Splitter v-if="isSideSplit" @resize="resizeSide" @done="saveSideWidth" />
       <section v-show="tab === 'work' && isCodeOpen" class="pane code" :style="isBothOpen ? { flex: 'none', width: `${codeWidth}px`, maxWidth: 'calc(100% - 360px)' } : undefined">
         <CodeView
           :cwd="session?.projectPath ?? null"
@@ -703,7 +742,7 @@ onBeforeUnmount(() => {
         />
       </section>
       <Splitter v-if="tab === 'work' && isBothOpen" @resize="resizeCode" @done="saveCodeWidth" />
-      <section v-show="tab === 'work' ? isClaudeOpen : !isMrClaudeCollapsed" class="pane claude">
+      <section v-show="claudeMode === 'pane'" class="pane claude">
         <div class="chead">
           <div class="stabs">
             <button
@@ -723,7 +762,7 @@ onBeforeUnmount(() => {
               <option v-for="s in row.sessions" :key="s.id" :value="s.id">{{ s.name ?? s.projectName }} · {{ ago(s.lastActive) }}</option>
             </select>
           </div>
-          <button v-if="tab === 'mr'" class="collapse" title="Hide Claude" @click="toggleMrClaude">▸</button>
+          <button v-if="tab !== 'work'" class="collapse" title="Hide Claude" @click="toggleTabClaude">▸</button>
         </div>
         <ClaudeTerminal
           v-for="s in openedSessions"
@@ -760,24 +799,10 @@ onBeforeUnmount(() => {
         </div>
         <QuickActions :session-id="session?.id ?? null" :mode="mode" :take-over="takeOverHere" :values="actionValues" :stage="stage ?? null" />
       </section>
-      <ClaudeStrip v-if="tab === 'mr' && isMrClaudeCollapsed" :label="stripLabel" :color="stripColor" @expand="toggleMrClaude" />
+      <ClaudeStrip v-if="claudeMode === 'strip'" :label="stripLabel" :color="stripColor" @expand="toggleTabClaude" />
     </div>
 
     <MrStateHost v-if="ownMr" :key="ownMr.key" :row="ownMr" :my-name="myName ?? null" @state="onMrState" @gone="onMrGone" />
-
-    <section v-show="tab === 'server'" class="pane">
-      <ServerPanel :ticket-key="row.key" :cwd="session?.projectPath ?? null" :servers="servers" />
-    </section>
-
-    <section v-show="tab === 'ticket'" class="pane">
-      <TicketPanel
-        :ticket-key="row.key"
-        :status="row.status"
-        :is-from-jira="row.isFromJira"
-        :mr-url="mrUrl"
-        @test-cases="isTestCasesOpen = true"
-      />
-    </section>
 
     <TestCasesDialog
       v-if="isTestCasesOpen"

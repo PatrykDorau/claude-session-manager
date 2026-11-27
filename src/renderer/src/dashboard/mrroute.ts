@@ -11,7 +11,7 @@ export interface TabRequest {
 
 export type MrRoute = { page: 'tickets'; key: string } | { page: 'mrs' }
 
-export const routeMr = (mr: MrRow | null, myName: string | null, ticketKeys: string[]): MrRoute => {
-  if (mr && mr.ticket && mr.author === myName && ticketKeys.includes(mr.ticket)) return { page: 'tickets', key: mr.ticket }
+export const routeMr = (mr: MrRow | null, myName: string | null, ticketKeys: string[], isFromMrList = false): MrRoute => {
+  if (!isFromMrList && mr && mr.ticket && mr.author === myName && ticketKeys.includes(mr.ticket)) return { page: 'tickets', key: mr.ticket }
   return { page: 'mrs' }
 }

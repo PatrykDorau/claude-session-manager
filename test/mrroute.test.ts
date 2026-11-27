@@ -20,4 +20,7 @@ describe('routeMr', () => {
   it('keeps a missing MR on the MR page', () => {
     expect(routeMr(null, 'me', ['SOF-1'])).toEqual({ page: 'mrs' })
   })
+  it('keeps an own MR with a listed ticket on the MR page when it is opened from the MR list', () => {
+    expect(routeMr(mr({}), 'me', ['SOF-1'], true)).toEqual({ page: 'mrs' })
+  })
 })

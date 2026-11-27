@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { sessionWorkRows } from '../src/renderer/src/dashboard/sessionwork'
+import { mrListTarget, sessionWorkRows } from '../src/renderer/src/dashboard/sessionwork'
 import type { MrRow, Session } from '../src/renderer/src/types'
 import type { TaskRow } from '../src/renderer/src/taskview'
 
@@ -46,5 +46,24 @@ describe('sessionWorkRows', () => {
     const checkoutNew = session('q2', { ticket: 'A-4', status: 'checkout', lastActive: 7 })
     const rows = sessionWorkRows([task('A-1', [idle]), task('A-2', [working]), task('A-3', [waitingOld]), task('A-4', [checkoutNew])], [], [idle, working, waitingOld, checkoutNew], 'Me')
     expect(rows.map((r) => r.key)).toEqual(['A-4', 'A-3', 'A-2', 'A-1'])
+  })
+})
+
+describe('mrListTarget', () => {
+  it('opens the own MR of a ticket row, so the MR list stays', () => {
+    const work = session('w1', { ticket: 'SOF-1' })
+    const own = mr('1!5', { ticket: 'SOF-1', author: 'Me' })
+    const rows = sessionWorkRows([task('SOF-1', [work])], [own], [work], 'Me')
+    expect(mrListTarget(rows, 'SOF-1')).toEqual({ kind: 'mr', key: '1!5' })
+  })
+
+  it('opens the ticket of a ticket row without an MR', () => {
+    const work = session('w1', { ticket: 'SOF-1' })
+    const rows = sessionWorkRows([task('SOF-1', [work])], [], [work], 'Me')
+    expect(mrListTarget(rows, 'SOF-1')).toEqual({ kind: 'ticket', key: 'SOF-1' })
+  })
+
+  it('opens the ticket when the row is not listed', () => {
+    expect(mrListTarget([], 'SOF-3')).toEqual({ kind: 'ticket', key: 'SOF-3' })
   })
 })

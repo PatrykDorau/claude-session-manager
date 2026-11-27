@@ -32,3 +32,9 @@ export const sessionWorkRows = (tasks: TaskRow[], mrs: MrRow[], sessions: Sessio
   })
   return [...ticketRows, ...mrRows].sort((a, b) => statusRank(a.session) - statusRank(b.session) || b.session.lastActive - a.session.lastActive)
 }
+
+export const mrListTarget = (rows: SessionWorkRow[], ticketKey: string): { kind: 'mr' | 'ticket'; key: string } => {
+  const isTicketRow = (r: SessionWorkRow): boolean => r.kind === 'ticket' && r.key === ticketKey
+  const mr = rows.find(isTicketRow)?.mr
+  return mr ? { kind: 'mr', key: mr.key } : { kind: 'ticket', key: ticketKey }
+}
