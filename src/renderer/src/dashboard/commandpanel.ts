@@ -50,7 +50,7 @@ export interface TileLayout {
 
 export type ViewLayout = Record<string, TileLayout>
 
-export const DEFAULT_TILE = { w: 1, h: 4 }
+export const DEFAULT_TILE = { w: 1, h: 6 }
 
 export const layoutKey = (view: LayoutKey): string => `orch.layout.${view}`
 

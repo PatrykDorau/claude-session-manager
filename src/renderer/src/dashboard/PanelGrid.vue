@@ -80,7 +80,7 @@ const scrollParentOf = (el: HTMLElement | null): HTMLElement | null => {
   }
   return null
 }
-const panelHeight = (): number => scrollParentOf(rootEl.value)?.clientHeight ?? window.innerHeight - CHROME_PX
+const panelHeight = (): number => scrollParentOf(rootEl.value)?.clientHeight || window.innerHeight - CHROME_PX
 const halfScreenTile = (): Partial<TileLayout> => ({
   w: DEFAULT_TILE.w,
   h: Math.max(DEFAULT_TILE.h, Math.floor((panelHeight() - ZONE_HEAD_PX) / 2 / CELL_HEIGHT))

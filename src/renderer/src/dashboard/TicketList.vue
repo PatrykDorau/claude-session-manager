@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import { laneGroups, statusLane, type TaskRow } from '../taskview'
 import type { MrRow } from '../types'
 import { ago } from '../display'
-import { filterRows, rowChip, lastActivity, uncommittedCount, readFlag, writeSize } from './dashboard'
+import { filterRows, lastActivity, uncommittedCount, readFlag, writeSize } from './dashboard'
 import { isActiveToday } from './workday'
 import { useWorkday } from './useWorkday'
 import Icon from './Icon.vue'
@@ -178,9 +178,6 @@ const toggleOutside = (key: string): void => {
         @open-mr="emit('open-mr', $event)"
       >
         <template #top>
-          <span v-if="rowChip(r)" class="chip" :style="{ color: rowChip(r)?.color, borderColor: rowChip(r)?.color }">
-            {{ rowChip(r)?.label }}
-          </span>
           <span v-if="uncommittedCount(r.sessions)" class="unc" :title="`${uncommittedCount(r.sessions)} uncommitted ${uncommittedCount(r.sessions) === 1 ? 'file' : 'files'} in this ticket's folder`"><Icon name="diff" :size="11" />{{ uncommittedCount(r.sessions) }}</span>
           <span v-if="activityOf(r)" class="meta">{{ activityOf(r) }}</span>
           <button
@@ -323,14 +320,6 @@ const toggleOutside = (key: string): void => {
   padding-right: 30px;
   cursor: pointer;
 }
-.chip {
-  flex: none;
-  padding: 0 7px;
-  font-size: 11px;
-  line-height: 18px;
-  border: 1px solid;
-  border-radius: 9px;
-}
 .star {
   position: absolute;
   top: 7px;
@@ -372,20 +361,45 @@ const toggleOutside = (key: string): void => {
 .filters {
   display: flex;
   align-items: center;
-  gap: 6px 10px;
+  flex-wrap: wrap;
+  gap: 6px;
   margin: 0 4px 8px;
   font-size: 12px;
   color: var(--text-3);
 }
 .filters label {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  white-space: nowrap;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
   cursor: pointer;
+  user-select: none;
+}
+.filters label:hover {
+  color: var(--text-2);
+  background: var(--bg-3);
+  border-color: var(--line-3);
+}
+.filters label:has(input:checked) {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.filters label:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .filters input[type='checkbox'] {
+  position: absolute;
+  width: 0;
+  height: 0;
   margin: 0;
-  accent-color: var(--accent);
+  opacity: 0;
 }
 .star.on :deep(path) {
   fill: currentColor;

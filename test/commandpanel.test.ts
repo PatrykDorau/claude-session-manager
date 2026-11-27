@@ -404,7 +404,7 @@ describe('layout', () => {
     expect(layoutKey('live-recent')).toBe('orch.layout.live-recent')
     expect(columnsKey('pinned')).toBe('orch.columns.pinned')
     expect(columnsKey('live')).toBe('orch.columns.live')
-    expect(DEFAULT_TILE).toEqual({ w: 1, h: 4 })
+    expect(DEFAULT_TILE).toEqual({ w: 1, h: 6 })
   })
 
   it('parseLayout keeps only entries with four finite numbers', () => {

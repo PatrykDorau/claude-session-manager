@@ -300,20 +300,44 @@ select:focus {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px 10px;
+  gap: 6px;
   margin: 6px 4px 0;
   font-size: 12px;
   color: var(--text-3);
 }
 .filters label {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  white-space: nowrap;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
   cursor: pointer;
+  user-select: none;
+}
+.filters label:hover {
+  color: var(--text-2);
+  background: var(--bg-3);
+  border-color: var(--line-3);
+}
+.filters label:has(input:checked) {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.filters label:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .filters input[type='checkbox'] {
+  position: absolute;
+  width: 0;
+  height: 0;
   margin: 0;
-  accent-color: var(--accent);
+  opacity: 0;
 }
 .toggle {
   margin-left: auto;
